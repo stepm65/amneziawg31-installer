@@ -17,9 +17,122 @@ from datetime import datetime, timezone, timedelta
 VALID_BACKUP = re.compile(r'^awg31-[0-9]{8}T[0-9]{6}Z-[0-9a-f]{10}\.tar\.gz$')
 VALID_AUDIT = {'login_success', 'login_failed', 'password_changed', 'client_added',
                'client_modified', 'client_deleted', 'client_enabled', 'client_disabled',
-               'server_created', 'server_started', 'server_stopped', 'server_deleted',
+               'server_created', 'server_started', 'server_stopped', 'server_restarted', 'server_deleted',
                'server_settings_changed', 'profile_imported', 'backup_created',
                'backup_downloaded', 'backup_deleted', 'backup_policy_changed', 'backup_pruned'}
+
+
+def _host_uplink():
+    """Read lowest-metric IPv4 default route for WAN accounting."""
+    try:
+        candidates=[]
+        for row in Path('/proc/net/route').read_text().splitlines()[1:]:
+            cols=row.split()
+            if len(cols)>=8 and cols[1]=='00000000' and int(cols[3],16)&1:
+                iface=cols[0]
+                if re.fullmatch(r'[a-zA-Z0-9_.:-]{1,32}',iface) and not iface.startswith(('awg','lo','wg','tun')):
+                    candidates.append((int(cols[6]),iface))
+        return min(candidates)[1] if candidates else None
+    except (OSError,ValueError,IndexError):return None
+
+
+def _host_snapshot():
+    """Host snapshots contain counters only, no peer data or credentials."""
+    state={'measured_at':int(datetime.now(timezone.utc).timestamp()),
+           'cpu_total':None,'cpu_idle':None,'mem_total':None,'mem_available':None,
+           'swap_total':None,'swap_free':None,'disk_total':None,'disk_free':None,
+           'uplink':None,'wan_rx':None,'wan_tx':None,'tcp':None,'udp':None}
+    try:
+        cpu=[int(n) for n in Path('/proc/stat').read_text().splitlines()[0].split()[1:]]
+        state['cpu_total']=sum(cpu);state['cpu_idle']=cpu[3]+cpu[4]
+    except (OSError,ValueError,IndexError):pass
+    try:
+        memo={}
+        for line in Path('/proc/meminfo').read_text().splitlines():
+            key,_,raw=line.partition(':')
+            if key in ('MemTotal','MemAvailable','SwapTotal','SwapFree'):
+                memo[key]=int(raw.strip().split()[0])*1024
+        for dest,key in (('mem_total','MemTotal'),('mem_available','MemAvailable'),
+                         ('swap_total','SwapTotal'),('swap_free','SwapFree')):
+            state[dest]=memo.get(key)
+    except (OSError,ValueError,IndexError):pass
+    try:
+        fs=os.statvfs('/');state['disk_total']=fs.f_blocks*fs.f_frsize;state['disk_free']=fs.f_bavail*fs.f_frsize
+    except OSError:pass
+    name=_host_uplink()
+    if name:
+        try:
+            stats=Path('/sys/class/net')/name/'statistics'
+            state['wan_rx']=int((stats/'rx_bytes').read_text());state['wan_tx']=int((stats/'tx_bytes').read_text())
+            state['uplink']=name
+        except (OSError,ValueError):pass
+    for kind in ('tcp','tcp6','udp','udp6'):
+        try:
+            rows=(Path('/proc/net')/kind).read_text().splitlines()[1:]
+            count=sum(int(row.split()[3]=='01') for row in rows if len(row.split())>=4) if kind.startswith('tcp') else len(rows)
+            name='tcp' if kind.startswith('tcp') else 'udp'
+            state[name]=(state[name] or 0)+count
+        except OSError:pass
+    return state
+
+
+_HOST_COLUMNS=('measured_at','cpu_total','cpu_idle','mem_total','mem_available',
+               'swap_total','swap_free','disk_total','disk_free','uplink','wan_rx','wan_tx','tcp','udp')
+
+
+def sample_host_metrics():
+    """Invoked by the root sampler once a minute; stored inside the backed-up AWG0 DB."""
+    db=base_dir()/'state.sqlite3'
+    if not db.is_file():return {'ok':False,'reason':'awg0 is not configured'}
+    snap=_host_snapshot()
+    with sqlite3.connect(db,timeout=20) as con:
+        con.execute("""CREATE TABLE IF NOT EXISTS host_samples (
+           measured_at INTEGER PRIMARY KEY, cpu_total INTEGER, cpu_idle INTEGER,
+           mem_total INTEGER, mem_available INTEGER, swap_total INTEGER, swap_free INTEGER,
+           disk_total INTEGER, disk_free INTEGER, uplink TEXT, wan_rx INTEGER, wan_tx INTEGER,
+           tcp INTEGER, udp INTEGER)""")
+        con.execute('INSERT OR REPLACE INTO host_samples VALUES('+','.join('?' for _ in _HOST_COLUMNS)+')',
+                    [snap[k] for k in _HOST_COLUMNS])
+        con.execute('DELETE FROM host_samples WHERE measured_at < ?', (snap['measured_at']-32*86400,))
+    return {'ok':True,'measured_at':snap['measured_at']}
+
+
+def host_metrics_history(payload):
+    duration={'5m':300,'15m':900,'1h':3600}.get(str(payload.get('window','15m')))
+    if not duration:raise ValueError('Invalid host history window')
+    db=base_dir()/'state.sqlite3'
+    if not db.exists():return {'points':[]}
+    with sqlite3.connect(db,timeout=15) as con:
+        if not con.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='host_samples'").fetchone():
+            return {'points':[]}
+        con.row_factory=sqlite3.Row
+        now=int(datetime.now(timezone.utc).timestamp())
+        rows=[dict(row) for row in con.execute('SELECT * FROM host_samples WHERE measured_at >= ? ORDER BY measured_at',
+                                               (now-duration-120,))]
+    def pct(used,total):
+        return round(min(100,max(0,100*used/total)),2) if total and used is not None else None
+    points=[]
+    previous=None
+    for row in rows:
+        t=row['measured_at']
+        if t<now-duration:previous=row;continue
+        cpu=wan_rx=wan_tx=None
+        if previous:
+            delta=t-previous['measured_at']
+            total=(row['cpu_total']-previous['cpu_total'] if row['cpu_total'] is not None and previous['cpu_total'] is not None else 0)
+            idle=(row['cpu_idle']-previous['cpu_idle'] if row['cpu_idle'] is not None and previous['cpu_idle'] is not None else 0)
+            if total>0 and 0<=idle<=total:cpu=pct(total-idle,total)
+            if delta>0 and row['uplink']==previous['uplink'] and row['uplink']:
+                if all(v is not None for v in (row['wan_rx'],previous['wan_rx'],row['wan_tx'],previous['wan_tx'])):
+                    dr=row['wan_rx']-previous['wan_rx'];dt=row['wan_tx']-previous['wan_tx']
+                    if dr>=0 and dt>=0:wan_rx=round(dr/delta,2);wan_tx=round(dt/delta,2)
+        points.append({'ts':t,'rx':wan_rx,'tx':wan_tx,'cpu':cpu,
+                       'ram':pct(row['mem_total']-row['mem_available'],row['mem_total']) if row['mem_total'] and row['mem_available'] is not None else None,
+                       'swap':pct(row['swap_total']-row['swap_free'],row['swap_total']) if row['swap_total'] and row['swap_free'] is not None else (0 if row['swap_total']==0 else None),
+                       'disk':pct(row['disk_total']-row['disk_free'],row['disk_total']) if row['disk_total'] and row['disk_free'] is not None else None,
+                       'sockets':(row['tcp']+row['udp']) if row['tcp'] is not None and row['udp'] is not None else None})
+        previous=row
+    return {'window':str(payload.get('window','15m')),'points':points}
 
 
 def base_dir():

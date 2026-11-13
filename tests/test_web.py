@@ -133,8 +133,8 @@ def test_live_traffic_endpoint_requires_auth_and_omits_secrets(tmp_path, monkeyp
     assert result.json() == {'rx': 1024, 'tx': 8192, 'connected': 0, 'clients': 1, 'running': True}
     assert 'SECRET' not in result.text
     ui = client.get('/')
-    assert '/assets/panel.js?v=0.9.1' in ui.text
-    assert '/assets/md3.css?v=0.9.1' in ui.text
+    assert '/assets/panel.js?v=0.9.2' in ui.text
+    assert '/assets/md3.css?v=0.9.2' in ui.text
     assert 'md-sys-color-primary' in client.get('/assets/md3.css').text
     assert 'data-confirm=' in client.get('/servers/awg0/clients').text
     assert 'client-search' in client.get('/servers/awg0/clients').text
@@ -157,7 +157,7 @@ def test_login_layout_desktop_and_mobile_markup(tmp_path, monkeypatch):
     assert 'class="login-overview"' in response.text
     assert 'grid-template-columns:minmax(0,1.1fr) minmax(370px,440px)' in client.get('/assets/md3.css').text
     assert 'grid-template-columns:minmax(0,1fr);max-width:470px' in client.get('/assets/md3.css').text
-    assert '/assets/md3.css?v=0.9.1' in response.text
+    assert '/assets/md3.css?v=0.9.2' in response.text
     assert 'type="password"' in response.text
     assert 'autocomplete="current-password"' in response.text
     assert 'class="sidebar"' not in response.text

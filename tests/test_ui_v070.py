@@ -54,8 +54,8 @@ def test_app_sidebar_sections_are_grouped_no_top_kernel(ui):
     assert 'data-nav-key="maintenance"' in html
     assert 'aria-controls="app-sidebar"' in html
     assert 'class="server-tabs"' not in html
-    assert '/assets/panel.js?v=0.9.1' in html
-    assert '/assets/md3.css?v=0.9.1' in html
+    assert '/assets/panel.js?v=0.9.2' in html
+    assert '/assets/md3.css?v=0.9.2' in html
     js=client.get('/assets/panel.js').text
     assert 'mobile-nav-toggle' in js and 'server-picker' not in js
     assert 'nav-open' in js and 'nav-collapsed' in js

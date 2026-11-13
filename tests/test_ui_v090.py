@@ -12,11 +12,11 @@ def test_server_sidebar_is_a_direct_link_list(ui):
     assert 'href="/servers/awg1/overview"' in home
     assert 'ЭКЗЕМПЛЯРЫ' in home
     assert 'ТЕКУЩИЙ СЕРВЕР' not in home
-    assert 'class="fleet-list-panel"' in home
-    assert home.count('class="fleet-row"') == 2
+    assert 'class="instance-dash-grid"' in home
+    assert home.count('class="instance-dashboard"') == 2
     assert 'class="fleet-stat"' not in home
     assert 'class="health-card"' not in home
-    assert 'Серверов: 2' in home and 'Работают: 2' in home
+    assert '2 серверов' in home and '2/2' in home
     assert "f'2" not in home
 
 
@@ -59,13 +59,13 @@ def test_css_mobile_layout_and_no_selector_js(ui):
     js = client.get('/assets/panel.js').text
     assert 'grid-template-columns:248px minmax(0,1fr)' in css
     assert '.server-tabs' in css and '.instance-nav-list' in css
-    assert '.diag-row' in css and '.fleet-table' in css
+    assert '.diag-row' in css and '.instance-dashboard' in css
     assert '@media(max-width:650px)' in css
     assert 'server-picker' not in js
     assert 'nav-open' in js
     home = client.get('/').text
-    assert 'md3.css?v=0.9.1' in home
-    assert 'panel.js?v=0.9.1' in home
+    assert 'md3.css?v=0.9.2' in home
+    assert 'panel.js?v=0.9.2' in home
     english = client.get('/lang/en?next=%2Fservers%2Fawg1%2Fsettings')
     assert english.status_code == 200
     text = english.text

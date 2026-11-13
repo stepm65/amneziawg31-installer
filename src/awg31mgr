@@ -22,8 +22,8 @@ CONFIG_DIR = Path(os.environ.get('AWG31_CONFIG_DIR', '/etc/amnezia/amneziawg'))
 CTL = os.environ.get('AWG31_CTL_PATH', '/usr/local/sbin/awg31ctl')
 VALID = re.compile(r'^awg(?:0|[1-9][0-9]?)$')
 OPS = {'status', 'list', 'add', 'download', 'enable', 'disable', 'delete', 'settings', 'client-network', 'client-policy', 'history'}
-ADMIN = {'servers', 'server-create', 'server-start', 'server-stop', 'server-delete',
-         'sample-all','backup-create','backup-list','backup-export','backup-check','backup-restore','profile-export',
+ADMIN = {'servers', 'server-create', 'server-start', 'server-stop', 'server-restart', 'server-delete',
+         'sample-all','host-history','backup-create','backup-list','backup-export','backup-check','backup-restore','profile-export',
          'profile-import','audit','audit-list','password-change','diagnostics',
          'backup-delete','backup-policy','backup-policy-set','backup-run'}
 
@@ -165,13 +165,16 @@ def main():
         run('systemd-run','--quiet','--collect','--on-active=5s','--unit',unit,
             '--description','Restore AWG31 backup',_sys.executable,script,'--apply',name)
         return {'ok':True,'scheduled':unit,'name':name}
+    if op=='host-history':return admin.host_metrics_history(data)
     if op=='sample-all':
         results={}
         for name in interfaces():
             results[name]=child(name,'sample',{})
             for client_name in results[name].get('disabled',[]):
                 admin.audit({'event':'client_disabled','target':f'{name}/{client_name} (auto)'})
-        return {'ok':True,'servers':results}
+        try: host=admin.sample_host_metrics()
+        except (OSError,ValueError,sqlite3.Error) as exc: host={'ok':False,'error':str(exc)[:150]}
+        return {'ok':True,'servers':results,'host':host}
 
     iface=data.get('interface','awg0')
     if not isinstance(iface,str) or not VALID.fullmatch(iface):
@@ -218,6 +221,9 @@ def main():
         return child(iface,op,payload)
     if op=='server-start':
         run('systemctl','enable','--now',f'awg-quick@{iface}.service')
+        return {'ok':True,'interface':iface}
+    if op=='server-restart':
+        run('systemctl','restart',f'awg-quick@{iface}.service')
         return {'ok':True,'interface':iface}
     if op=='server-stop':
         run('systemctl','stop',f'awg-quick@{iface}.service')

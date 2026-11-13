@@ -58,8 +58,8 @@ def test_fleet_home_and_server_pages_are_separate(ui):
     _,c,calls=ui
     root=c.get('/'); assert root.status_code==200
     assert 'Обзор инфраструктуры' in root.text
-    assert root.text.count('class="fleet-row"')==2
-    assert '7.0.0-43' in root.text and '3.1.20260812' in root.text
+    assert root.text.count('class="instance-dashboard"')==2
+    assert 'class="host-kpi-grid"' in root.text and 'class="instance-dash-grid"' in root.text
     assert 'action="/client"' not in root.text
     listing=c.get('/servers');assert 'Создать сервер' in listing.text
     assert 'new-instance' in listing.text

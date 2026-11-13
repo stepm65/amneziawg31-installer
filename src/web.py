@@ -482,6 +482,7 @@ ICONS = {
     'download': '<path d="M12 3v12m-4-4 4 4 4-4M4 17v4h16v-4"/>',
     'archive': '<rect x="3" y="4" width="18" height="5" rx="1"/><path d="M5 9v12h14V9M10 14h4"/>',
     'alert': '<path d="M12 3 2 21h20L12 3zM12 9v5M12 18h.01"/>',
+    'more': '<circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/>',
     'terminal': '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="m7 9 4 3-4 3m6 0h4"/>',
     'key': '<circle cx="8" cy="15" r="4"/><path d="m11 12 10-10m-5 5 3 3"/>',
     'list': '<path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/>',
@@ -726,9 +727,9 @@ def page(title, content, request):
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="color-scheme" content="dark">
     <title>{h(title)} — AmneziaWG 3.1</title>
-    <link rel="stylesheet" href="/assets/panel.css?v=0.9.1">
-    <link rel="stylesheet" href="/assets/md3.css?v=0.9.1">
-    <script defer src="/assets/panel.js?v=0.9.1"></script>
+    <link rel="stylesheet" href="/assets/panel.css?v=0.9.2">
+    <link rel="stylesheet" href="/assets/md3.css?v=0.9.2">
+    <script defer src="/assets/panel.js?v=0.9.2"></script>
     </head><body data-server-scope="{h(scoped)}">
     <header class="topbar"><div class="topbar-left">{nav_toggle}<a href="/" class="brand"><span class="brand-emblem">{icon('shield',18)}</span><span>AmneziaWG <b>3.1</b></span></a></div>
     <div class="topbar-right">{language_picker(request)}{refresh_button}{status_link}</div></header>
@@ -784,8 +785,46 @@ def traffic(request: Request, interface: str = ''):
                     media_type='application/json', headers={'Cache-Control': 'no-store'})
 
 
+def _linux_socket_counts():
+    """Count active TCP connections and UDP sockets without using netstat/ss."""
+    tcp = udp = 0
+    for protocol in ('tcp', 'tcp6', 'udp', 'udp6'):
+        try:
+            lines = (Path('/proc/net') / protocol).read_text().splitlines()[1:]
+        except OSError:
+            continue  # IPv6 may be disabled in this kernel.
+        for line in lines:
+            fields = line.split()
+            if len(fields) < 4: continue
+            if protocol.startswith('tcp'):
+                tcp += int(fields[3] == '01')  # ESTABLISHED, not LISTEN.
+            else:
+                udp += 1  # UDP is connectionless; report sockets, not connections.
+    return {'tcp_established':tcp,'udp_sockets':udp}
+
+
+def _default_uplink():
+    """Select the lowest-metric IPv4 default route; never double-count awgN."""
+    try:
+        rows = Path('/proc/net/route').read_text().splitlines()[1:]
+        candidates = []
+        for row in rows:
+            cols=row.split()
+            if len(cols)<8: continue
+            iface,dest,flags=cols[0],cols[1],int(cols[3],16)
+            if dest=='00000000' and flags & 1 and not iface.startswith(('awg','tun','wg','lo')):
+                candidates.append((int(cols[6]),iface))
+        return min(candidates)[1] if candidates else None
+    except (OSError,ValueError,IndexError):
+        return None
+
+
 def _proc_telemetry():
-    result = {'cpu_total':None, 'cpu_idle':None, 'mem_total':None, 'mem_available':None, 'uptime':None}
+    """Host-only resource counters. Each unavailable metric remains null."""
+    result = {'cpu_total':None,'cpu_idle':None,'cpu_count':os.cpu_count(),
+              'mem_total':None,'mem_available':None,'swap_total':None,'swap_free':None,
+              'disk_total':None,'disk_free':None,'uptime':None,'panel_rss':None,
+              'uplink':None,'wan_rx':None,'wan_tx':None,'tcp_established':None,'udp_sockets':None}
     try:
         cpu = Path('/proc/stat').read_text().splitlines()[0].split()
         counters = [int(v) for v in cpu[1:]]
@@ -796,33 +835,99 @@ def _proc_telemetry():
         memory = {}
         for line in Path('/proc/meminfo').read_text().splitlines():
             key, _, raw = line.partition(':')
-            if key in ('MemTotal', 'MemAvailable'):
+            if key in ('MemTotal','MemAvailable','SwapTotal','SwapFree'):
                 memory[key] = int(raw.strip().split()[0])*1024
-        result['mem_total'] = memory.get('MemTotal')
-        result['mem_available'] = memory.get('MemAvailable')
+        for target,key in (('mem_total','MemTotal'),('mem_available','MemAvailable'),
+                           ('swap_total','SwapTotal'),('swap_free','SwapFree')):
+            result[target]=memory.get(key)
     except (OSError, ValueError, IndexError): pass
+    try:
+        fs=os.statvfs('/')
+        result['disk_total']=fs.f_blocks*fs.f_frsize
+        result['disk_free']=fs.f_bavail*fs.f_frsize
+    except OSError: pass
     try: result['uptime'] = int(float(Path('/proc/uptime').read_text().split()[0]))
     except (OSError, ValueError, IndexError): pass
+    try:
+        for line in Path('/proc/self/status').read_text().splitlines():
+            if line.startswith('VmRSS:'):
+                result['panel_rss']=int(line.split()[1])*1024
+                break
+    except (OSError,ValueError,IndexError): pass
+    result.update(_linux_socket_counts())
+    uplink=_default_uplink()
+    if uplink and re.fullmatch(r'[a-zA-Z0-9_.:-]{1,32}',uplink):
+        stats=Path('/sys/class/net')/uplink/'statistics'
+        try:
+            result['wan_rx']=int((stats/'rx_bytes').read_text())
+            result['wan_tx']=int((stats/'tx_bytes').read_text())
+            result['uplink']=uplink
+        except (OSError,ValueError): pass
     return result
+
+
+def _interface_uptime(name):
+    """Read systemd activation time; no extra privileges, do not guess."""
+    if not SERVER_RE.fullmatch(name):return None
+    try:
+        proc=subprocess.run(['systemctl','show',f'awg-quick@{name}.service',
+                             '--property=ActiveEnterTimestampMonotonic','--value'],
+                             capture_output=True,text=True,timeout=2,check=False)
+        microseconds=int(proc.stdout.strip()) if proc.returncode==0 else 0
+        elapsed=time.monotonic()-microseconds/1_000_000
+        return int(elapsed) if microseconds>0 and elapsed>=0 else None
+    except (ValueError,OSError,subprocess.TimeoutExpired):return None
 
 
 @app.get('/api/overview/telemetry')
 def fleet_telemetry(request: Request):
     require_auth(request)
-    rx=tx=connected=0
-    try:
-        for server in server_list():
-            if not SERVER_RE.fullmatch(server.get('interface','')): continue
-            data=ctl('list', {'interface':server['interface']})
-            for client in data.get('clients', []):
-                stats=client.get('stats') or {}
-                rx+=max(0,int(stats.get('received') or 0))
-                tx+=max(0,int(stats.get('sent') or 0))
-                connected+=int(bool(client.get('enabled') and
-                     int(stats.get('handshake') or 0)>time.time()-180))
-    except (RuntimeError, ValueError, KeyError, TypeError):
-        raise HTTPException(503,detail='Monitoring unavailable') from None
-    return Response(json.dumps({'rx':rx,'tx':tx,'connected':connected,**_proc_telemetry()}),
+    instances=[]
+    total_rx=total_tx=total_connected=0
+    for server in server_list():
+        name=server.get('interface','')
+        if not SERVER_RE.fullmatch(name):continue
+        stats={'interface':name,'running':bool(server.get('running')),
+               'clients':int(server.get('clients',0)),'rx':None,'tx':None,
+               'connected':None,'recorded_bytes':None,'uptime':None}
+        try:
+            detail=ctl('list',{'interface':name})
+            clients=detail.get('clients',[])
+            stats['rx']=sum(max(0,int((c.get('stats') or {}).get('received') or 0)) for c in clients)
+            stats['tx']=sum(max(0,int((c.get('stats') or {}).get('sent') or 0)) for c in clients)
+            stats['recorded_bytes']=sum(max(0,int(c.get('used_bytes') or 0)) for c in clients)
+            stats['connected']=sum(int(bool(c.get('enabled') and
+                int((c.get('stats') or {}).get('handshake') or 0)>time.time()-180)) for c in clients)
+            stats['clients']=len(clients)
+            total_rx+=stats['rx'];total_tx+=stats['tx'];total_connected+=stats['connected']
+        except (RuntimeError,ValueError,TypeError,KeyError):
+            # A stopped/unavailable peer must not blank all other servers.
+            pass
+        if stats['running']:stats['uptime']=_interface_uptime(name)
+        instances.append(stats)
+    return Response(json.dumps({'rx':total_rx,'tx':total_tx,'connected':total_connected,
+                                'instances':instances,**_proc_telemetry()}),
+                    media_type='application/json',headers={'Cache-Control':'no-store'})
+
+
+@app.get('/api/overview/series')
+def overview_series(request:Request,window:str='15m'):
+    require_auth(request)
+    if window not in ('5m','15m','1h'):raise HTTPException(422,'Invalid window')
+    series=[]
+    for server in server_list():
+        name=server.get('interface','')
+        if not SERVER_RE.fullmatch(name):continue
+        try:
+            history=ctl('history',{'interface':name,'window':window})
+            points=[{'ts':int(p['ts']),'rx':max(0,int(p['rx'])),
+                     'tx':max(0,int(p['tx']))} for p in history.get('points',[]) if isinstance(p,dict)]
+            series.append({'interface':name,'points':points})
+        except (ValueError,KeyError,TypeError,RuntimeError):
+            series.append({'interface':name,'points':[]})
+    try: host=ctl('host-history',{'window':window}).get('points',[])
+    except (RuntimeError,KeyError,ValueError,TypeError):host=[]
+    return Response(json.dumps({'window':window,'bucket_seconds':60,'series':series,'host':host}),
                     media_type='application/json',headers={'Cache-Control':'no-store'})
 
 
@@ -879,14 +984,16 @@ async def server_create(request:Request):
 async def server_service_action(request:Request,interface:str,action:str):
     body=await request.form()
     require_csrf(request,body.get('csrf',''))
-    if not SERVER_RE.fullmatch(interface) or action not in ('start','stop','delete'):
+    if not SERVER_RE.fullmatch(interface) or action not in ('start','stop','restart','delete'):
+        raise HTTPException(404)
+    if interface not in {entry['interface'] for entry in server_list()}:
         raise HTTPException(404)
     try:
         payload={'interface':interface}
         if action=='delete':
             payload['confirm']=str(body.get('confirm',''))
         ctl('server-'+action, payload)
-        audit_event('server_'+{'start':'started','stop':'stopped','delete':'deleted'}[action],interface)
+        audit_event('server_'+{'start':'started','stop':'stopped','restart':'restarted','delete':'deleted'}[action],interface)
     except RuntimeError as exc:
         return error_page(request,tr(lang_of(request),'error'),exc)
     if action == 'delete':
@@ -1255,70 +1362,133 @@ def server_page(request: Request, interface: str, section: str):
     return server_content(request, section)
 
 
+def _dashboard_plot(name, title, subtitle='', height=144):
+    'Accessible inline SVG with real series populated by panel.js.'
+    # name is either validated awgN or the fixed prefix 'wan'.
+    assert name=='wan' or SERVER_RE.fullmatch(name)
+    gid='dash-fill-'+name
+    return f'''<div class="dash-plot" data-plot="{name}">
+      <div class="dash-plot-toolbar"><div><strong>{h(title)}</strong>
+      <small>{h(subtitle)}</small></div>
+      <div class="dash-periods" role="group" aria-label="{'Период' if subtitle!='Traffic history' else 'Period'}">
+        <button type="button" data-period="5m">5м</button>
+        <button type="button" data-period="15m" class="is-active" aria-pressed="true">15м</button>
+        <button type="button" data-period="1h">1ч</button>
+      </div></div>
+      <div class="dash-plot-area">
+        <svg viewBox="0 0 680 {height}" preserveAspectRatio="none" role="img" aria-label="{h(title)}">
+          <defs><linearGradient id="{gid}-rx" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#f8b444" stop-opacity=".30"/><stop offset="100%" stop-color="#f8b444" stop-opacity="0"/></linearGradient>
+          <linearGradient id="{gid}-tx" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#80a8dc" stop-opacity=".22"/><stop offset="100%" stop-color="#80a8dc" stop-opacity="0"/></linearGradient></defs>
+          <path class="dash-grid" d="M0 28H680 M0 67H680 M0 106H680"/>
+          <path data-area="rx" fill="url(#{gid}-rx)"/>
+          <path data-area="tx" fill="url(#{gid}-tx)"/>
+          <path data-line="rx" class="dash-line dash-line-rx"/>
+          <path data-line="tx" class="dash-line dash-line-tx"/>
+          <line data-cursor x1="0" x2="0" y1="8" y2="{height-12}" class="dash-cursor" visibility="hidden"/>
+        </svg>
+        <div class="dash-chart-empty" data-chart-empty>{'Сбор данных…' if subtitle!='Traffic history' else 'Collecting data…'}</div>
+        <div class="dash-chart-tip" data-chart-tip hidden></div>
+      </div>
+      <div class="dash-chart-foot"><span data-time-left>−15м</span><span data-chart-peak>Пик: —</span><span data-time-right>Сейчас</span></div>
+    </div>'''
+
+
 @app.get('/')
 def infrastructure_overview(request: Request):
     if not logged(request): return RedirectResponse('/login')
-    lang=lang_of(request); t=lambda k:tr(lang,k)
-    servers=server_list()
-    online=sum(1 for x in servers if x.get('running'))
+    lang=lang_of(request);t=lambda k:tr(lang,k)
+    ru=lang=='ru'
+    servers=[x for x in server_list() if SERVER_RE.fullmatch(x.get('interface',''))]
+    online=sum(bool(x.get('running')) for x in servers)
     total_clients=sum(int(x.get('clients',0)) for x in servers)
-    entries=''.join(f'''<tr class="fleet-row">
-      <td><a class="fleet-name" href="/servers/{h(x['interface'])}/overview">
-        <span class="instance-nav-status {'is-up' if x.get('running') else 'is-down'}"></span>
-        <strong>{h(x['interface'])}</strong></a></td>
-      <td class="mono">{h(x['subnet'])}</td>
-      <td class="mono">{h(x['port'])}</td>
-      <td>{int(x.get('clients',0))}</td>
-      <td><span class="fleet-state {'fleet-state-up' if x.get('running') else 'fleet-state-down'}">
-        {h(t('vpn_running' if x.get('running') else 'vpn_stopped'))}</span></td>
-      <td><a class="quiet-link" href="/servers/{h(x['interface'])}/overview">{h('Открыть' if lang=='ru' else 'Open')}{icon('chevron-right',16)}</a></td>
-      </tr>''' for x in servers)
-    diagnostics={}
-    if servers:
-        try: diagnostics=ctl('diagnostics',{'interface':servers[0]['interface']})
-        except RuntimeError: pass
-    indicators=[]
-    health_labels={'kernel':('Ядро','Kernel'),'loaded_module':('AmneziaWG','AmneziaWG'),
-                   'dkms':('DKMS','DKMS'),'secure_boot':('Secure Boot','Secure Boot')}
-    for key,labels in health_labels.items():
-        item=diagnostics.get(key)
-        if not isinstance(item,dict):continue
-        raw=str(item.get('output','')).strip()
-        short=raw.splitlines()[0] if raw else '—'
-        if key=='dkms':short='installed' if 'installed' in raw.lower() else short[:38]
-        if key=='secure_boot':short='Enabled' if 'enabled' in raw.lower() else 'Disabled' if 'disabled' in raw.lower() else short[:28]
-        indicators.append(f'<div class="system-line-item"><span class="system-status-dot {"is-up" if item.get("ok") else "is-down"}"></span>'
-                          f'<span>{h(labels[0 if lang=="ru" else 1])}</span><strong>{h(short)}</strong></div>')
-    overview_counts = (f'Серверов: {len(servers)}  ·  Работают: {online}  ·  Клиентов: {total_clients}' if lang=='ru'
-                       else f'Servers: {len(servers)}  ·  Running: {online}  ·  Clients: {total_clients}')
-    fleet_widget=f'''<section class="fleet-telemetry" aria-label="{'Мониторинг системы' if lang=='ru' else 'System monitoring'}">
-      <div class="fleet-telemetry-network"><div class="fleet-telemetry-title"><span class="fleet-telemetry-led"></span>
-        <strong>{'Трафик VPN' if lang=='ru' else 'VPN traffic'}</strong>
-        <small>{'Все экземпляры' if lang=='ru' else 'All instances'}</small></div>
-        <div class="fleet-traffic-values"><span><i class="fleet-rx-dot"></i>↓ <b id="fleet-rx-rate">—</b></span>
-        <span><i class="fleet-tx-dot"></i>↑ <b id="fleet-tx-rate">—</b></span></div>
-        <svg class="fleet-sparkline" viewBox="0 0 520 66" role="img" aria-label="{'График сетевого трафика' if lang=='ru' else 'Network traffic chart'}">
-          <path id="fleet-traffic-rx" d="" fill="none" stroke="#e3a142" stroke-width="2.4" stroke-linejoin="round"/>
-          <path id="fleet-traffic-tx" d="" fill="none" stroke="#8fa8ca" stroke-width="2.4" stroke-linejoin="round"/></svg></div>
-      <div class="fleet-health-stats">
-        <div><span>CPU</span><strong id="fleet-cpu">—</strong><div class="fleet-meter"><i id="fleet-cpu-meter"></i></div></div>
-        <div><span>RAM</span><strong id="fleet-memory">—</strong><div class="fleet-meter"><i id="fleet-memory-meter"></i></div></div>
-        <div><span>{'Время работы' if lang=='ru' else 'Uptime'}</span><strong id="fleet-uptime">—</strong></div>
-        <div><span>{'Подключены' if lang=='ru' else 'Connected'}</span><strong id="fleet-connected">—</strong></div>
-      </div></section>'''
-    content=fleet_widget+f'''<div class="fleet-headerline"><p>{h(overview_counts)}</p>
-      <a href="/servers" class="quiet-link">{h(t('all_servers'))}{icon('chevron-right',16)}</a></div>
-    <section class="fleet-list-panel" aria-label="{h(t('all_servers'))}">
-      <div class="fleet-table-scroll"><table class="fleet-table"><thead><tr>
-      <th>{h('Интерфейс' if lang=='ru' else 'Interface')}</th>
-      <th>{h(t('subnet'))}</th><th>UDP</th><th>{h(t('clients'))}</th>
-      <th>{h(t('status'))}</th><th></th></tr></thead>
-      <tbody>{entries or '<tr><td colspan="6">'+h('Серверов пока нет' if lang=='ru' else 'No servers')+'</td></tr>'}</tbody></table></div></section>
-    <section class="system-line"><div class="system-line-heading"><strong>{h(t('system_status'))}</strong>
-      <a class="quiet-link" href="/maintenance?tab=diagnostics">{h(t('maint_details'))}{icon('chevron-right',16)}</a></div>
-      <div class="system-line-details">{''.join(indicators)}</div></section>'''
+    tx_label='Отправлено' if ru else 'Sent'
+    rx_label='Получено' if ru else 'Received'
+    dash_metric=lambda key,title,value_title,detail: f'''<article class="host-kpi" data-kpi="{key}">
+      <div class="host-kpi-heading"><span>{h(title)}</span><span class="host-kpi-indicator"></span></div>
+      <div class="host-kpi-value" id="host-{key}">—</div>
+      <div class="host-kpi-detail" id="host-{key}-detail">{h(detail)}</div>
+      <svg viewBox="0 0 280 48" preserveAspectRatio="none" class="host-kpi-chart" aria-label="{h(title)}">
+        <path data-kpi-area="{key}"/><path data-kpi-line="{key}"/></svg></article>'''
+    cards=''.join(dash_metric(key,title,title,detail) for key,title,detail in [
+       ('cpu','CPU','Логические ядра' if ru else 'Logical cores'),
+       ('ram','RAM','Оперативная память' if ru else 'System memory'),
+       ('swap','SWAP','Использование подкачки' if ru else 'Swap usage'),
+       ('disk','DISK','Корневая файловая система' if ru else 'Root filesystem')])
+    traffic=_dashboard_plot('wan','Трафик внешнего интерфейса' if ru else 'Uplink traffic',
+                            'WAN · RX / TX' if ru else 'WAN · RX / TX',174)
+    host=f'''<div class="infra-section-head"><h2>{'Система' if ru else 'System'}</h2>
+      <span class="infra-pulse"><i></i>{'Автообновление 5 с' if ru else 'Live · 5 s'}</span></div>
+      <div class="host-kpi-grid">{cards}</div>
+      <div class="host-chart-grid"><section class="host-traffic-panel">
+        <div class="host-panel-head"><div><span class="host-panel-eyebrow">NETWORK / WAN</span>
+          <h3>{'Скорость трафика хоста' if ru else 'Host traffic speed'}</h3></div>
+          <div class="dash-live-legend"><span><i class="dash-dot rx"></i>{'Получение' if ru else 'Download'} <b id="wan-rx-rate">—</b></span>
+          <span><i class="dash-dot tx"></i>{'Отправка' if ru else 'Upload'} <b id="wan-tx-rate">—</b></span></div></div>
+        {traffic}
+        <div class="host-network-totals"><div><small>{rx_label}</small><strong id="wan-rx-total">—</strong></div>
+          <div><small>{tx_label}</small><strong id="wan-tx-total">—</strong></div>
+          <div><small>{'Сетевой интерфейс' if ru else 'Uplink'}</small><strong id="wan-interface">—</strong></div></div>
+      </section>
+      <section class="host-connections-panel"><div class="host-panel-head"><div><span class="host-panel-eyebrow">NETWORK / SOCKETS</span>
+        <h3>{'Соединения' if ru else 'Connections'}</h3></div></div>
+        <strong class="host-connections-number" id="host-sockets-total">—</strong>
+        <span class="host-submetric">{'TCP + UDP сокеты' if ru else 'TCP + UDP sockets'}</span>
+        <div class="host-socket-split"><div><i class="dash-dot tx"></i> TCP <b id="host-tcp">—</b></div>
+        <div><i class="dash-dot rx"></i> UDP <b id="host-udp">—</b></div></div>
+        <svg class="socket-trend" viewBox="0 0 280 116" preserveAspectRatio="none" role="img" aria-label="{'Количество сокетов' if ru else 'Socket count'}">
+          <path d="M0 30H280 M0 67H280 M0 103H280" class="dash-grid"/>
+          <path data-socket-area></path><path data-socket-line></path></svg>
+        <div class="socket-panel-foot">{'TCP: установленные; UDP: сокеты' if ru else 'TCP: established; UDP: sockets'}</div>
+      </section></div>
+      <div class="host-summary-strip"><div><span>{'Время работы ОС' if ru else 'OS uptime'}</span><b id="host-uptime">—</b></div>
+        <div><span>{'Панель · RAM' if ru else 'Panel · RAM'}</span><b id="host-panel-ram">—</b></div>
+        <div><span>{'VPN активно' if ru else 'Active VPN servers'}</span><b>{online}/{len(servers)}</b></div>
+        <div><span>{'Всего клиентов' if ru else 'Total clients'}</span><b>{total_clients}</b></div></div>'''
+    instance_cards=[]
+    for info in servers:
+        iface=info['interface'];running=bool(info.get('running'))
+        count=int(info.get('clients') or 0)
+        graph=_dashboard_plot(iface,'Скорость RX / TX' if ru else 'RX / TX speed',
+                               'Данные каждого экземпляра' if ru else 'Per-instance traffic',144)
+        confirm=('Перезапустить '+iface+'? Клиенты временно отключатся.' if ru else 'Restart '+iface+'? Clients will disconnect briefly.')
+        stop_confirm=('Остановить '+iface+'? Все его клиенты потеряют VPN-соединение.' if ru else 'Stop '+iface+'? Its clients will disconnect.')
+        action=('stop' if running else 'start')
+        action_label=('Остановить' if running else 'Запустить') if ru else ('Stop' if running else 'Start')
+        card=f'''<article class="instance-dashboard" data-awg-instance="{h(iface)}">
+          <header class="instance-dash-heading"><div class="instance-heading-main">
+            <span class="instance-emblem">{icon('server',22)}</span>
+            <div><h3>{h(iface)}</h3><p class="instance-dash-meta"><span>{h(info.get('subnet',''))}</span>
+              <span>UDP {h(info.get('port',''))}</span></p></div></div>
+            <span class="instance-state {'up' if running else 'down'}" data-instance-state><i></i>{'Запущен' if running and ru else 'Running' if running else 'Остановлен' if ru else 'Stopped'}</span></header>
+          <div class="instance-speed-row">
+            <div><small><i class="dash-dot rx"></i>{'Получение' if ru else 'Download'}</small><strong id="{iface}-rx-rate">—</strong></div>
+            <div><small><i class="dash-dot tx"></i>{'Отправка' if ru else 'Upload'}</small><strong id="{iface}-tx-rate">—</strong></div>
+            <div><small>{'Онлайн / всего' if ru else 'Online / total'}</small><strong id="{iface}-connected">— / {count}</strong></div>
+          </div>{graph}
+          <div class="instance-bottom-metrics"><div><span>{rx_label}</span><strong id="{iface}-rx-total">—</strong></div>
+            <div><span>{tx_label}</span><strong id="{iface}-tx-total">—</strong></div>
+            <div><span>{'Время работы' if ru else 'Uptime'}</span><strong id="{iface}-uptime">—</strong></div></div>
+          <footer class="instance-dash-actions">
+            <a class="btn btn-primary btn-small" href="/servers/{iface}/overview">{'Управление' if ru else 'Manage'}</a>
+            <a class="btn btn-secondary btn-small" href="/servers/{iface}/clients">{'Клиенты' if ru else 'Clients'}</a>
+            <a class="btn btn-secondary btn-small" href="/servers/{iface}/settings">{'Настройки' if ru else 'Settings'}</a>
+            <details class="instance-action-menu"><summary aria-label="{'Операции с сервером' if ru else 'Server actions'}" title="{'Операции с сервером' if ru else 'Server actions'}">{icon('more',18)}</summary>
+             <div class="instance-action-dropdown">'''
+        if running:
+            card+=f'''<form method="post" action="/server/{iface}/restart" data-confirm="{h(confirm)}">{csrf(request)}
+                <button type="submit">{icon('restart',16)}{'Перезапустить' if ru else 'Restart'}</button></form>'''
+        card+=f'''<form method="post" action="/server/{iface}/{action}" data-confirm="{h(stop_confirm if running else '')}">{csrf(request)}
+                <button type="submit" class="{'danger-action' if running else ''}">{h(action_label)}</button></form></div></details>
+          </footer></article>'''
+        instance_cards.append(card)
+    if not servers:instance_cards.append('<div class="infra-empty">'+h('Серверов пока нет' if ru else 'No servers yet')+'</div>')
+    content=f'''<div class="infrastructure-dashboard" data-dashboard-version="0.9.2">
+       {host}<div class="infra-section-head instances-title"><div><h2>{'Экземпляры AWG' if ru else 'AWG instances'}</h2>
+         <span>{len(servers)} {'серверов' if ru else 'servers'}</span></div>
+         <a class="quiet-link" href="/servers">{'Управление серверами' if ru else 'Manage servers'}{icon('chevron-right',16)}</a></div>
+       <div class="instance-dash-grid">{''.join(instance_cards)}</div>
+       </div>'''
     return page(t('global_overview'),content,request)
-
 
 
 @app.post('/settings')

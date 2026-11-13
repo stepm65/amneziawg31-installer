@@ -638,7 +638,7 @@ def sample_usage(con, now=None):
 
 def traffic_history(con, request):
     window = str(request.get('window','24h'))
-    duration = {'24h':86400,'7d':604800,'30d':2592000}.get(window)
+    duration = {'5m':300,'15m':900,'1h':3600,'24h':86400,'7d':604800,'30d':2592000}.get(window)
     if not duration: raise ValueError('Неверный диапазон истории')
     size = max(60, duration//180)  # at most ~180 data bins
     cutoff = int(datetime.now(timezone.utc).timestamp()) - duration
