@@ -934,3 +934,44 @@ body {background:var(--ui-bg);font-size:14px;line-height:1.48;}
   .host-kpi-value {font-size:23px}
   .host-summary-strip>div {flex-basis:100%}
 }
+
+
+/* v0.9.3: wide, immediately visible settings and integrated actions. */
+.settings-card {max-width:none;width:100%;padding:clamp(20px,2.5vw,34px)}
+.settings-card .config-fields,.settings-card .advanced-box .fields-grid {max-width:none;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px 18px}
+.settings-card .advanced-box {padding:22px!important;margin:14px 0 22px;background:#1c2025;border:1px solid #343a42;border-radius:14px}
+.settings-card .advanced-box h3 {display:flex;align-items:center;gap:10px;margin:0 0 10px;font-size:16px;font-weight:650;color:#e8edf4}
+.settings-card .advanced-box .info-line {margin:0 0 15px}
+.settings-card .advanced-box .obf-generate-controls {display:flex;flex-wrap:wrap;align-items:center;gap:14px;margin:14px 0}
+.settings-card .advanced-box .obf-help {color:#a7b1bc;font-size:12px;line-height:1.55;margin:12px 0 20px}
+.server-state-actions {display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.server-state-actions form {margin:0}
+.bulk-toolbar {display:flex;align-items:center;gap:18px;justify-content:flex-end;padding:3px 0 14px}
+.bulk-toolbar span {color:#abb6c3;font-size:12px}
+.peer-select,#select-all-peers {width:17px;height:17px;accent-color:var(--amber);cursor:pointer}
+.clients-card th:first-child,.clients-card td:first-child {width:40px;text-align:center}
+.settings-success {display:flex;align-items:center;gap:16px;border:1px solid rgba(104,205,155,.35);background:#1a2924;color:#d9f7e7;border-radius:14px;padding:17px 20px;margin:0 0 20px}
+.settings-success > svg {color:#6dd9a7;flex:none}
+.settings-success > div {flex:1}
+.settings-success strong {font-size:15px}
+.settings-success p {color:#b4d1c4;font-size:12px;margin:5px 0 0}
+.awg-confirm-dialog {border:1px solid #474d56;border-radius:19px;background:#20242a;color:#edf0f5;padding:0;box-shadow:0 25px 75px rgba(0,0,0,.65);width:min(460px,calc(100vw - 30px));max-width:none}
+.awg-confirm-dialog::backdrop {background:rgba(0,0,0,.75);backdrop-filter:blur(3px)}
+.awg-confirm-content {padding:26px}
+.awg-confirm-content h2 {font-size:19px;margin:0 0 13px}
+.awg-confirm-content p {font-size:14px;line-height:1.65;color:#bac4d1;margin:0 0 25px}
+.awg-confirm-actions {display:flex;justify-content:flex-end;gap:11px}
+@media(max-width:1250px) {
+  .settings-card .config-fields,.settings-card .advanced-box .fields-grid {grid-template-columns:repeat(3,minmax(0,1fr))}
+}
+@media(max-width:950px) {
+  .settings-card .config-fields,.settings-card .advanced-box .fields-grid {grid-template-columns:repeat(2,minmax(0,1fr))}
+}
+@media(max-width:600px) {
+  .settings-card .config-fields,.settings-card .advanced-box .fields-grid {grid-template-columns:minmax(0,1fr)}
+  .settings-card .advanced-box {padding:16px!important}
+  .settings-success {align-items:flex-start;flex-wrap:wrap}
+  .settings-success .btn {width:100%}
+  .server-home-top {flex-wrap:wrap}
+  .server-state-actions {width:100%}
+}
