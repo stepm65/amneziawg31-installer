@@ -37,7 +37,7 @@ TEXT = {
         'new_server_hint':'Каждый сервер использует отдельные ключи, подсеть, UDP-порт и список клиентов.',
         'server_name':'Интерфейс (например awg1)', 'server_subnet':'Подсеть IPv4',
         'server_uplink':'Внешний интерфейс', 'server_mode':'Маршрутизация',
-        'server_switch':'Перейти', 'server_stop':'Остановить', 'server_start':'Запустить', 'server_remove':'Удалить сервер', 'server_remove_confirm':'Удалить сервер? Сначала удалите всех клиентов. Конфигурация будет перемещена в резервную копию.',
+        'server_switch':'Перейти', 'server_stop':'Остановить', 'server_start':'Запустить', 'server_remove':'Удалить сервер', 'server_remove_confirm':'Удалить сервер и всех клиентов? Конфигурация и база клиентов будут сохранены в резервной копии.',
         'advanced':'Параметры обфускации AWG 3.1', 'generate':'Сгенерировать параметры',
         'advanced_hint':'Изменение S/H и HeaderProtectionKey потребует переимпорта конфигураций всех клиентов этого сервера.',
         'new_server_note':'Создание второго сервера не изменяет awg0. Подсети и UDP-порты не должны пересекаться.',
@@ -99,7 +99,7 @@ TEXT = {
         'new_server_hint':'Each server has independent keys, subnet, UDP port and clients.',
         'server_name':'Interface (e.g. awg1)', 'server_subnet':'IPv4 subnet',
         'server_uplink':'Uplink interface', 'server_mode':'Routing',
-        'server_switch':'Open', 'server_stop':'Stop', 'server_start':'Start', 'server_remove':'Delete server', 'server_remove_confirm':'Delete server? Remove all clients first. The configuration will be backed up.',
+        'server_switch':'Open', 'server_stop':'Stop', 'server_start':'Start', 'server_remove':'Delete server', 'server_remove_confirm':'Delete server and all clients? Configuration and client database will be backed up.',
         'advanced':'AWG 3.1 obfuscation parameters', 'generate':'Generate parameters',
         'advanced_hint':'Changing S/H and HeaderProtectionKey requires clients on this server to re-import their configurations.',
         'new_server_note':'Creating another server does not change awg0. Subnets and UDP ports must be unique.',
@@ -727,9 +727,9 @@ def page(title, content, request):
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="color-scheme" content="dark">
     <title>{h(title)} — AmneziaWG 3.1</title>
-    <link rel="stylesheet" href="/assets/panel.css?v=0.9.2">
-    <link rel="stylesheet" href="/assets/md3.css?v=0.9.2">
-    <script defer src="/assets/panel.js?v=0.9.2"></script>
+    <link rel="stylesheet" href="/assets/panel.css?v=0.9.3">
+    <link rel="stylesheet" href="/assets/md3.css?v=0.9.3">
+    <script defer src="/assets/panel.js?v=0.9.3"></script>
     </head><body data-server-scope="{h(scoped)}">
     <header class="topbar"><div class="topbar-left">{nav_toggle}<a href="/" class="brand"><span class="brand-emblem">{icon('shield',18)}</span><span>AmneziaWG <b>3.1</b></span></a></div>
     <div class="topbar-right">{language_picker(request)}{refresh_button}{status_link}</div></header>
@@ -997,10 +997,10 @@ async def server_service_action(request:Request,interface:str,action:str):
     except RuntimeError as exc:
         return error_page(request,tr(lang_of(request),'error'),exc)
     if action == 'delete':
-        response=RedirectResponse('/',status_code=303)
+        response=RedirectResponse('/servers',status_code=303)
         response.delete_cookie('awg31_server')
         return response
-    return RedirectResponse('/',status_code=303)
+    return RedirectResponse(f'/servers/{interface}/overview',status_code=303)
 
 
 @app.get('/lang/{language}')
@@ -1255,7 +1255,7 @@ def server_content(request: Request, section: str = 'overview'):
            f'data-confirm="{h(t("server_remove_confirm"))}">{csrf(request)}'
            f'<input type="hidden" name="confirm" value="{h(x["interface"])}">'
            f'<button class="btn btn-danger btn-small" type="submit">{h(t("server_remove"))}</button></form>'
-           if x['interface'] != 'awg0' and not x.get('clients',0) else '')
+           if True else '')
         + '</div>' for x in instances)
     servers_html=f'''<section class="card instances-card" id="servers"><div class="section-title"><div>
         <span class="section-overline">SERVERS / INSTANCES</span><h2>{icon('server',20)}{h(t('server_instances'))}</h2>
@@ -1290,12 +1290,12 @@ def server_content(request: Request, section: str = 'overview'):
              +''.join('<option value="'+val+'" '+('selected' if obf.get(key,'on')==val else '')+'>'
              +val+'</option>' for val in ('on','off'))+'</select></label>'
              for key in ('RandomTrailers','DisableCookies'))
-    advanced=f'''<details class="advanced-box" id="obfuscation"><summary>{icon('settings',16)}{h(t('advanced'))}</summary>
+    advanced=f'''<section class="advanced-box" id="obfuscation"><h3>{icon('settings',16)}{h(t('advanced'))}</h3>
           <p class="info-line">{h(t('advanced_hint'))}</p>
           <div class="obf-generate-controls"><button class="btn btn-secondary" id="generate-obf" type="button">{icon('restart',16)}{h(t('generate'))}</button>
           <label class="obf-timing-switch"><input type="checkbox" id="generate-timings"><span>{'Генерировать тайминги AWG 3.1' if lang=='ru' else 'Generate AWG 3.1 timing ranges'}</span></label></div>
           <p class="obf-help">{'По умолчанию тайминги остаются пустыми; включайте только при необходимости. Изменения применятся после сохранения сервера.' if lang=='ru' else 'Timings remain unset by default. Enable only when needed; save the server to apply changes.'}</p>
-          <div class="fields-grid" id="obfuscation-fields">{obf_inputs}</div></details>'''
+          <div class="fields-grid" id="obfuscation-fields">{obf_inputs}</div></section>'''
     settings = f'''<section class="card settings-card" id="settings">
         <form method="post" action="/settings" data-confirm="{h(t('confirm_restart'))}">{csrf(request)}
         <div class="config-group-header"><div><h2>{h('Подключение' if lang=='ru' else 'Connection')}</h2>
@@ -1410,17 +1410,17 @@ def infrastructure_overview(request: Request):
       <svg viewBox="0 0 280 48" preserveAspectRatio="none" class="host-kpi-chart" aria-label="{h(title)}">
         <path data-kpi-area="{key}"/><path data-kpi-line="{key}"/></svg></article>'''
     cards=''.join(dash_metric(key,title,title,detail) for key,title,detail in [
-       ('cpu','CPU','Логические ядра' if ru else 'Logical cores'),
-       ('ram','RAM','Оперативная память' if ru else 'System memory'),
-       ('swap','SWAP','Использование подкачки' if ru else 'Swap usage'),
-       ('disk','DISK','Корневая файловая система' if ru else 'Root filesystem')])
+       ('cpu','Процессор' if ru else 'CPU','Логические ядра' if ru else 'Logical cores'),
+       ('ram','Память' if ru else 'RAM','Оперативная память' if ru else 'System memory'),
+       ('swap','Подкачка' if ru else 'SWAP','Использование подкачки' if ru else 'Swap usage'),
+       ('disk','Диск' if ru else 'DISK','Корневая файловая система' if ru else 'Root filesystem')])
     traffic=_dashboard_plot('wan','Трафик внешнего интерфейса' if ru else 'Uplink traffic',
                             'WAN · RX / TX' if ru else 'WAN · RX / TX',174)
     host=f'''<div class="infra-section-head"><h2>{'Система' if ru else 'System'}</h2>
       <span class="infra-pulse"><i></i>{'Автообновление 5 с' if ru else 'Live · 5 s'}</span></div>
       <div class="host-kpi-grid">{cards}</div>
       <div class="host-chart-grid"><section class="host-traffic-panel">
-        <div class="host-panel-head"><div><span class="host-panel-eyebrow">NETWORK / WAN</span>
+        <div class="host-panel-head"><div><span class="host-panel-eyebrow">{'СЕТЬ / ВНЕШНИЙ ИНТЕРФЕЙС' if ru else 'NETWORK / WAN'}</span>
           <h3>{'Скорость трафика хоста' if ru else 'Host traffic speed'}</h3></div>
           <div class="dash-live-legend"><span><i class="dash-dot rx"></i>{'Получение' if ru else 'Download'} <b id="wan-rx-rate">—</b></span>
           <span><i class="dash-dot tx"></i>{'Отправка' if ru else 'Upload'} <b id="wan-tx-rate">—</b></span></div></div>
@@ -1429,7 +1429,7 @@ def infrastructure_overview(request: Request):
           <div><small>{tx_label}</small><strong id="wan-tx-total">—</strong></div>
           <div><small>{'Сетевой интерфейс' if ru else 'Uplink'}</small><strong id="wan-interface">—</strong></div></div>
       </section>
-      <section class="host-connections-panel"><div class="host-panel-head"><div><span class="host-panel-eyebrow">NETWORK / SOCKETS</span>
+      <section class="host-connections-panel"><div class="host-panel-head"><div><span class="host-panel-eyebrow">{'СЕТЬ / СОЕДИНЕНИЯ' if ru else 'NETWORK / SOCKETS'}</span>
         <h3>{'Соединения' if ru else 'Connections'}</h3></div></div>
         <strong class="host-connections-number" id="host-sockets-total">—</strong>
         <span class="host-submetric">{'TCP + UDP сокеты' if ru else 'TCP + UDP sockets'}</span>
