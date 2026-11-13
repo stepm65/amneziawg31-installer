@@ -185,6 +185,6 @@ python -m pip install -r src/requirements.txt pytest httpx
 python -m pytest -q
 ```
 
-Releases are built by GitHub Actions: set the number in `VERSION`, push a tag `vX.Y.Z`, and the workflow runs the tests, builds `awg31-console-vX.Y.Z.tar.gz` with its `.sha256` and publishes the release.
+Releases are built by GitHub Actions: set the number in `VERSION`, then push a tag `vX.Y.Z` or publish a release with that tag on github.com, and the workflow runs the tests, builds `awg31-console-vX.Y.Z.tar.gz` with its `.sha256` and publishes the release.
 
 Third-party components and font licences are listed in [THIRD_PARTY.md](THIRD_PARTY.md).

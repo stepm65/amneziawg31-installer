@@ -95,6 +95,8 @@ def test_release_workflow_builds_what_the_installer_downloads():
     assert "'v[0-9]+.[0-9]+.[0-9]+'" in workflow and 'contents: write' in workflow
     assert 'scripts/build-release.sh "$GITHUB_REF_NAME" dist' in workflow
     assert 'python -m pytest -q' in workflow                     # no release from a red tree
+    # A release drafted on github.com gets the same files instead of failing the job.
+    assert 'types: [published]' in workflow and 'gh release upload "$GITHUB_REF_NAME" dist/* --clobber' in workflow
     build = (ROOT / 'scripts/build-release.sh').read_text()
     assert 'asset="awg31-console-$tag.tar.gz"' in build
     assert 'asset="awg31-console-$tag.tar.gz"' in INSTALL.read_text()

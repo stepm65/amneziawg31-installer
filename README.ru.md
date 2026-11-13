@@ -185,6 +185,6 @@ python -m pip install -r src/requirements.txt pytest httpx
 python -m pytest -q
 ```
 
-Релизы собирает GitHub Actions: укажите номер в `VERSION`, отправьте тег `vX.Y.Z`, и workflow прогонит тесты, соберёт `awg31-console-vX.Y.Z.tar.gz` с файлом `.sha256` и опубликует релиз.
+Релизы собирает GitHub Actions: укажите номер в `VERSION`, затем отправьте тег `vX.Y.Z` или опубликуйте релиз с этим тегом на github.com, и workflow прогонит тесты, соберёт `awg31-console-vX.Y.Z.tar.gz` с файлом `.sha256` и опубликует релиз.
 
 Сторонние компоненты и лицензии шрифтов перечислены в [THIRD_PARTY.md](THIRD_PARTY.md).

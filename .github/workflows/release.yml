@@ -1,12 +1,20 @@
 name: Release
-# Pushing a tag vX.Y.Z publishes a GitHub release with the installer archive
-# and its SHA256 sum. install.sh and `awg31 update` download exactly these files.
+# Publishes the installer archive and its SHA256 sum for a version tag vX.Y.Z.
+# install.sh and `awg31 update` download exactly these files.
+# Two ways to start it, both end with the same release:
+#   - push a tag:            git tag v1.2.3 && git push origin v1.2.3
+#   - on github.com:         Releases -> Draft a new release -> create the tag -> Publish
 on:
   push:
     tags:
       - 'v[0-9]+.[0-9]+.[0-9]+'
+  release:
+    types: [published]
 permissions:
   contents: write
+concurrency:
+  group: release-${{ github.ref_name }}
+  cancel-in-progress: false
 jobs:
   release:
     runs-on: ubuntu-24.04
@@ -17,6 +25,10 @@ jobs:
           python-version: '3.12'
       - name: Tag must match the VERSION file
         run: |
+          case "$GITHUB_REF_NAME" in
+            v[0-9]*.[0-9]*.[0-9]*) ;;
+            *) echo "::error::Release tags must look like v1.2.3, got $GITHUB_REF_NAME"; exit 1 ;;
+          esac
           if [ "v$(tr -d '[:space:]' < VERSION)" != "$GITHUB_REF_NAME" ]; then
             echo "::error::VERSION is $(cat VERSION) but the tag is $GITHUB_REF_NAME"
             exit 1
@@ -42,5 +54,10 @@ jobs:
 
           The installer verifies \`awg31-console-${GITHUB_REF_NAME}.tar.gz\` against the \`.sha256\` file published here and aborts on a mismatch.
           NOTES
-          gh release create "$GITHUB_REF_NAME" dist/* --verify-tag \
-            --title "AmneziaWG 3.1 Console ${GITHUB_REF_NAME#v}" --notes-file notes.md
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            # The release was created on github.com: attach the files to it.
+            gh release upload "$GITHUB_REF_NAME" dist/* --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" dist/* --verify-tag \
+              --title "AmneziaWG 3.1 Console ${GITHUB_REF_NAME#v}" --notes-file notes.md
+          fi
