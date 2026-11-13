@@ -1227,7 +1227,7 @@ def server_content(request: Request, section: str = 'overview'):
         <div class="table-tools"><label class="table-search">{icon('search',16)}<input id="client-search" type="search" placeholder="{h(t('search_clients'))}" aria-label="{h(t('search_clients'))}"></label>
         <select id="client-filter" aria-label="{h(t('status'))}"><option value="all">{h(t('all_clients'))}</option><option value="enabled">{h(t('active_only'))}</option></select>
         <span class="table-count mono">{len(clients_all)} {h('клиентов' if lang=='ru' else 'peers')}</span></div>
-        <form id="bulk-delete-form" method="post" action="/clients/bulk-delete" data-confirm="{h(t('bulk_delete_confirm'))}">{csrf(request)}
+        <form id="bulk-delete-form" method="post" action="/servers/{h(state['interface'])}/clients/bulk-delete" data-confirm="{h(t('bulk_delete_confirm'))}">{csrf(request)}
         <div class="bulk-toolbar"><span id="bulk-selection-count">{h(t('selected_count'))}: 0</span>
         <button id="bulk-delete-button" type="submit" class="btn btn-danger btn-small" disabled>{icon('trash',16)}{h(t('bulk_delete'))}</button></div></form>
         <div class="table-scroll"><table><thead><tr>
