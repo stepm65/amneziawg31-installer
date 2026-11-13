@@ -93,6 +93,7 @@ TEXT = {
         'traffic_unavailable': 'Данные временно недоступны',
         'no_matching_clients': 'Клиенты не найдены',
         'confirm_restart': 'Применить настройки и перезапустить VPN? Активные соединения могут прерваться.',
+        'cancel_action':'Отмена', 'confirm_action':'Подтвердить', 'select_all':'Выбрать всех', 'bulk_delete':'Удалить выбранных', 'selected_count':'Выбрано', 'bulk_delete_confirm':'Удалить выбранных клиентов? Действие нельзя отменить.',
     },
     'en': {
         'server_instances':'Servers and interfaces', 'new_server':'Create server',
@@ -155,6 +156,7 @@ TEXT = {
         'traffic_unavailable': 'Traffic data temporarily unavailable',
         'no_matching_clients': 'No matching clients',
         'confirm_restart': 'Apply settings and restart VPN? Active connections may be interrupted.',
+        'cancel_action':'Cancel', 'confirm_action':'Confirm', 'select_all':'Select all', 'bulk_delete':'Delete selected', 'selected_count':'Selected', 'bulk_delete_confirm':'Permanently delete selected clients?',
     },
 }
 
@@ -1195,7 +1197,7 @@ def server_content(request: Request, section: str = 'overview'):
         actions += (f'<form method="post" action="/client/{encoded_name}/delete" class="inline" data-confirm="{h(t("confirm_delete"))}">'
                     f'{csrf(request)}<button class="btn btn-danger btn-small" type="submit">'
                     f'{icon("trash",16)}{h(t("delete"))}</button></form>')
-        rows += (f'<tr class="client-row" data-name="{h(c["name"].lower())}" data-ip="{h(c["ip"])}" data-enabled="{int(active)}"><td class="client-name">{icon("server",16)}<span>{h(c["name"])}</span></td>'
+        rows += (f'<tr class="client-row" data-name="{h(c["name"].lower())}" data-ip="{h(c["ip"])}" data-enabled="{int(active)}"><td><input class="peer-select" type="checkbox" form="bulk-delete-form" name="names" value="{name}" aria-label="{name}"></td><td class="client-name">{icon("server",16)}<span>{h(c["name"])}</span></td>'
                  f'<td><code class="ip-pill">{h(c["ip"])}</code>'
                  f'<small class="peer-routes-compact">{h(c.get("routed_subnets", ""))}</small></td>'
                  f'<td><span class="pill pill-{status_class}"><span class="dot"></span>'
@@ -1205,7 +1207,7 @@ def server_content(request: Request, section: str = 'overview'):
                  f'<td><div class="actions">{actions}</div></td></tr>')
 
     if not rows:
-        rows = (f'<tr><td colspan="5"><div class="empty-state">{icon("users",26)}'
+        rows = (f'<tr><td colspan="6"><div class="empty-state">{icon("users",26)}'
                 f'<strong>{h(t("no_clients"))}</strong><span>{h(t("no_clients_hint"))}</span>'
                 '</div></td></tr>')
     clients = f'''<section class="card clients-card" id="clients">
@@ -1215,9 +1217,12 @@ def server_content(request: Request, section: str = 'overview'):
         <a class="btn btn-primary" href="#add-client">{icon('plus',16)}{h(t('add_client'))}</a></div>
         <div class="table-tools"><label class="table-search">{icon('search',16)}<input id="client-search" type="search" placeholder="{h(t('search_clients'))}" aria-label="{h(t('search_clients'))}"></label>
         <select id="client-filter" aria-label="{h(t('status'))}"><option value="all">{h(t('all_clients'))}</option><option value="enabled">{h(t('active_only'))}</option></select>
-        <span class="table-count mono">{len(clients_all)} PEERS</span></div>
+        <span class="table-count mono">{len(clients_all)} {h('клиентов' if lang=='ru' else 'peers')}</span></div>
+        <form id="bulk-delete-form" method="post" action="/clients/bulk-delete" data-confirm="{h(t('bulk_delete_confirm'))}">{csrf(request)}
+        <div class="bulk-toolbar"><span id="bulk-selection-count">{h(t('selected_count'))}: 0</span>
+        <button id="bulk-delete-button" type="submit" class="btn btn-danger btn-small" disabled>{icon('trash',16)}{h(t('bulk_delete'))}</button></div></form>
         <div class="table-scroll"><table><thead><tr>
-        <th>{h(t('name'))}</th><th>{h(t('vpn_ip'))}</th><th>{h(t('status'))}</th>
+        <th><input type="checkbox" id="select-all-peers" aria-label="{h(t('select_all'))}"></th><th>{h(t('name'))}</th><th>{h(t('vpn_ip'))}</th><th>{h(t('status'))}</th>
         <th>{h(t('traffic'))}</th><th>{h(t('actions'))}</th></tr></thead><tbody>{rows}</tbody></table></div>
         <div class="add-client" id="add-client"><div><span class="section-overline">NEW PEER</span><h3>{icon('plus',18)}{h(t('add_client'))}</h3></div>
         <form class="add-client-form" method="post" action="/client">{csrf(request)}
