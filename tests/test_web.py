@@ -132,7 +132,7 @@ def test_live_traffic_endpoint_requires_auth_and_omits_secrets(tmp_path, monkeyp
     assert 'SECRET' not in result.text
     ui = client.get('/')
     assert '/assets/panel.js?v=0.6.0' in ui.text
-    assert '/assets/md3.css?v=0.6.0' in ui.text
+    assert '/assets/md3.css?v=0.6.2' in ui.text
     assert 'md-sys-color-primary' in client.get('/assets/md3.css').text
     assert 'data-confirm=' in ui.text
     assert 'client-search' in ui.text
@@ -142,3 +142,31 @@ def test_live_traffic_endpoint_requires_auth_and_omits_secrets(tmp_path, monkeyp
     assert js.status_code == 200
     assert 'traffic-chart' in js.text
     assert 'stats-grid' in client.get('/assets/panel.css').text
+
+
+def test_login_layout_desktop_and_mobile_markup(tmp_path, monkeypatch):
+    module = create_app(tmp_path, monkeypatch)
+    client = TestClient(module.app)
+    response = client.get('/login')
+    assert response.status_code == 200
+    assert 'class="shell shell-auth"' in response.text
+    assert 'class="main main-login"' in response.text
+    assert 'class="card login-card"' in response.text
+    assert 'class="login-overview"' in response.text
+    assert 'grid-template-columns:minmax(0,1.1fr) minmax(370px,440px)' in client.get('/assets/md3.css').text
+    assert 'grid-template-columns:minmax(0,1fr);max-width:470px' in client.get('/assets/md3.css').text
+    assert '/assets/md3.css?v=0.6.2' in response.text
+    assert 'type="password"' in response.text
+    assert 'autocomplete="current-password"' in response.text
+    assert 'class="sidebar"' not in response.text
+
+
+def test_login_layout_language_and_error(tmp_path, monkeypatch):
+    module = create_app(tmp_path, monkeypatch)
+    client = TestClient(module.app)
+    assert 'Доступ к консоли' in client.get('/login').text
+    response = client.post('/login', data={'password':'invalid-password'})
+    assert 'Неверный пароль' in response.text
+    assert 'class="shell shell-auth"' in response.text
+    client.get('/lang/en?next=%2Flogin')
+    assert 'Console access' in client.get('/login').text

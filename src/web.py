@@ -45,6 +45,12 @@ TEXT = {
         'dashboard': 'Управление сервером', 'clients': 'Клиенты', 'settings': 'Настройки сервера',
         'documentation': 'Документация', 'logout': 'Выход', 'sign_in': 'Вход администратора',
         'login': 'Войти', 'password': 'Пароль администратора', 'login_error': 'Неверный пароль',
+        'login_intro':'Управляйте VPN-серверами, клиентами и безопасными подключениями в одной консоли.',
+        'login_feature_servers':'Несколько независимых VPN-серверов',
+        'login_feature_monitor':'Мониторинг подключений и трафика',
+        'login_feature_backup':'Резервные копии и обслуживание',
+        'login_card_title':'Доступ к консоли',
+        'login_card_hint':'Введите пароль администратора, заданный при установке.',
         'login_limited': 'Слишком много попыток. Повторите позже.',
         'vpn_running': 'VPN запущен', 'vpn_stopped': 'VPN остановлен',
         'interface': 'Интерфейс', 'subnet': 'Подсеть', 'udp_port': 'UDP-порт',
@@ -101,6 +107,12 @@ TEXT = {
         'dashboard': 'Server overview', 'clients': 'Clients', 'settings': 'Server settings',
         'documentation': 'Documentation', 'logout': 'Log out', 'sign_in': 'Administrator sign in',
         'login': 'Sign in', 'password': 'Administrator password', 'login_error': 'Incorrect password',
+        'login_intro':'Manage VPN servers, clients and secure connections from one console.',
+        'login_feature_servers':'Multiple independent VPN servers',
+        'login_feature_monitor':'Connections and traffic monitoring',
+        'login_feature_backup':'Backups and maintenance',
+        'login_card_title':'Console access',
+        'login_card_hint':'Enter the administrator password set during installation.',
         'login_limited': 'Too many attempts. Try again later.',
         'vpn_running': 'VPN running', 'vpn_stopped': 'VPN stopped',
         'interface': 'Interface', 'subnet': 'Subnet', 'udp_port': 'UDP port',
@@ -425,19 +437,26 @@ def page(title, content, request):
                    if authenticated else '')
     refresh_button = (f'<button class="icon-btn" id="refresh-page" type="button" aria-label="{h(tr(lang,"refresh"))}" title="{h(tr(lang,"refresh"))}">{icon("restart",16)}</button>'
                       if authenticated else '')
+    login_intro = '' if authenticated else f'''<div class="login-overview">
+      <p class="login-lede">{h(tr(lang,'login_intro'))}</p>
+      <div class="login-features">
+        <div>{icon('server',18)}<span>{h(tr(lang,'login_feature_servers'))}</span></div>
+        <div>{icon('activity',18)}<span>{h(tr(lang,'login_feature_monitor'))}</span></div>
+        <div>{icon('shield',18)}<span>{h(tr(lang,'login_feature_backup'))}</span></div>
+      </div></div>'''
     body = f'''<!doctype html><html lang="{lang}"><head><meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="color-scheme" content="dark">
     <title>{h(title)} — AmneziaWG 3.1</title>
     <link rel="stylesheet" href="/assets/panel.css?v=0.6.0">
-    <link rel="stylesheet" href="/assets/md3.css?v=0.6.0">
+    <link rel="stylesheet" href="/assets/md3.css?v=0.6.2">
     <script defer src="/assets/panel.js?v=0.6.0"></script>
     </head><body>
     <header class="topbar"><a href="/" class="brand"><span class="brand-emblem">{icon('shield',18)}</span><span>AmneziaWG <b>3.1</b></span></a>
     <div class="topbar-right"><span class="top-kernel">KERNEL</span>{language_picker(request)}{refresh_button}{status_link}</div></header>
-    <div class="shell">{sidebar}<main class="main {'main-login' if not authenticated else ''}">
+    <div class="shell {'shell-auth' if not authenticated else ''}">{sidebar}<main class="main {'main-login' if not authenticated else ''}">
     <div class="page-heading"><div><div class="eyebrow">AMNEZIAWG / CONTROL PANEL</div><h1>{h(title)}</h1>
-    <p class="heading-subtitle">{h(tr(lang,'top_subtitle'))}</p></div></div>{content}</main></div></body></html>'''
+    <p class="heading-subtitle">{h(tr(lang,'top_subtitle'))}</p>{login_intro}</div></div>{content}</main></div></body></html>'''
     return HTMLResponse(body, headers={
         'Cache-Control': 'no-store',
         'X-Content-Type-Options': 'nosniff',
@@ -568,9 +587,12 @@ def login_form(request, error=''):
     msg = f'<p class="error-message" role="alert">{h(error)}</p>' if error else ''
     return page(tr(lang, 'sign_in'), f'''<section class="card login-card">
         <div class="login-mark">{icon('lock',28)}</div>
+        <div class="login-card-kicker">AMNEZIAWG 3.1 / ACCESS</div>
+        <h2>{h(tr(lang,'login_card_title'))}</h2>
+        <p class="login-card-hint">{h(tr(lang,'login_card_hint'))}</p>
         {msg}<form method="post" action="/login">
         <label class="field" for="password"><span>{h(tr(lang,'password'))}</span>
-        <input id="password" type="password" name="password" required autocomplete="current-password"></label>
+        <input id="password" type="password" name="password" required autocomplete="current-password" autofocus></label>
         <button class="btn btn-primary full-width" type="submit">{h(tr(lang,'login'))}{icon('arrow',18)}</button>
         </form></section>''', request)
 

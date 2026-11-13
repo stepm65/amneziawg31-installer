@@ -191,3 +191,88 @@ tbody tr:hover {background:rgba(248,180,68,.055)}
 .settings-card textarea { width:100%; min-width:0; }
 .client-policy { margin-top: 18px; }
 @media (max-width: 680px) { .history-card > svg { height: 145px; } }
+
+
+/* Authentication uses a dedicated layout instead of an empty sidebar column. */
+.shell.shell-auth {
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  max-width:none;
+  min-height:calc(100vh - 72px);
+  padding:clamp(28px,6vh,80px) 24px;
+  background:radial-gradient(ellipse 50% 75% at 77% 36%,rgba(248,180,68,.065),transparent 72%),
+             radial-gradient(ellipse 45% 55% at 12% 85%,rgba(135,152,188,.035),transparent 78%),
+             var(--md-sys-color-surface);
+}
+.shell-auth > .main-login {
+  display:grid;
+  grid-template-columns:minmax(0,1.1fr) minmax(370px,440px);
+  gap:clamp(36px,6vw,104px);
+  align-items:center;
+  width:min(100%,1060px);
+  max-width:1060px;
+  min-width:0;
+  margin:0;
+  padding:0;
+}
+.shell-auth .page-heading {display:block;min-width:0;margin:0}
+.shell-auth .eyebrow {color:var(--amber);font-size:11px;letter-spacing:.2em;margin-bottom:22px}
+.shell-auth .page-heading h1 {
+  font-size:clamp(42px,4.5vw,64px);
+  line-height:1.07;
+  letter-spacing:-.045em;
+  max-width:560px;
+  font-weight:720;
+  text-wrap:balance;
+}
+.shell-auth .heading-subtitle {display:none}
+.login-overview {margin-top:25px;max-width:510px}
+.login-lede {margin:0;color:var(--md-sys-color-on-surface-variant);font-size:17px;line-height:1.7}
+.login-features {display:flex;flex-direction:column;gap:19px;margin-top:41px}
+.login-features > div {display:flex;align-items:center;gap:13px;color:#c4c9d2;font-size:14px;line-height:1.45}
+.login-features .icon {color:var(--amber);flex:none}
+.shell-auth .login-card {
+  width:100%;
+  margin:0;
+  padding:clamp(28px,3vw,42px);
+  border:1px solid #373a40;
+  background:linear-gradient(160deg,#1c1f24 0%,#171a1f 100%);
+  box-shadow:0 25px 75px rgba(0,0,0,.27),0 1px 1px rgba(255,255,255,.025) inset;
+  border-radius:28px;
+}
+.shell-auth .login-mark {
+  width:58px;
+  height:58px;
+  margin:0 0 27px;
+  border-radius:18px;
+  color:var(--amber);
+  background:rgba(248,180,68,.095);
+  border:1px solid rgba(248,180,68,.23);
+}
+.login-card-kicker {color:var(--amber);font-size:11px;font-weight:700;letter-spacing:.16em;margin-bottom:11px}
+.shell-auth .login-card h2 {font-size:27px;font-weight:680;line-height:1.15;letter-spacing:-.025em;margin:0}
+.login-card-hint {font-size:14px;line-height:1.6;color:var(--md-sys-color-on-surface-variant);margin:13px 0 27px}
+.shell-auth .login-card .field {margin:0 0 22px;gap:10px}
+.shell-auth .login-card .field span {font-size:13px;color:#d3d6dc}
+.shell-auth .login-card .field input {height:56px;border-radius:12px;font-size:16px;min-width:0}
+.shell-auth .login-card .btn {min-height:54px;font-size:15px;border-radius:14px}
+.shell-auth .error-message {font-size:13px;margin:0 0 18px}
+@media(max-width:850px) {
+  .shell.shell-auth {padding:42px 20px;align-items:flex-start}
+  .shell-auth > .main-login {grid-template-columns:minmax(0,1fr);max-width:470px;gap:32px}
+  .shell-auth .page-heading h1 {font-size:clamp(32px,7vw,46px)}
+  .login-overview {margin-top:14px}
+  .login-lede {font-size:15px}
+  .login-features {display:none}
+}
+@media(max-width:670px) {
+  .shell.shell-auth {padding:28px 16px 46px;min-height:calc(100vh - 64px)}
+  .shell-auth > .main-login {gap:25px}
+  .shell-auth .eyebrow {font-size:10px;margin-bottom:12px}
+  .shell-auth .page-heading h1 {font-size:34px}
+  .shell-auth .login-card {padding:25px 22px;border-radius:24px}
+  .shell-auth .login-mark {margin-bottom:19px}
+  .shell-auth .login-card h2 {font-size:24px}
+  .login-card-hint {margin-bottom:22px}
+}
