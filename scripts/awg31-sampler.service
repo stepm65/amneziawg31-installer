@@ -1,0 +1,11 @@
+[Unit]
+Description=Collect AmneziaWG client traffic and enforce quotas/expiration
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+ExecStart=/usr/local/sbin/awg31mgr sample-all
+PrivateTmp=true
+ProtectHome=true
+NoNewPrivileges=true

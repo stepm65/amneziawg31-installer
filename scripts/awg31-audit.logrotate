@@ -1,0 +1,9 @@
+/var/log/awg31-panel/audit.jsonl {
+    daily
+    size 1M
+    rotate 30
+    compress
+    missingok
+    notifempty
+    create 0600 root root
+}

@@ -1,0 +1,11 @@
+[Unit]
+Description=AWG31 usage sampler and expiry/quota enforcement timer
+
+[Timer]
+OnBootSec=90s
+OnUnitActiveSec=60s
+AccuracySec=10s
+Unit=awg31-sampler.service
+
+[Install]
+WantedBy=timers.target

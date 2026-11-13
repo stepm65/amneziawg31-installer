@@ -1,0 +1,8 @@
+[Unit]
+Description=Check AmneziaWG DKMS availability for running Linux kernel
+
+[Service]
+Type=oneshot
+User=root
+ExecStart=/usr/local/libexec/awg31/scripts/kernel-check.sh
+NoNewPrivileges=true

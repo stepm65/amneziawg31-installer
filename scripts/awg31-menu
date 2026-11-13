@@ -1,0 +1,46 @@
+#!/usr/bin/env bash
+# Minimal local management shell; does not offer destructive VPN operations.
+set -Eeuo pipefail
+[[ ${EUID} -eq 0 ]] || { echo 'Run as root: sudo awg31' >&2; exit 1; }
+case "${1:-menu}" in
+  status) systemctl --no-pager status awg31-panel.service; /usr/local/sbin/awg31mgr servers ;;
+  restart-panel) systemctl restart awg31-panel.service; systemctl --no-pager status awg31-panel.service ;;
+  logs) journalctl -u awg31-panel.service -n 100 --no-pager ;;
+  nginx)
+    [[ -f /usr/local/libexec/awg31/scripts/setup-nginx.sh ]] || { echo 'Nginx wizard is not installed' >&2; exit 1; }
+    bash /usr/local/libexec/awg31/scripts/setup-nginx.sh --interactive
+    ;;
+  servers) /usr/local/sbin/awg31mgr servers ;;
+  backup) /usr/local/sbin/awg31mgr backup-create ;;
+  backups) /usr/local/sbin/awg31mgr backup-list ;;
+  restore-check)
+    [[ $# -eq 2 ]] || { echo 'Usage: awg31 restore-check BACKUP_NAME' >&2; exit 2; }
+    python3 /usr/local/libexec/awg31/scripts/restore-backup.py --check "$2" ;;
+  restore)
+    [[ $# -eq 2 ]] || { echo 'Usage: awg31 restore BACKUP_NAME' >&2; exit 2; }
+    python3 /usr/local/libexec/awg31/scripts/restore-backup.py --check "$2"
+    echo 'Restoring will replace VPN configs, databases and panel auth and restart services.'
+    read -r -p 'Type RESTORE to proceed: ' answer
+    [[ "$answer" == RESTORE ]] || { echo 'Canceled'; exit 1; }
+    python3 /usr/local/libexec/awg31/scripts/restore-backup.py --apply "$2" ;;
+  doctor) bash /usr/local/libexec/awg31/scripts/kernel-check.sh; /usr/local/sbin/awg31mgr diagnostics ;;
+
+  *)
+    cat <<'MENU'
+AmneziaWG 3.1 local management
+  sudo awg31 status          Show panel and VPN instances
+  sudo awg31 servers         List configured VPN interfaces
+  sudo awg31 backups         List root-owned backup archives
+  sudo awg31 backup          Create a full backup archive
+  sudo awg31 restore-check NAME  Verify checksums and SQLite of a backup
+  sudo awg31 restore NAME    Restore after confirmation (VPN downtime)
+  sudo awg31 doctor          Check kernel/DKMS and interface
+  sudo awg31 restart-panel   Restart web panel only
+  sudo awg31 logs            View panel logs
+  sudo awg31 nginx           Configure optional Nginx HTTPS (safe for existing VPN)
+
+  Panel listens on 127.0.0.1. HTTPS is optional; use sudo awg31 nginx to configure it.
+  VPN server configuration is managed through the authenticated web panel.
+MENU
+    ;;
+esac

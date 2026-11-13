@@ -1,0 +1,10 @@
+[Unit]
+Description=Check AWG31 kernel module after reboot and daily
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=24h
+Unit=awg31-kernel-check.service
+
+[Install]
+WantedBy=timers.target
