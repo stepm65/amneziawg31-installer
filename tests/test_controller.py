@@ -130,4 +130,6 @@ def test_default_mode_is_full_and_split_opt_in():
     assert setting['mode'] == 'full'
     cfg = base_config(mode='split')
     assert 'AllowedIPs = 10.77.10.0/24' in ctl.client_config(cfg, {'private_key':'x', 'ip':'10.77.10.2', 'psk':'y'})
-    assert 'PostUp =' not in ctl.server_config(cfg, [])
+    split_server = ctl.server_config(cfg, [])
+    assert 'MASQUERADE' not in split_server and 'ens3' not in split_server      # no NAT, no uplink rules
+    assert 'sysctl' not in split_server                                          # forwarding stays off by default

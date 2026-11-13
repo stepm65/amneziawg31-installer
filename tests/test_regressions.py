@@ -572,3 +572,81 @@ def test_no_script_probes_health_once_right_after_a_start():
         assert 'awg31_wait_panel' in script, name
         assert not re.search(r'^sleep 2$', script, flags=re.M), name
         assert '/health" >/dev/null || die' not in script, name
+
+
+# --- client-to-client switch and site-to-site in split mode -------------------
+
+def p2p_config(**overrides):
+    cfg = dict(subnet='10.10.54.0/24', server_ip='10.10.54.1', port=45678, mtu=1380, endpoint='vpn.example.net',
+               dns='1.1.1.1', mode='full', uplink='ens3', private_key='a' * 44, public_key='b' * 44,
+               header_key='c' * 44, Jc=4, Jmin=10, Jmax=50, S1=20, S2=30, S3=40, S4=50)
+    cfg.update(overrides)
+    return cfg
+
+
+def p2p_peer(name, ip, routed='', enabled=1):
+    return {'name': name, 'ip': ip, 'private_key': 'q' * 44, 'public_key': (name[0] * 43) + '=', 'psk': 'k' * 44,
+            'enabled': enabled, 'routed_subnets': routed}
+
+
+BETWEEN = '-i awg0 -o awg0 -s 10.10.54.0/24 -d 10.10.54.0/24 -j'
+
+
+def test_client_to_client_is_an_explicit_firewall_rule_in_both_states():
+    allowed = ctl.server_config(p2p_config(client_to_client='on'), [])
+    assert f'PostUp = iptables -w -C FORWARD {BETWEEN} ACCEPT || iptables -w -I FORWARD 1 {BETWEEN} ACCEPT' in allowed
+    assert f'PostUp = iptables -w -D FORWARD {BETWEEN} DROP 2>/dev/null || true' in allowed       # clears the other state
+    isolated = ctl.server_config(p2p_config(client_to_client='off'), [])
+    assert f'PostUp = iptables -w -C FORWARD {BETWEEN} DROP || iptables -w -I FORWARD 1 {BETWEEN} DROP' in isolated
+    assert f'PostUp = iptables -w -D FORWARD {BETWEEN} ACCEPT 2>/dev/null || true' in isolated
+    for conf in (allowed, isolated):                                                          # nothing is left behind
+        assert f'PostDown = iptables -w -D FORWARD {BETWEEN} ACCEPT 2>/dev/null || true' in conf
+        assert f'PostDown = iptables -w -D FORWARD {BETWEEN} DROP 2>/dev/null || true' in conf
+
+
+def test_existing_servers_keep_their_behaviour_without_the_setting():
+    assert f'{BETWEEN} ACCEPT ||' in ctl.server_config(p2p_config(mode='full'), [])
+    assert f'{BETWEEN} DROP ||' in ctl.server_config(p2p_config(mode='split'), [])
+
+
+def test_split_mode_turns_forwarding_on_only_when_it_is_needed():
+    assert 'sysctl' not in ctl.server_config(p2p_config(mode='split', client_to_client='off'), [])
+    assert 'PostUp = sysctl -q -w net.ipv4.ip_forward=1' in ctl.server_config(p2p_config(mode='split', client_to_client='on'), [])
+    router = p2p_peer('router', '10.10.54.2', '10.10.11.0/24')
+    assert 'PostUp = sysctl -q -w net.ipv4.ip_forward=1' in ctl.server_config(p2p_config(mode='split', client_to_client='off'), [router])
+
+
+def test_routed_lan_rules_sit_above_the_isolation_rule():
+    router = p2p_peer('router', '10.10.54.2', '10.10.11.0/24')
+    lines = ctl.server_config(p2p_config(client_to_client='off'), [router]).splitlines()
+    drop = next(i for i, line in enumerate(lines) if f'-I FORWARD 1 {BETWEEN} DROP' in line)
+    lan = next(i for i, line in enumerate(lines) if '-I FORWARD 1 -i awg0 -o awg0 -d 10.10.11.0/24 -j ACCEPT' in line)
+    assert lan > drop        # inserted later at position 1 = evaluated first
+
+
+def test_client_networks_live_on_the_server_and_in_other_split_clients():
+    router = p2p_peer('router', '10.10.54.2', '10.10.11.0/24, 10.10.20.0/24, 10.10.7.0/24')
+    laptop = p2p_peer('laptop', '10.10.54.3')
+    guest = p2p_peer('guest', '10.10.54.4', '172.16.9.0/24', enabled=0)
+    peers = [router, laptop, guest]
+    server = ctl.server_config(p2p_config(), peers)
+    assert 'AllowedIPs = 10.10.54.2/32, 10.10.11.0/24, 10.10.20.0/24, 10.10.7.0/24' in server
+    # Full tunnel: 0.0.0.0/0 already covers every LAN; a client never lists its own networks.
+    assert 'AllowedIPs = 0.0.0.0/0\n' in ctl.client_config(p2p_config(), router, peers)
+    assert 'AllowedIPs = 0.0.0.0/0\n' in ctl.client_config(p2p_config(), laptop, peers)
+    split = p2p_config(mode='split')
+    assert 'AllowedIPs = 10.10.54.0/24\n' in ctl.client_config(split, router, peers)               # own LANs excluded
+    assert 'AllowedIPs = 10.10.54.0/24, 10.10.11.0/24, 10.10.20.0/24, 10.10.7.0/24\n' in ctl.client_config(split, laptop, peers)
+    assert '172.16.9.0/24' not in ctl.client_config(split, laptop, peers)                          # disabled peer
+    assert 'Address = 10.10.54.3/32' in ctl.client_config(split, laptop, peers)
+
+
+def test_settings_form_offers_the_client_to_client_switch(ui):
+    module, client, calls = ui
+    page = client.get('/servers/awg0/settings')
+    assert '<select id="client-to-client" name="client_to_client">' in page.text
+    assert '<option value="on" selected>' in page.text
+    client.post('/servers/awg0/settings', data={'csrf': token(page), 'endpoint': 'vpn.example.test', 'port': '45678',
+                                                'mtu': '1380', 'dns': '1.1.1.1', 'client_to_client': 'off'})
+    sent = [data for op, data in calls if op == 'settings'][-1]
+    assert sent['client_to_client'] == 'off' and sent['interface'] == 'awg0'

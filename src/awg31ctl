@@ -161,6 +161,9 @@ def get_settings(con):
     data.setdefault('H3', '3'); data.setdefault('H4', '4')
     data.setdefault('ContentPaddingAddition', '0-16')
     data.setdefault('RandomTrailers', 'on'); data.setdefault('DisableCookies', 'on')
+    # Servers created before this switch keep their behaviour: a full tunnel
+    # forwarded between clients, a split one did not.
+    data.setdefault('client_to_client', 'on' if data.get('mode') == 'full' else 'off')
     for key in TIMING_KEYS:
         data.setdefault(key, '')
     return data
@@ -483,7 +486,27 @@ def server_config(cfg, peers):
             f'PostDown = iptables -w -D FORWARD {forward_back} || true',
             f'PostDown = iptables -w -D FORWARD {forward_out} || true',
         ])
-    for network in sorted(routed_from_rows(peers)):
+    # Client-to-client traffic inside the VPN subnet: an explicit rule in both
+    # states, so the result does not depend on the host's FORWARD policy.
+    # PostUp removes the opposite variant first and PostDown removes both, which
+    # keeps the firewall clean when the switch changes between restarts.
+    between = f'-i {IFACE} -o {IFACE} -s {net} -d {net} -j'
+    default_between = 'on' if cfg['mode'] == 'full' else 'off'
+    wanted = 'ACCEPT' if cfg.get('client_to_client', default_between) == 'on' else 'DROP'
+    other = 'DROP' if wanted == 'ACCEPT' else 'ACCEPT'
+    routed_networks = sorted(routed_from_rows(peers))
+    if cfg['mode'] != 'full' and (wanted == 'ACCEPT' or routed_networks):
+        # Without a full tunnel nothing else turns forwarding on.
+        lines.append('PostUp = sysctl -q -w net.ipv4.ip_forward=1')
+    lines.extend([
+        f'PostUp = iptables -w -D FORWARD {between} {other} 2>/dev/null || true',
+        f'PostUp = iptables -w -C FORWARD {between} {wanted} || iptables -w -I FORWARD 1 {between} {wanted}',
+        f'PostDown = iptables -w -D FORWARD {between} ACCEPT 2>/dev/null || true',
+        f'PostDown = iptables -w -D FORWARD {between} DROP 2>/dev/null || true',
+    ])
+    # Routed LANs are inserted after (above) the rule for the VPN subnet, so a
+    # site-to-site peer keeps working even when clients are isolated.
+    for network in routed_networks:
         for rule in routing_firewall(network):
             lines.append(f'PostUp = iptables -w -C FORWARD {rule} || iptables -w -I FORWARD 1 {rule}')
             lines.append(f'PostDown = iptables -w -D FORWARD {rule} || true')
@@ -496,8 +519,26 @@ def server_config(cfg, peers):
     return '\n'.join(lines) + '\n'
 
 
-def client_config(cfg, p):
-    allowed = '0.0.0.0/0' if cfg['mode'] == 'full' else cfg['subnet']
+def client_allowed_ips(cfg, p, peers=()):
+    """What this client sends into the tunnel.
+
+    Full tunnel: everything. Split tunnel: the VPN subnet plus the LANs that
+    other enabled clients announce (site-to-site); never the client's own LANs.
+    """
+    if cfg['mode'] == 'full':
+        return '0.0.0.0/0'
+    networks = [cfg['subnet']]
+    for other in peers:
+        if not other.get('enabled') or other.get('name') == p.get('name'):
+            continue
+        for net in string_routes(other.get('routed_subnets', '')):
+            if str(net) not in networks:
+                networks.append(str(net))
+    return ', '.join(networks)
+
+
+def client_config(cfg, p, peers=()):
+    allowed = client_allowed_ips(cfg, p, peers)
     return '\n'.join([
         '[Interface]', f'PrivateKey = {p["private_key"]}',
         f'Address = {p["ip"]}/32', f'DNS = {cfg["dns"]}',
@@ -711,7 +752,7 @@ def clients_add(con):
     apply(cfg, con)
     con.commit()
     return {'name':name,'ip':address,'config':client_config(cfg,{
-        'private_key':private,'ip':address,'psk':psk,**cps})}
+        'name':name,'private_key':private,'ip':address,'psk':psk,**cps}, peer_rows(con))}
 
 
 def clients_action(con, which):
@@ -722,7 +763,7 @@ def clients_action(con, which):
     cfg = get_settings(con)
     if which == 'download':
         # Disabled peers remain editable/exportable to the authenticated admin.
-        return {'name':name,'ip':row['ip'],'config':client_config(cfg,dict(row)),
+        return {'name':name,'ip':row['ip'],'config':client_config(cfg,dict(row),peer_rows(con)),
                 'routed_subnets':row['routed_subnets'],
                 'server_ip':cfg['server_ip'], 'subnet':cfg['subnet'],
                 'client_public_key':row['public_key'],
@@ -803,8 +844,11 @@ def settings_update(con):
     obf = validate_obfuscation(request, {**old,**new})
     old_mode = old['mode']
     # A changed route mode changes all exported configs; clients must reimport.
-    cfg = {**old, **new, **obf}
-    stored = {**new, **obf}
+    between = str(request.get('client_to_client', old.get('client_to_client', 'on'))).lower()
+    if between not in ('on', 'off'):
+        raise ValueError('client_to_client: expected on or off')
+    cfg = {**old, **new, **obf, 'client_to_client': between}
+    stored = {**new, **obf, 'client_to_client': between}
     stored['header_key'] = obf['header_key']
     # Refuse mode change to avoid PostDown from the old mode being skipped at restart.
     if new['mode'] != old_mode or new['uplink'] != old['uplink']:
@@ -842,6 +886,7 @@ def live_stats():
 def get_status(con, with_clients=False):
     cfg = get_settings(con)
     result = {k:cfg[k] for k in ('subnet','server_ip','port','mtu','dns','endpoint','mode','uplink','public_key')}
+    result['client_to_client'] = cfg.get('client_to_client', 'on' if cfg['mode'] == 'full' else 'off')
     # Only authenticated dashboard receives this, never the public traffic API.
     result['obfuscation'] = {k:cfg.get(k) for k in ('Jc','Jmin','Jmax',*S_KEYS,*H_KEYS,
                   'ContentPaddingAddition','RandomTrailers','DisableCookies',*TIMING_KEYS)}

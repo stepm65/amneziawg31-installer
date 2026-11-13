@@ -270,7 +270,10 @@ TEXT['en'].update({
 # New peer routing / CPS labels. Kept in both locales and without CDN resources.
 TEXT['ru'].update({
     'peer_routes':'Подсети и адреса за клиентом (IPv4/CIDR)',
-    'peer_routes_hint':'По одной сети на строку или через запятую; добавляются только на СЕРВЕРЕ в AllowedIPs этого peer. Например: 192.168.50.0/24 и 172.20.10.5/32.',
+    'peer_routes_hint':'По одной сети на строку или через запятую. Сети прописываются на СЕРВЕРЕ (AllowedIPs этого клиента и маршрут), в конфигурации самого клиента их нет и быть не должно: это его собственные сети. В режиме split они добавляются в конфигурации остальных клиентов — их нужно скачать заново. Например: 192.168.50.0/24 и 172.20.10.5/32.',
+    'c2c_label':'Связь клиентов между собой', 'c2c_on':'Разрешена: клиенты видят друг друга по VPN-адресам',
+    'c2c_off':'Запрещена: клиенты изолированы друг от друга',
+    'c2c_hint':'Действует внутри VPN-подсети этого сервера. Сети за клиентом (site-to-site) работают в обоих случаях.',
     'peer_routes_short':'Сети за клиентом',
     'cps_enabled':'Использовать I1–I5 для этого клиента',
     'cps_hint':'Опциональные CPS-пакеты, отправляемые клиентом перед handshake. По умолчанию выключены для совместимости QR и приложений. Если включить и оставить поля пустыми, I1 будет создан автоматически (случайные байты).',
@@ -298,7 +301,10 @@ TEXT['ru'].update({
 })
 TEXT['en'].update({
     'peer_routes':'Networks or hosts behind this client (IPv4 CIDR)',
-    'peer_routes_hint':'One CIDR per line or comma-separated; added only on the SERVER to this peer’s AllowedIPs. Examples: 192.168.50.0/24 and 172.20.10.5/32.',
+    'peer_routes_hint':'One CIDR per line or comma-separated. The networks are set on the SERVER (this client’s AllowedIPs and a route); they are not in this client’s own configuration and should not be: they are its own networks. In split mode they are added to the other clients’ configurations, which must be downloaded again. Examples: 192.168.50.0/24 and 172.20.10.5/32.',
+    'c2c_label':'Traffic between clients', 'c2c_on':'Allowed: clients reach each other by VPN address',
+    'c2c_off':'Blocked: clients are isolated from each other',
+    'c2c_hint':'Applies inside this server’s VPN subnet. Networks behind a client (site-to-site) work either way.',
     'peer_routes_short':'Behind-client networks',
     'cps_enabled':'Enable I1–I5 for this client',
     'cps_hint':'Optional client-originated CPS packets sent before handshake. Disabled by default for easier QR/app compatibility. If you enable this and leave the fields empty, I1 is created automatically (random bytes).',
@@ -1499,6 +1505,11 @@ def server_content(request: Request, section: str = 'overview'):
         form_field('port', state['port'], t('server_port')),
         form_field('mtu', state['mtu'], t('mtu_label')),
         form_field('dns', state['dns'], t('client_dns')),
+        '<label class="field" for="client-to-client"><span>' + h(t('c2c_label')) + '</span>'
+        '<select id="client-to-client" name="client_to_client">'
+        + ''.join(f'<option value="{value}"{" selected" if state.get("client_to_client","on")==value else ""}>'
+                  f'{h(t("c2c_"+value))}</option>' for value in ('on','off'))
+        + '</select><small>' + h(t('c2c_hint')) + '</small></label>',
     ])
     obf=state.get('obfuscation') or {}
     obf_labels={key:key for key in OBF_EDIT_FIELDS}
@@ -1724,7 +1735,7 @@ async def settings(request: Request, interface: str = ''):
     form=await request.form()
     require_csrf(request,form.get('csrf',''))
     lang=lang_of(request)
-    payload={k: str(form[k]) for k in ('endpoint','port','mtu','dns') if k in form}
+    payload={k: str(form[k]) for k in ('endpoint','port','mtu','dns','client_to_client') if k in form}
     payload.update({k: str(form[k]) for k in OBF_EDIT_FIELDS if k in form})
     try:
         control(request,'settings',payload)

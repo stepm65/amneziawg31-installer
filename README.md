@@ -14,6 +14,7 @@ Version **0.9.7** · MIT licence · not affiliated with the AmneziaVPN developer
 - **Random obfuscation per server.** `S1–S4`, `H1–H4`, `Jc`, `HeaderProtectionKey` are generated for every server, including the first one, and can be regenerated in the panel.
 - **Several independent servers** (`awg0`, `awg1`, … up to 8), each with its own keys, subnet, UDP port and clients.
 - **Clients:** `.conf` download, QR code, `vpn://` link for AmneziaVPN, comment, expiry date, traffic quota, networks behind a client (site-to-site), bulk delete.
+- **Client-to-client switch** per server: clients either reach each other by VPN address or are isolated by an explicit firewall rule. Networks behind a client keep working in both states, and in split mode they are added to the other clients' configurations.
 - **I1–I5 packets:** a Generate button for each field and ready-made templates for `I1` (random bytes, DNS query, STUN binding request, QUIC-shaped packet). Enabling them with empty fields creates `I1` automatically.
 - **Monitoring:** host CPU, RAM, swap, disk and uplink traffic, per-server traffic charts, 30 days of history collected by a systemd timer.
 - **Backups:** full archives with checksums, download, schedule (daily or weekly), retention, restore with a safety snapshot.
