@@ -4,7 +4,7 @@
 
 An installer and a web console for running **AmneziaWG 3.1** on your own server: a kernel module built with DKMS, an interactive setup wizard and a bilingual (EN/RU) panel for servers, clients, traffic and backups. No Docker, no control plane in the cloud, nothing loaded from a CDN.
 
-Version **0.9.6** · MIT licence · not affiliated with the AmneziaVPN developers.
+Version **0.9.7** · MIT licence · not affiliated with the AmneziaVPN developers.
 
 ![Infrastructure overview](docs/screenshots/en-dashboard.png)
 
@@ -102,7 +102,10 @@ Screenshots show demo data.
 | Random bytes | one packet of 40–119 random bytes |
 | DNS query | a well-formed A-record query for a popular domain, random ID |
 | STUN binding request | a 20-byte RFC 5389 request with a random transaction ID |
-| QUIC Initial | the header shape of a QUIC v1 Initial padded to 1200 bytes; the payload is random |
+| QUIC Initial with ClientHello | a complete 1200-byte QUIC v1 Initial with a TLS 1.3 ClientHello and the server name (SNI) you choose; it decrypts as genuine QUIC and is accepted by a real QUIC server implementation in the tests |
+| QUIC Initial, shape only | the same header and size, random payload, random connection ID on every send; short notation that fits into a QR code, but it does not decrypt as QUIC |
+
+Short notation does not mean a small packet: `<r 1000>` is 1000 random bytes on the wire. The ClientHello template is written as a 2400-character hex string, is the same on every connection and does not fit into a QR code, so give the client the `.conf` file. You can also paste your own captured packet as `<b 0x…>`.
 
 Templates only set the shape of the first packets. Whether they help against a particular filter depends on that network, so test them where you use the VPN. After changing I1–I5, import the client configuration again.
 
@@ -181,7 +184,7 @@ Also not yet confirmed on a live server: restoring a backup, running several ser
 ## Development
 
 ```bash
-python -m pip install -r src/requirements.txt pytest httpx
+python -m pip install -r src/requirements.txt pytest httpx cryptography
 python -m pytest -q
 ```
 

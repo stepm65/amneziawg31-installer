@@ -16,6 +16,7 @@ from datetime import datetime, timezone
 
 import qrcode
 from amnezialink import build_vpn_uri
+import quicinitial
 from fastapi import FastAPI, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from fastapi.exception_handlers import http_exception_handler
@@ -278,8 +279,11 @@ TEXT['ru'].update({
     'cps_preset_random':'Случайные байты (нейтрально)',
     'cps_preset_dns':'DNS-запрос (A-запись популярного домена)',
     'cps_preset_stun':'STUN Binding Request (как у звонков WebRTC)',
-    'cps_preset_quic':'QUIC Initial — только форма заголовка, 1200 байт',
-    'cps_preset_note':'Шаблоны задают форму первого пакета. Это не гарантия обхода блокировок: проверяйте на своей сети. Кнопка у поля подставляет случайные байты.',
+    'cps_preset_quictls':'QUIC Initial с настоящим ClientHello и SNI (1200 байт)',
+    'cps_preset_quic':'QUIC Initial — только форма, случайное содержимое (короткая запись)',
+    'cps_host':'Домен для SNI (шаблон QUIC с ClientHello)',
+    'cps_host_hint':'Выберите сайт, который в вашей сети открывается по HTTP/3 и не блокируется.',
+    'cps_preset_note':'Короткая запись не значит маленький пакет: <r 1000> — это 1000 случайных байт в сети. Шаблон «QUIC с ClientHello» даёт пакет, который расшифровывается как настоящий QUIC и содержит выбранный SNI; он записывается длинной hex-строкой, одинаков при каждом подключении и не помещается в QR — передавайте клиенту файл .conf. Шаблоны не гарантируют обход блокировок: проверяйте на своей сети. Кнопка у поля подставляет случайные байты.',
     'server_remove_type':'Введите имя сервера для удаления',
     'obf_static_warning':'У этого сервера стоят статические параметры H1–H4 = 1, 2, 3, 4 — такие же заголовки, как у обычного WireGuard, и одинаковые на всех установках. Нажмите «Сгенерировать параметры», сохраните и заново раздайте конфигурации клиентам.',
     'cps_label':'Дополнительные пакеты I1–I5 (опционально)',
@@ -303,8 +307,11 @@ TEXT['en'].update({
     'cps_preset_random':'Random bytes (neutral)',
     'cps_preset_dns':'DNS query (A record of a popular domain)',
     'cps_preset_stun':'STUN Binding Request (as used by WebRTC calls)',
-    'cps_preset_quic':'QUIC Initial — header shape only, 1200 bytes',
-    'cps_preset_note':'Templates set the shape of the first packet. They do not guarantee that blocking is bypassed: test on your own network. The button next to a field inserts random bytes.',
+    'cps_preset_quictls':'QUIC Initial with a genuine ClientHello and SNI (1200 bytes)',
+    'cps_preset_quic':'QUIC Initial — shape only, random payload (short notation)',
+    'cps_host':'Server name for SNI (QUIC template with ClientHello)',
+    'cps_host_hint':'Pick a site that opens over HTTP/3 on your network and is not blocked.',
+    'cps_preset_note':'Short notation does not mean a small packet: <r 1000> is 1000 random bytes on the wire. The “QUIC with ClientHello” template produces a packet that decrypts as genuine QUIC and carries the chosen SNI; it is written as a long hex string, is identical on every connection and does not fit into a QR code, so hand the client the .conf file. Templates do not guarantee that blocking is bypassed: test on your own network. The button next to a field inserts random bytes.',
     'server_remove_type':'Type the server name to delete it',
     'obf_static_warning':'This server uses the static values H1–H4 = 1, 2, 3, 4: the same headers as plain WireGuard and identical on every installation. Press “Generate parameters”, save, and hand out the client configurations again.',
     'cps_label':'Additional I1–I5 packets (optional)',
@@ -1036,12 +1043,13 @@ def obfuscation_generate(request: Request, interface: str = '', timing_ranges: b
     return Response(json.dumps(params),media_type='application/json',
                     headers={'Cache-Control':'no-store'})
 
-CPS_PRESETS = ('random', 'dns', 'stun', 'quic')
+CPS_PRESETS = ('random', 'dns', 'stun', 'quictls', 'quic')
+CPS_SNI_SUGGESTIONS = ('www.google.com', 'www.cloudflare.com', 'www.youtube.com', 'yandex.ru', 'vk.com')
 CPS_DNS_NAMES = ('www.google.com', 'www.cloudflare.com', 'www.microsoft.com', 'www.apple.com',
                  'www.wikipedia.org', 'www.github.com')
 
 
-def cps_value(preset='random'):
+def cps_value(preset='random', host=''):
     """Build one I-packet expression accepted by awg31ctl.validate_i_fields.
 
     Only the framing is fixed; identifiers and payload stay random on every send.
@@ -1054,6 +1062,10 @@ def cps_value(preset='random'):
     if preset == 'stun':
         # RFC 5389 Binding Request: type, zero length, magic cookie, 96-bit transaction ID.
         return '<b 0x000100002112a442><r 12>'
+    if preset == 'quictls':
+        # A complete QUIC v1 Initial with a TLS 1.3 ClientHello for `host`: unlike
+        # the shape-only template below, it survives decryption by a middlebox.
+        return '<b 0x' + quicinitial.build_initial(host or CPS_SNI_SUGGESTIONS[0]).hex() + '>'
     if preset == 'quic':
         # RFC 9000 long header of an Initial packet padded to 1200 bytes:
         # flags, version 1, 8-byte DCID, empty SCID and token, 2-byte length.
@@ -1062,11 +1074,15 @@ def cps_value(preset='random'):
 
 
 @app.get('/api/cps/generate')
-def cps_generate(request: Request, preset: str = 'random'):
+def cps_generate(request: Request, preset: str = 'random', host: str = ''):
     require_auth(request)
     if preset not in CPS_PRESETS:
         raise HTTPException(422, 'Invalid preset')
-    return Response(json.dumps({'preset': preset, 'value': cps_value(preset)}),
+    try:
+        value = cps_value(preset, host)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from None
+    return Response(json.dumps({'preset': preset, 'value': value}),
                     media_type='application/json', headers={'Cache-Control': 'no-store'})
 
 
@@ -1087,6 +1103,10 @@ def cps_block(prefix, values, checked, lang, extra=''):
           <p class="info-line">{h(t('cps_hint'))}</p>{extra}
           <div class="cps-preset"><label class="field" for="{prefix}-cps-preset"><span>{h(t('cps_preset'))}</span>
           <select id="{prefix}-cps-preset" data-cps-preset>{options}</select></label>
+          <label class="field" for="{prefix}-cps-host"><span>{h(t('cps_host'))}</span>
+          <input id="{prefix}-cps-host" type="text" data-cps-host list="{prefix}-cps-hosts" value="{CPS_SNI_SUGGESTIONS[0]}"
+                 maxlength="100" spellcheck="false" autocapitalize="off" autocomplete="off" title="{h(t('cps_host_hint'))}">
+          <datalist id="{prefix}-cps-hosts">{''.join(f'<option value="{name}">' for name in CPS_SNI_SUGGESTIONS)}</datalist></label>
           <button type="button" class="btn btn-secondary" data-cps-apply="{prefix}-i1">{h(t('cps_preset_apply'))}</button></div>
           <p class="cps-warning">{h(t('cps_preset_note'))}</p>
           <div class="cps-fields">{fields}</div></details>'''
@@ -1921,7 +1941,7 @@ def qr(request: Request, name: str, mode: str = 'conf', download: bool = False, 
         payload = obj['config']
     try:
         pic = qrcode.make(payload, error_correction=qrcode.constants.ERROR_CORRECT_L)
-    except qrcode.exceptions.DataOverflowError:
+    except (qrcode.exceptions.DataOverflowError, ValueError):
         raise HTTPException(status_code=422, detail=tr(lang_of(request), 'qr_overflow')) from None
     buffer = io.BytesIO()
     pic.save(buffer, format='PNG')

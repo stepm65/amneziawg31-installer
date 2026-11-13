@@ -7,6 +7,7 @@ No test touches a real interface, systemd, sudo or the system configuration.
 """
 import importlib.util
 import json
+import os
 import re
 import sqlite3
 import subprocess
@@ -315,7 +316,7 @@ def test_cps_editor_has_generate_buttons_and_templates(ui):
         assert f'data-cps-apply="{prefix}-i1"' in html and 'data-cps-preset' in html
         assert all(f'<option value="{name}">' in html for name in ('random', 'dns', 'stun', 'quic'))
     script = (ROOT / 'src/panel.js').read_text()
-    assert '/api/cps/generate?preset=' in script and 'innerHTML = data' not in script
+    assert "'/api/cps/generate?'" in script and 'innerHTML = data' not in script
 
 
 # --- self-hosted fonts --------------------------------------------------------
@@ -383,3 +384,121 @@ def test_dashboard_chart_labels_follow_the_interface_language(ui):
     assert '>Now<' in english and '>15m<' in english and 'Peak: —' in english
     assert 'Сейчас' not in english and '15м' not in english
     assert "'−5m'" in (ROOT / 'src/panel.js').read_text()
+
+
+# --- genuine QUIC Initial template and large I1 values -----------------------
+
+def load_quic():
+    spec = importlib.util.spec_from_file_location('quicinitial_tests', ROOT / 'src/quicinitial.py')
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_builtin_aes_gcm_matches_published_vectors():
+    quic = load_quic()
+    # FIPS-197 appendix C.1
+    assert quic.aes128_encrypt_block(bytes(range(16)), bytes.fromhex('00112233445566778899aabbccddeeff')).hex() == \
+        '69c4e0d86a7b0430d8cdb78070b4c55a'
+    # GCM specification, test case 2
+    assert quic.aes128_gcm_encrypt(bytes(16), bytes(12), bytes(16), b'').hex() == \
+        '0388dace60b6a392f328c2b971b2fe78' + 'ab6e47d42cec13bdf53a67b21257bddf'
+    # RFC 9001 appendix A.1
+    key, iv, hp = quic.client_initial_keys(bytes.fromhex('8394c8f03e515708'))
+    assert (key.hex(), iv.hex(), hp.hex()) == ('1f369613dd76d5467730efcbe3b1a22d', 'fa044b2f42a3fd3b46fb255c',
+                                               '9f50449e04a0e810283a1e9933adedd2')
+
+
+def test_quic_initial_has_the_wire_format_of_a_client_initial():
+    quic = load_quic()
+    packet = quic.build_initial('WWW.Example.com.')
+    assert len(packet) == 1200 and packet[0] & 0xf0 == 0xc0          # long header, Initial
+    assert packet[1:5] == b'\x00\x00\x00\x01' and packet[5] == 8     # QUIC v1, 8-byte DCID
+    assert packet[14:16] == b'\x00\x00'                              # empty SCID and token
+    assert int.from_bytes(packet[16:18], 'big') & 0x3fff == 1200 - 18
+    assert quic.build_initial('www.example.com') != quic.build_initial('www.example.com')
+    for bad in ('localhost', '1.2.3.4', 'a..b', 'exa mple.com', '-a.com', 'a.com;id', 'x' * 120 + '.com', ''):
+        with pytest.raises(ValueError):
+            quic.build_initial(bad)
+
+
+def test_quic_initial_decrypts_with_an_independent_implementation():
+    aead = pytest.importorskip('cryptography.hazmat.primitives.ciphers.aead')
+    ciphers = pytest.importorskip('cryptography.hazmat.primitives.ciphers')
+    quic = load_quic()
+    for _ in range(20):
+        data, key = os.urandom(16), os.urandom(16)
+        reference = ciphers.Cipher(ciphers.algorithms.AES(key), ciphers.modes.ECB()).encryptor().update(data)
+        assert quic.aes128_encrypt_block(key, data) == reference
+    packet = quic.build_initial('www.example.com')
+    key, iv, hp = quic.client_initial_keys(packet[6:14])
+    mask = ciphers.Cipher(ciphers.algorithms.AES(hp), ciphers.modes.ECB()).encryptor().update(packet[22:38])
+    first = packet[0] ^ (mask[0] & 0x0f)
+    assert first == 0xc0                                             # 1-byte packet number, reserved bits clear
+    number = bytes([packet[18] ^ mask[1]])
+    nonce = bytes(a ^ b for a, b in zip(iv, number.rjust(12, b'\x00')))
+    plain = aead.AESGCM(key).decrypt(nonce, packet[19:], bytes([first]) + packet[1:18] + number)
+    assert plain[:2] == b'\x06\x00'                                  # CRYPTO frame at offset 0
+    length = int.from_bytes(plain[2:4], 'big') & 0x3fff
+    hello = plain[4:4 + length]
+    assert hello[0] == 1 and int.from_bytes(hello[1:4], 'big') == len(hello) - 4   # ClientHello
+    assert b'\x00\x0fwww.example.com' in hello and b'\x02h3' in hello and b'\x03\x04' in hello
+    assert set(plain[4 + length:]) == {0}                            # PADDING only
+
+
+def test_quic_clienthello_template_is_offered_and_validated(ui):
+    module, client, _ = ui
+    assert module.CPS_PRESETS.index('quictls') < module.CPS_PRESETS.index('quic')
+    reply = client.get('/api/cps/generate', params={'preset': 'quictls', 'host': 'www.example.com'})
+    assert reply.status_code == 200
+    value = reply.json()['value']
+    assert re.fullmatch(r'<b 0x[0-9a-f]{2400}>', value)
+    assert ctl.validate_i_fields({'i_enabled': '1', 'i1': value})['i1'] == value
+    bad = client.get('/api/cps/generate', params={'preset': 'quictls', 'host': 'not a host'})
+    assert bad.status_code == 422 and 'DNS name' in bad.json()['detail']
+    page = client.get('/servers/awg0/clients').text
+    assert 'data-cps-host' in page and '<option value="quictls">' in page
+    script = (ROOT / 'src/panel.js').read_text()
+    assert "preset === 'quictls' ? '&host='" in script
+
+
+def test_large_captured_packet_is_kept_exactly_and_line_breaks_are_joined():
+    captured = '<b 0xc70000000108ce1bf31eec7d93360000449e' + 'ab' * 1182 + '>'      # 1200 bytes, like a real capture
+    assert len(captured) == 2406
+    kept = ctl.validate_i_fields({'i_enabled': '1', 'i1': captured})
+    assert kept['i1'] == captured
+    wrapped = captured[:900] + '\r\n' + captured[900:1700] + '\n' + captured[1700:]
+    assert ctl.validate_i_fields({'i_enabled': '1', 'i1': wrapped})['i1'] == captured
+    five = ctl.validate_i_fields({'i_enabled': '1', **{f'i{n}': captured for n in range(1, 6)}})   # 6000 bytes
+    assert all(five[f'i{n}'] == captured for n in range(1, 6))
+    with pytest.raises(ValueError, match='8192'):
+        ctl.validate_i_fields({'i_enabled': '1', **{f'i{n}': '<b 0x' + 'ab' * 1700 + '>' for n in range(1, 6)}})
+    cfg = dict(subnet='10.77.10.0/24', server_ip='10.77.10.1', port=51820, mtu=1280, endpoint='vpn.example.net',
+               dns='1.1.1.1', mode='full', uplink='ens3', private_key='a' * 44, public_key='b' * 44,
+               header_key='c' * 44, Jc=4, Jmin=10, Jmax=50, S1=20, S2=30, S3=40, S4=50)
+    peer = {'name': 'p', 'ip': '10.77.10.2', 'private_key': 'q' * 44, 'public_key': 'p' * 44, 'psk': 'k' * 44,
+            'enabled': 1, **kept}
+    assert f'\nI1 = {captured}\n' in ctl.client_config(cfg, peer)
+    assert 'I1 =' not in ctl.server_config(cfg, [peer])              # client-side only
+
+
+def test_oversized_qr_is_a_clean_422_and_the_page_explains_it(ui):
+    module, client, _ = ui
+    original = module.ctl
+    huge = '[Interface]\nPrivateKey = TEST_ONLY\nI1 = <b 0x' + 'ab' * 1600 + '>\n'
+
+    def big(op, data=None):
+        result = original(op, data)
+        if op == 'download':
+            result['config'] = huge
+        return result
+    module.ctl = big
+    assert client.get('/servers/awg0/clients/alpha/qr?mode=conf').status_code == 422
+    page = client.get('/servers/awg0/clients/alpha')
+    assert page.status_code == 200 and 'qr-too-large' in page.text and 'qr?mode=conf"' not in page.text
+    assert client.get('/servers/awg0/clients/alpha/download').text == huge
+
+
+def test_every_installer_ships_the_quic_module():
+    for name in ('scripts/setup-wizard.sh', 'scripts/upgrade-core.sh', 'scripts/upgrade-ui.sh'):
+        assert 'quicinitial.py' in (ROOT / name).read_text(), name

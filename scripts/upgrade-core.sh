@@ -14,16 +14,16 @@ SUD=/etc/sudoers.d/awg31-panel
 # The installed application and controller are checked below.
 [[ -f "$APP/web.py" && -x "$APP/.venv/bin/python3" && -f "$CTR" ]] || die 'Existing panel/controller missing'
 id awgpanel >/dev/null 2>&1 || die 'awgpanel user not found'
-for f in web.py amnezialink.py panel.css md3.css panel.js awg31ctl awg31mgr awg31admin.py; do
+for f in web.py amnezialink.py quicinitial.py panel.css md3.css panel.js awg31ctl awg31mgr awg31admin.py; do
     [[ -f "$DIR/src/$f" ]] || die "Missing src/$f"
 done
 [[ -f "$DIR/scripts/sudoers.sh" ]] || die 'Missing scripts/sudoers.sh'
 compgen -G "$DIR/src/fonts/*.woff2" >/dev/null || die 'Missing src/fonts/*.woff2'
-"$APP/.venv/bin/python3" -m py_compile "$DIR/src/web.py" "$DIR/src/amnezialink.py"
+"$APP/.venv/bin/python3" -m py_compile "$DIR/src/web.py" "$DIR/src/amnezialink.py" "$DIR/src/quicinitial.py"
 python3 -m py_compile "$DIR/src/awg31ctl" "$DIR/src/awg31mgr" "$DIR/src/awg31admin.py"
 backup="$(mktemp -d /var/backups/awg31-upgrade.XXXXXXXX)"
 chmod 700 "$backup"
-for spec in "$APP/web.py:web.py" "$APP/amnezialink.py:amnezialink.py" "$APP/panel.css:panel.css" "$APP/md3.css:md3.css" "$APP/panel.js:panel.js" \
+for spec in "$APP/web.py:web.py" "$APP/amnezialink.py:amnezialink.py" "$APP/quicinitial.py:quicinitial.py" "$APP/panel.css:panel.css" "$APP/md3.css:md3.css" "$APP/panel.js:panel.js" \
             "$CTR:awg31ctl" "$MGR:awg31mgr" "/usr/local/sbin/awg31admin.py:awg31admin.py" "$SUD:sudoers"; do
     src="${spec%%:*}"; dst="${spec#*:}"
     if [[ -f "$src" ]]; then cp -p -- "$src" "$backup/$dst"; fi
@@ -50,7 +50,7 @@ for source in Path('/etc/amnezia/amneziawg').glob('awg*.conf'):
 PY_BACKUP
 restore(){
     say "Rolling back application files from $backup"
-    for spec in "$APP/web.py:web.py" "$APP/amnezialink.py:amnezialink.py" "$APP/panel.css:panel.css" "$APP/md3.css:md3.css" "$APP/panel.js:panel.js" \
+    for spec in "$APP/web.py:web.py" "$APP/amnezialink.py:amnezialink.py" "$APP/quicinitial.py:quicinitial.py" "$APP/panel.css:panel.css" "$APP/md3.css:md3.css" "$APP/panel.js:panel.js" \
                 "$CTR:awg31ctl" "$MGR:awg31mgr" "/usr/local/sbin/awg31admin.py:awg31admin.py" "$SUD:sudoers"; do
         dst="${spec%%:*}"; name="${spec#*:}"
         if [[ -e "$backup/$name" ]]; then cp -p -- "$backup/$name" "$dst";
@@ -74,6 +74,7 @@ awg31_install_sudoers "$SUD" || die 'Cannot install sudoers allowlist'
 visudo -c >/dev/null
 say 'Updating web UI files'
 install -o root -g root -m 644 "$DIR/src/amnezialink.py" "$APP/amnezialink.py"
+install -o root -g root -m 644 "$DIR/src/quicinitial.py" "$APP/quicinitial.py"
 install -o root -g root -m 644 "$DIR/src/web.py" "$APP/web.py"
 install -o root -g root -m 644 "$DIR/src/panel.css" "$APP/panel.css"
 install -o root -g root -m 644 "$DIR/src/md3.css" "$APP/md3.css"

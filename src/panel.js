@@ -248,9 +248,15 @@
       if (!target) return;
       button.disabled = true;
       try {
-        const reply = await fetch('/api/cps/generate?preset=' + encodeURIComponent(preset), {
-          credentials:'same-origin', cache:'no-store'
-        });
+        const host = box.querySelector('[data-cps-host]')?.value.trim() || '';
+        const query = 'preset=' + encodeURIComponent(preset) +
+          (preset === 'quictls' ? '&host=' + encodeURIComponent(host) : '');
+        const reply = await fetch('/api/cps/generate?' + query, {credentials:'same-origin', cache:'no-store'});
+        if (reply.status === 422) {
+          const problem = await reply.json().catch(() => ({}));
+          window.alert(String(problem.detail || box.dataset.cpsError));
+          return;
+        }
         if (!reply.ok) throw new Error(`HTTP ${reply.status}`);
         const data = await reply.json();
         target.value = String(data.value || '');

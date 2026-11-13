@@ -13,8 +13,8 @@ APP=/opt/awg31-panel
 # The UI needs a controller with backup scheduling; otherwise run the full upgrade.
 [[ -f /usr/local/sbin/awg31mgr ]] && grep -Fq "backup-policy-set" /usr/local/sbin/awg31mgr && \
 [[ -f /etc/systemd/system/awg31-backup.service ]] || die "Run sudo bash scripts/upgrade-core.sh first: the installed controller is older than this UI"
-for asset in web.py md3.css panel.js; do
-  [[ -f "$ROOT/src/$asset" && -f "$APP/$asset" ]] || die "Missing required file $asset"
+for asset in web.py quicinitial.py md3.css panel.js; do
+  [[ -f "$ROOT/src/$asset" ]] || die "Missing required file $asset"
 done
 "$APP/.venv/bin/python3" -m py_compile "$ROOT/src/web.py" || die 'Python compile check failed'
 command -v systemctl >/dev/null || die 'systemctl is missing'
@@ -23,17 +23,17 @@ port="$(systemctl cat awg31-panel.service | sed -nE 's/.*--port ([0-9]+).*/\1/p'
 [[ "$port" =~ ^[0-9]+$ ]] || die 'Unable to detect localhost panel port'
 backup="$(mktemp -d /var/backups/awg31-ui.XXXXXXXX)"
 chmod 700 "$backup"
-for asset in web.py md3.css panel.js; do cp -p -- "$APP/$asset" "$backup/$asset"; done
+for asset in web.py quicinitial.py md3.css panel.js; do [[ ! -f "$APP/$asset" ]] || cp -p -- "$APP/$asset" "$backup/$asset"; done
 finished=0
 rollback(){
   if [[ "$finished" -eq 0 ]]; then
     say "Update failed; restoring previous UI from $backup"
-    for asset in web.py md3.css panel.js; do cp -p -- "$backup/$asset" "$APP/$asset"; done
+    for asset in web.py quicinitial.py md3.css panel.js; do if [[ -f "$backup/$asset" ]]; then cp -p -- "$backup/$asset" "$APP/$asset"; else rm -f -- "$APP/$asset"; fi; done
     systemctl restart awg31-panel.service || true
   fi
 }
 trap rollback EXIT
-for asset in web.py md3.css panel.js; do
+for asset in web.py quicinitial.py md3.css panel.js; do
   install -o root -g root -m 644 "$ROOT/src/$asset" "$APP/$asset"
 done
 if compgen -G "$ROOT/src/fonts/*" >/dev/null; then

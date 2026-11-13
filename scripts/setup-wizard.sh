@@ -158,6 +158,7 @@ install -d -o root -g root -m 755 /usr/local/libexec/awg31/scripts
 install -o root -g root -m 755 "$DIR/scripts/restore-backup.py" /usr/local/libexec/awg31/scripts/restore-backup.py
 install -o root -g root -m 644 "$DIR/src/web.py" /opt/awg31-panel/web.py
 install -o root -g root -m 644 "$DIR/src/amnezialink.py" /opt/awg31-panel/amnezialink.py
+install -o root -g root -m 644 "$DIR/src/quicinitial.py" /opt/awg31-panel/quicinitial.py
 install -o root -g root -m 644 "$DIR/src/panel.css" /opt/awg31-panel/panel.css
 install -o root -g root -m 644 "$DIR/src/md3.css" /opt/awg31-panel/md3.css
 install -o root -g root -m 644 "$DIR/src/panel.js" /opt/awg31-panel/panel.js

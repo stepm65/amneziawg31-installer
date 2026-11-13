@@ -276,9 +276,11 @@ def validate_i_fields(payload, previous=None):
     result = {'i_enabled': is_on}
     expanded_size = 0
     for key in I_KEYS:
-        value = str(payload.get(key, previous.get(key, ''))).strip()
-        if len(value) > 16384 or '\n' in value or '\r' in value:
-            raise ValueError(f'{key}: value is too long')
+        # A long hex packet pasted from a wrapped terminal or a chat often carries
+        # line breaks: join the lines instead of rejecting the value.
+        value = re.sub(r'[\r\n]+', '', str(payload.get(key, previous.get(key, '')))).strip()
+        if len(value) > 16384:
+            raise ValueError(f'{key}: longer than 16384 characters')
         if value:
             tokens = list(I_TAG.finditer(value))
             if not tokens or ''.join(m.group() for m in tokens) != re.sub(r'\s+(?=<)', '', value):

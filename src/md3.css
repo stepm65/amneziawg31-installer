@@ -1030,3 +1030,6 @@ body {background:var(--ui-bg);font-size:14px;line-height:1.48;}
 .confirm-name:not(:placeholder-shown):invalid{border-color:var(--md-sys-color-error,#f2b8b5)}
 .obf-static-warning{display:flex;gap:10px;align-items:flex-start;margin:12px 0;padding:12px 14px;border-radius:12px;border:1px solid #8a6a2a;background:rgba(248,180,68,.10);color:#ffd591;font-size:13px;line-height:1.5}
 .obf-static-warning .icon{flex:none;margin-top:2px}
+/* Long hex packets wrap inside the field instead of running off in one line. */
+.cps-field textarea{white-space:pre-wrap;overflow-wrap:anywhere;word-break:break-all}
+.cps-preset .field input{width:100%}
