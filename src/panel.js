@@ -36,11 +36,54 @@
   });
   // Server selection is done with real links in the sidebar; no stored global selector.
   document.body.classList.remove("nav-collapsed");
+  // Native dialog is part of the panel, not a browser confirm popup.
+  const modal = document.createElement('dialog');
+  modal.className = 'awg-confirm-dialog';
+  modal.innerHTML = '<div class="awg-confirm-content"><h2></h2><p></p><div class="awg-confirm-actions"><button type="button" class="btn btn-secondary" data-cancel></button><button type="button" class="btn btn-primary" data-accept></button></div></div>';
+  document.body.append(modal);
+  const isRu = document.documentElement.lang === 'ru';
+  modal.querySelector('h2').textContent = isRu ? 'Подтверждение действия' : 'Confirm action';
+  modal.querySelector('[data-cancel]').textContent = isRu ? 'Отмена' : 'Cancel';
+  modal.querySelector('[data-accept]').textContent = isRu ? 'Подтвердить' : 'Confirm';
+  const close = () => modal.close();
+  modal.querySelector('[data-cancel]').addEventListener('click', close);
+  let confirmedForm = null;
+  modal.querySelector('[data-accept]').addEventListener('click', () => {
+    const form = confirmedForm;
+    confirmedForm = null;
+    close();
+    if (form) { form.dataset.confirmed = '1'; form.requestSubmit(); }
+  });
+  modal.addEventListener('close', () => { confirmedForm = null; });
   for (const form of document.querySelectorAll('form[data-confirm]')) {
     form.addEventListener('submit', (event) => {
-      if (!window.confirm(form.dataset.confirm)) event.preventDefault();
+      if (form.dataset.confirmed === '1') { delete form.dataset.confirmed; return; }
+      if (!form.dataset.confirm) return;
+      event.preventDefault();
+      confirmedForm = form;
+      modal.querySelector('p').textContent = form.dataset.confirm;
+      modal.showModal();
     });
   }
+  const peerCheckboxes = [...document.querySelectorAll('.peer-select')];
+  const allPeers = byId('select-all-peers');
+  const bulkButton = byId('bulk-delete-button');
+  const bulkCount = byId('bulk-selection-count');
+  function updatePeerSelection() {
+    const selected = peerCheckboxes.filter(x => x.checked).length;
+    if (bulkButton) bulkButton.disabled = selected === 0;
+    if (bulkCount) bulkCount.textContent = (isRu ? 'Выбрано: ' : 'Selected: ') + selected;
+    if (allPeers) {
+      allPeers.checked = peerCheckboxes.length > 0 && selected === peerCheckboxes.length;
+      allPeers.indeterminate = selected > 0 && selected < peerCheckboxes.length;
+    }
+  }
+  allPeers?.addEventListener('change', () => {
+    peerCheckboxes.forEach(x => { x.checked = allPeers.checked; });
+    updatePeerSelection();
+  });
+  peerCheckboxes.forEach(x => x.addEventListener('change', updatePeerSelection));
+
   const search = byId('client-search');
   const filter = byId('client-filter');
   function applyFilter() {
