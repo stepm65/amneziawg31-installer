@@ -64,7 +64,7 @@ install -o root -g root -m 644 "$DIR/src/awg31admin.py" /usr/local/sbin/awg31adm
 install -d -o root -g root -m 755 /usr/local/libexec/awg31/scripts
 install -o root -g root -m 755 "$DIR/scripts/restore-backup.py" /usr/local/libexec/awg31/scripts/restore-backup.py
 say 'Checking existing server inventory'
-"$MGR" servers
+"$MGR" servers </dev/null
 say 'Installing narrowly scoped sudo permission'
 tmp="$(mktemp /etc/sudoers.d/.awg31-panel.XXXXXX)"
 cat >"$tmp" <<'EOF'
@@ -87,7 +87,7 @@ systemctl restart awg31-panel.service
 sleep 2
 systemctl is-active --quiet awg31-panel.service || die 'Panel failed to start'
 curl --noproxy '*' -4fsS --max-time 8 "http://127.0.0.1:$port/health" >/dev/null || die 'Health check failed'
-runuser -u awgpanel -- sudo -n "$MGR" servers >/dev/null || die 'Panel sudo permission failed'
+runuser -u awgpanel -- sudo -n "$MGR" servers </dev/null >/dev/null || die 'Panel sudo permission failed'
 completed=1
 trap - EXIT
 install -d -o root -g root -m 755 /usr/local/libexec/awg31/scripts

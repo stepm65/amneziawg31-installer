@@ -136,3 +136,27 @@ def test_server_creation_form_is_authenticated_and_csrf_protected(tmp_path, monk
     result=c.post('/server/create',data=payload,follow_redirects=False)
     assert result.status_code==303
     assert 'awg31_server=awg1' in result.headers['set-cookie']
+
+
+def test_manager_servers_does_not_read_interactive_stdin(tmp_path, monkeypatch):
+    class UnexpectedRead:
+        def isatty(self): return True
+        def read(self, *args): raise AssertionError("stdin must not be read")
+    monkeypatch.setattr(mgr.sys, 'stdin', UnexpectedRead())
+    monkeypatch.setattr(mgr.sys, 'argv', ['awg31mgr', 'servers'])
+    monkeypatch.setattr(mgr, 'BASE', tmp_path / 'db')
+    monkeypatch.setattr(mgr, 'CONFIG_DIR', tmp_path / 'cfg')
+    monkeypatch.setattr(mgr.os, 'geteuid', lambda: 0)
+    assert mgr.main() == {'servers': []}
+
+
+def test_manager_servers_ignores_non_tty_payload(tmp_path, monkeypatch):
+    class UnexpectedRead:
+        def isatty(self): return False
+        def read(self, *args): raise AssertionError("stdin must not be read")
+    monkeypatch.setattr(mgr.sys, 'stdin', UnexpectedRead())
+    monkeypatch.setattr(mgr.sys, 'argv', ['awg31mgr', 'servers'])
+    monkeypatch.setattr(mgr, 'BASE', tmp_path / 'db')
+    monkeypatch.setattr(mgr, 'CONFIG_DIR', tmp_path / 'cfg')
+    monkeypatch.setattr(mgr.os, 'geteuid', lambda: 0)
+    assert mgr.main() == {'servers': []}

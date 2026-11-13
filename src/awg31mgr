@@ -133,7 +133,9 @@ def main():
     if len(sys.argv)!=2 or sys.argv[1] not in OPS|ADMIN:
         raise ValueError('Unsupported operation')
     op=sys.argv[1]
-    raw=sys.stdin.read(16384)
+    # Commands without a payload must never wait for terminal or pipe EOF.
+    no_payload = {'servers', 'sample-all', 'backup-create', 'backup-list', 'audit-list'}
+    raw = '' if op in no_payload or sys.stdin.isatty() else sys.stdin.read(16384)
     data=json.loads(raw) if raw.strip() else {}
     if not isinstance(data,dict): raise ValueError('Expected JSON object')
     admin=SourceFileLoader('awg31admin',str(Path(__file__).with_name('awg31admin.py'))).load_module()
