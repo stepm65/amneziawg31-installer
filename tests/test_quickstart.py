@@ -96,7 +96,7 @@ def test_release_workflow_builds_what_the_installer_downloads():
     assert 'scripts/build-release.sh "$GITHUB_REF_NAME" dist' in workflow
     assert 'python -m pytest -q' in workflow                     # no release from a red tree
     # A release drafted on github.com gets the same files instead of failing the job.
-    assert 'types: [published]' in workflow and 'gh release upload "$GITHUB_REF_NAME" dist/* --clobber' in workflow
+    assert 'types: [published]' in workflow and 'scripts/publish-release.sh "$GITHUB_REF_NAME" dist' in workflow
     build = (ROOT / 'scripts/build-release.sh').read_text()
     assert 'asset="awg31-console-$tag.tar.gz"' in build
     assert 'asset="awg31-console-$tag.tar.gz"' in INSTALL.read_text()
@@ -280,3 +280,85 @@ def test_latest_lookup_survives_an_api_outage_through_the_redirect(github):
     result = run()
     assert result.returncode == 0, result.stderr
     assert f'Downloading release {tag}' in result.stdout
+
+
+# --- publishing: titles and notes are filled in, never overwritten ------------
+
+FAKE_GH = r'''#!/usr/bin/env bash
+# Stand-in for the gh CLI: one release kept in $GH_STATE, every call logged.
+echo "$*" >> "$GH_STATE/calls.log"
+[[ "$1" == release ]] || exit 1
+case "$2" in
+  view)
+    [[ -f "$GH_STATE/exists" ]] || exit 1
+    case "$*" in
+      *"--json name"*) cat "$GH_STATE/name" ;;
+      *"--json body"*) cat "$GH_STATE/body" ;;
+    esac ;;
+  edit)
+    shift 3
+    while (($#)); do
+      case "$1" in
+        --title) printf '%s' "$2" > "$GH_STATE/name"; shift ;;
+        --notes-file) cat "$2" > "$GH_STATE/body"; shift ;;
+      esac
+      shift
+    done ;;
+  create) touch "$GH_STATE/exists" ;;
+  upload) ;;
+esac
+'''
+
+
+def publish(tmp_path, *, exists, name='', body=''):
+    state = tmp_path / 'gh'
+    state.mkdir()
+    (state / 'name').write_text(name)
+    (state / 'body').write_text(body)
+    if exists:
+        (state / 'exists').write_text('')
+    bin_dir = tmp_path / 'ghbin'
+    bin_dir.mkdir()
+    (bin_dir / 'gh').write_text(FAKE_GH)
+    (bin_dir / 'gh').chmod(0o755)
+    dist = tmp_path / 'dist'
+    dist.mkdir()
+    (dist / 'awg31-console-v1.2.3.tar.gz').write_bytes(b'x')
+    (dist / 'awg31-console-v1.2.3.tar.gz.sha256').write_text('0' * 64 + '  awg31-console-v1.2.3.tar.gz\n')
+    env = {**os.environ, 'PATH': f'{bin_dir}:{os.environ["PATH"]}', 'GH_STATE': str(state),
+           'GITHUB_REPOSITORY': 'stepm65/amneziawg31-installer'}
+    result = subprocess.run(['bash', str(ROOT / 'scripts/publish-release.sh'), 'v1.2.3', str(dist)],
+                            capture_output=True, text=True, env=env)
+    return result, (state / 'calls.log').read_text(), (state / 'name').read_text(), (state / 'body').read_text()
+
+
+def test_pushed_tag_creates_the_release_with_title_and_notes(tmp_path):
+    result, calls, _, _ = publish(tmp_path, exists=False)
+    assert result.returncode == 0, result.stderr
+    assert 'release create v1.2.3' in calls and '--title AmneziaWG 3.1 Console 1.2.3' in calls
+    assert '--verify-tag' in calls and 'release upload' not in calls
+
+
+def test_release_drafted_on_the_site_gets_files_title_and_notes(tmp_path):
+    result, calls, name, body = publish(tmp_path, exists=True)
+    assert result.returncode == 0, result.stderr
+    assert 'release upload v1.2.3' in calls and '--clobber' in calls and 'release create' not in calls
+    assert name == 'AmneziaWG 3.1 Console 1.2.3'
+    assert f'bash <(curl -Ls {RAW}) v1.2.3' in body and 'awg31-console-v1.2.3.tar.gz' in body
+
+
+def test_title_equal_to_the_tag_is_treated_as_empty(tmp_path):
+    _, _, name, _ = publish(tmp_path, exists=True, name='v1.2.3')
+    assert name == 'AmneziaWG 3.1 Console 1.2.3'
+
+
+def test_text_written_by_the_author_is_never_replaced(tmp_path):
+    result, calls, name, body = publish(tmp_path, exists=True, name='Winter release', body='My own notes')
+    assert result.returncode == 0 and name == 'Winter release' and body == 'My own notes'
+    assert 'release edit' not in calls and 'release upload v1.2.3' in calls
+
+
+def test_publish_refuses_bad_tags_and_missing_files(tmp_path):
+    for args in (['v1.2', str(tmp_path)], ['v1.2.3', str(tmp_path)]):
+        result = subprocess.run(['bash', str(ROOT / 'scripts/publish-release.sh'), *args], capture_output=True, text=True)
+        assert result.returncode == 1

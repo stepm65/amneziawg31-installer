@@ -44,20 +44,4 @@ jobs:
       - name: Publish release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: |
-          cat > notes.md <<NOTES
-          Install or update with one command (run as root):
-
-          \`\`\`bash
-          bash <(curl -Ls https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/main/install.sh) ${GITHUB_REF_NAME}
-          \`\`\`
-
-          The installer verifies \`awg31-console-${GITHUB_REF_NAME}.tar.gz\` against the \`.sha256\` file published here and aborts on a mismatch.
-          NOTES
-          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
-            # The release was created on github.com: attach the files to it.
-            gh release upload "$GITHUB_REF_NAME" dist/* --clobber
-          else
-            gh release create "$GITHUB_REF_NAME" dist/* --verify-tag \
-              --title "AmneziaWG 3.1 Console ${GITHUB_REF_NAME#v}" --notes-file notes.md
-          fi
+        run: bash scripts/publish-release.sh "$GITHUB_REF_NAME" dist
