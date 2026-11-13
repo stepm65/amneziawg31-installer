@@ -258,7 +258,7 @@ if command -v logrotate >/dev/null 2>&1; then
     install -o root -g root -m 644 "$DIR/scripts/awg31-audit.logrotate" /etc/logrotate.d/awg31-panel
 fi
 install -o root -g root -m 755 "$DIR/scripts/kernel-check.sh" /usr/local/libexec/awg31/scripts/kernel-check.sh
-for unit in awg31-sampler.service awg31-sampler.timer awg31-kernel-check.service awg31-kernel-check.timer; do
+for unit in awg31-sampler.service awg31-sampler.timer awg31-kernel-check.service awg31-kernel-check.timer awg31-backup.service; do
     install -o root -g root -m 644 "$DIR/scripts/$unit" "/etc/systemd/system/$unit"
 done
 systemctl daemon-reload

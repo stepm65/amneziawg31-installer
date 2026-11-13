@@ -1,0 +1,12 @@
+[Unit]
+Description=Create automatic AWG31 backup and enforce retention
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+ExecStart=/usr/local/sbin/awg31mgr backup-run
+UMask=0077
+PrivateTmp=true
+ProtectHome=true
+NoNewPrivileges=true

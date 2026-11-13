@@ -13,6 +13,14 @@ case "${1:-menu}" in
   servers) /usr/local/sbin/awg31mgr servers ;;
   backup) /usr/local/sbin/awg31mgr backup-create ;;
   backups) /usr/local/sbin/awg31mgr backup-list ;;
+  backup-policy) /usr/local/sbin/awg31mgr backup-policy </dev/null ;;
+  backup-delete)
+    [[ $# -eq 2 ]] || { echo 'Usage: awg31 backup-delete BACKUP_NAME' >&2; exit 2; }
+    echo "Deleting this backup is irreversible: $2"
+    read -r -p 'Type DELETE to proceed: ' answer
+    [[ "$answer" == DELETE ]] || { echo 'Canceled'; exit 1; }
+    printf '{"name":"%s"}\n' "$2" | /usr/local/sbin/awg31mgr backup-delete
+    ;;
   restore-check)
     [[ $# -eq 2 ]] || { echo 'Usage: awg31 restore-check BACKUP_NAME' >&2; exit 2; }
     python3 /usr/local/libexec/awg31/scripts/restore-backup.py --check "$2" ;;
@@ -32,6 +40,8 @@ AmneziaWG 3.1 local management
   sudo awg31 servers         List configured VPN interfaces
   sudo awg31 backups         List root-owned backup archives
   sudo awg31 backup          Create a full backup archive
+  sudo awg31 backup-policy   Show current automated backup schedule
+  sudo awg31 backup-delete NAME  Delete an archive after confirmation
   sudo awg31 restore-check NAME  Verify checksums and SQLite of a backup
   sudo awg31 restore NAME    Restore after confirmation (VPN downtime)
   sudo awg31 doctor          Check kernel/DKMS and interface

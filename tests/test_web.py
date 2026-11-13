@@ -18,7 +18,8 @@ def create_app(tmp_path,monkeypatch):
     spec=spec_from_file_location('awg31_web_for_tests',Path(__file__).parents[1] /'src'/'web.py')
     module=module_from_spec(spec)
     spec.loader.exec_module(module)
-    module.ctl=lambda op,data=None: ({'name':data['name']} if op=='add' else {
+    module.ctl=lambda op,data=None: ({'name':data['name']} if op=='add' else
+    {'servers':[{'interface':'awg0','subnet':'10.77.10.0/24','port':51820,'clients':0,'running':True}]} if op=='servers' else {
        'interface':'awg0','subnet':'10.77.10.0/24','server_ip':'10.77.10.1',
        'port':51820,'mtu':1280,'endpoint':'vpn.example.net','dns':'1.1.1.1',
        'mode':'full','uplink':'ens3','public_key':'A'*44,'running':True,
@@ -37,11 +38,11 @@ def test_login_dashboard_csrf_and_cookie(tmp_path,monkeypatch):
     assert response.status_code==303
     assert 'httponly' in response.headers['set-cookie'].lower()
     dashboard=client.get('/')
-    assert 'Управление сервером' in dashboard.text
-    assert 'Весь IPv4 через VPN' in dashboard.text
+    assert 'Обзор инфраструктуры' in dashboard.text
+    assert '/servers/awg0/overview' in dashboard.text
     assert dashboard.headers['Cache-Control']=='no-store'
     assert client.post('/client',data={'name':'new', 'csrf':'invalid'}).status_code==403
-    csrf=dashboard.text.split('name="csrf" value="')[1].split('"')[0]
+    csrf=client.get('/servers/awg0/clients').text.split('name="csrf" value="')[1].split('"')[0]
     assert client.post('/client',data={'name':'new','csrf':csrf},follow_redirects=False).status_code==303
 
 
@@ -68,14 +69,14 @@ def test_language_switch_persists_and_translates(tmp_path, monkeypatch):
     client.post('/login', data={'password': 'testpassword1234'})
     dashboard = client.get('/')
     assert 'Server overview' in dashboard.text
-    assert 'Clients' in dashboard.text
+    assert 'Server clients' in dashboard.text
     assert 'Server settings' in dashboard.text
-    assert 'Route all IPv4 through VPN' in dashboard.text
+    assert '/servers/awg0/settings' in dashboard.text
     assert 'lang="en"' in dashboard.text
     assert 'lang="ru"' not in dashboard.text
     ru_switch = client.get('/lang/ru', follow_redirects=False)
     assert ru_switch.status_code == 303
-    assert 'Управление сервером' in client.get('/').text
+    assert 'Обзор инфраструктуры' in client.get('/').text
 
 
 def test_language_switch_rejects_external_redirects(tmp_path, monkeypatch):
@@ -90,6 +91,7 @@ def test_language_switch_rejects_external_redirects(tmp_path, monkeypatch):
 def test_english_client_messages(tmp_path, monkeypatch):
     module = create_app(tmp_path, monkeypatch)
     module.ctl = lambda op, data=None: (
+        {'servers':[{'interface':'awg0','subnet':'10.77.10.0/24','port':45678,'clients':1,'running':True}]} if op=='servers' else
         {'name': data['name']} if op == 'add' else
         {'config': '[Interface]\nPrivateKey = example'} if op == 'download' else
         {'interface': 'awg0', 'subnet': '10.77.10.0/24', 'port': 45678,
@@ -100,7 +102,7 @@ def test_english_client_messages(tmp_path, monkeypatch):
     client = TestClient(module.app)
     client.get('/lang/en')
     client.post('/login', data={'password': 'testpassword1234'})
-    dashboard = client.get('/')
+    dashboard = client.get('/servers/awg0/clients')
     assert 'KLIN' in dashboard.text
     assert 'No handshake yet' in dashboard.text
     assert 'Disable' in dashboard.text
@@ -113,7 +115,7 @@ def test_english_client_messages(tmp_path, monkeypatch):
 
 def test_live_traffic_endpoint_requires_auth_and_omits_secrets(tmp_path, monkeypatch):
     module = create_app(tmp_path, monkeypatch)
-    module.ctl = lambda op, data=None: {
+    module.ctl = lambda op, data=None: ({'servers':[{'interface':'awg0','subnet':'10.77.10.0/24','port':45678,'clients':1,'running':True}]} if op=='servers' else {
         'running': True, 'subnet': '10.77.10.0/24', 'port': 45678,
         'mtu': 1380, 'mode': 'full', 'endpoint': '10.10.20.29',
         'dns': '1.1.1.1', 'interface': 'awg0',
@@ -121,7 +123,7 @@ def test_live_traffic_endpoint_requires_auth_and_omits_secrets(tmp_path, monkeyp
         'clients': [{'name': 'KLIN', 'ip': '10.77.10.2', 'enabled': True,
                      'private_key': 'SECRET-CLIENT-KEY',
                      'stats': {'received': 1024, 'sent': 8192, 'handshake': 0}}],
-    }
+    })
     client = TestClient(module.app)
     assert client.get('/api/traffic').status_code == 401
     client.post('/login', data={'password': 'testpassword1234'})
@@ -131,11 +133,11 @@ def test_live_traffic_endpoint_requires_auth_and_omits_secrets(tmp_path, monkeyp
     assert result.json() == {'rx': 1024, 'tx': 8192, 'connected': 0, 'clients': 1, 'running': True}
     assert 'SECRET' not in result.text
     ui = client.get('/')
-    assert '/assets/panel.js?v=0.7.0' in ui.text
-    assert '/assets/md3.css?v=0.7.0' in ui.text
+    assert '/assets/panel.js?v=0.8.0' in ui.text
+    assert '/assets/md3.css?v=0.8.0' in ui.text
     assert 'md-sys-color-primary' in client.get('/assets/md3.css').text
-    assert 'data-confirm=' in ui.text
-    assert 'client-search' in ui.text
+    assert 'data-confirm=' in client.get('/servers/awg0/clients').text
+    assert 'client-search' in client.get('/servers/awg0/clients').text
     assert 'Content-Security-Policy' in ui.headers
     assert "script-src 'self'" in ui.headers['Content-Security-Policy']
     js = client.get('/assets/panel.js')
@@ -155,7 +157,7 @@ def test_login_layout_desktop_and_mobile_markup(tmp_path, monkeypatch):
     assert 'class="login-overview"' in response.text
     assert 'grid-template-columns:minmax(0,1.1fr) minmax(370px,440px)' in client.get('/assets/md3.css').text
     assert 'grid-template-columns:minmax(0,1fr);max-width:470px' in client.get('/assets/md3.css').text
-    assert '/assets/md3.css?v=0.7.0' in response.text
+    assert '/assets/md3.css?v=0.8.0' in response.text
     assert 'type="password"' in response.text
     assert 'autocomplete="current-password"' in response.text
     assert 'class="sidebar"' not in response.text

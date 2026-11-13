@@ -467,3 +467,60 @@ body.nav-collapsed .sidebar-collapse .icon {transform:rotate(180deg)}
 /* In-page anchors remain visible below the sticky application header. */
 #overview,#clients,#servers,#monitoring,#settings {scroll-margin-top:100px}
 .sidebar .side-link {position:relative}
+
+
+/* v0.8: real pages, clear server scope and actionable backup controls. */
+.shell:not(.shell-auth) {grid-template-columns:286px minmax(0,1fr)}
+.sidebar {width:286px;min-width:0}
+.sidebar-navigation {padding-bottom:18px}
+.nav-group-label {letter-spacing:.15em;font-size:10px;font-weight:720;color:#858d98;padding:16px 17px 9px}
+.side-link {height:auto!important;min-height:47px;gap:13px;white-space:nowrap;padding:10px 14px;border-radius:12px;line-height:1.3}
+.side-link-label {white-space:nowrap;text-overflow:ellipsis;overflow:hidden}
+.side-link.side-active {background:rgba(248,180,68,.12);color:#ffd18a;border-left:3px solid var(--amber);padding-left:11px}
+.server-picker {padding:4px 12px 12px;display:grid;gap:7px}
+.server-picker label {font-size:11px;color:#a7aeb8}
+.server-picker select {width:100%;min-width:0;background:#22262d;color:#f8b444;border:1px solid #49505b;border-radius:12px;padding:12px;font-weight:700;font-family:monospace}
+.scope-banner {display:flex;align-items:center;flex-wrap:wrap;gap:12px;margin:0 0 20px;background:linear-gradient(90deg,rgba(248,180,68,.12),rgba(248,180,68,.03));border:1px solid rgba(248,180,68,.23);padding:15px 18px;border-radius:16px}
+.scope-banner > svg,.scope-banner > .icon {color:var(--amber)}
+.scope-banner strong {font-size:19px;font-family:monospace;color:#ffcb74}
+.scope-banner span {color:#b8bfca;font-size:13px}
+.scope-banner a {margin-left:auto;color:#f8b444;font-size:13px}
+.fleet-summary {display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:16px;margin-bottom:20px}
+.fleet-stat {background:#1b1e23;border:1px solid #343942;border-radius:20px;padding:24px;display:grid;gap:12px}
+.fleet-stat span {font-size:13px;color:#9ca5b1}.fleet-stat strong {font-size:36px;color:#f5f5f6}
+.fleet-grid {display:grid;grid-template-columns:repeat(auto-fit,minmax(290px,1fr));gap:18px;margin-bottom:24px}
+.fleet-server {background:linear-gradient(155deg,#21252b,#181b20);border:1px solid #3c414a;border-radius:22px;padding:25px;min-width:0}
+.fleet-head {display:flex;align-items:center;gap:13px;min-width:0}
+.fleet-head h3 {margin:0 0 3px;font-size:24px;font-family:monospace}.fleet-head span {color:#929cab;font-size:12px}
+.fleet-head .pill {margin-left:auto;white-space:nowrap}.fleet-icon {color:var(--amber);background:#38301e;border-radius:14px;padding:12px}
+.fleet-values {display:flex;gap:20px;border-top:1px solid #373b43;border-bottom:1px solid #373b43;margin:22px 0;padding:15px 0;color:#a4aab5;font-size:13px}
+.fleet-values b {color:#f0f1f3;font-family:monospace;margin-left:7px}
+.fleet-actions {display:flex;flex-wrap:wrap;gap:8px}
+.fleet-health {background:#1b1e23;border:1px solid #343942;border-radius:22px;padding:24px}
+.fleet-health-title {display:flex;align-items:center;justify-content:space-between;margin-bottom:21px;gap:12px}
+.fleet-health-title h2 {display:flex;align-items:center;gap:9px;margin:5px 0 0;font-size:22px}
+.fleet-health .health-grid {grid-template-columns:repeat(auto-fit,minmax(220px,1fr))}
+.server-monitor-stack {display:grid;gap:20px}.server-monitor-stack > .card {width:100%;min-width:0}
+.backup-policy-card {margin-top:24px;background:#1d2126;border:1px solid #3a4049;border-radius:22px;padding:25px}
+.backup-policy-grid {display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:17px;margin-bottom:20px}
+.backup-policy-grid .field input,.backup-policy-grid .field select {min-width:0;width:100%}
+.restore-picker-panel {background:#1d2126;border:1px solid #3a4049;border-radius:22px;padding:25px;max-width:720px}
+.restore-picker-panel .restore-form {display:grid;gap:16px;margin-bottom:24px}
+.restore-picker-panel .backup-check-form {display:grid;gap:12px;border-top:1px solid #373d47;padding-top:22px}
+.backup-item .backup-meta strong {overflow-wrap:anywhere}
+@media(max-width:1100px) {.backup-policy-grid {grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media(max-width:1050px) {.fleet-summary {grid-template-columns:repeat(3,minmax(0,1fr))}}
+@media(max-width:760px) {
+  .fleet-summary {grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}
+  .fleet-stat {padding:15px;border-radius:15px}
+  .fleet-stat span {font-size:11px}.fleet-stat strong {font-size:25px}
+  .fleet-grid {grid-template-columns:minmax(0,1fr)}
+  .fleet-head {flex-wrap:wrap}.fleet-head .pill {margin-left:0}
+  .backup-policy-grid {grid-template-columns:minmax(0,1fr)}
+  .scope-banner a {margin-left:0}
+}
+@media(min-width:1051px) {
+  body.nav-collapsed .shell:not(.shell-auth) {grid-template-columns:80px minmax(0,1fr)}
+  body.nav-collapsed .sidebar {width:80px}
+  body.nav-collapsed .server-picker,body.nav-collapsed .nav-group-label {display:none}
+}

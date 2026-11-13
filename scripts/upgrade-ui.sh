@@ -10,6 +10,9 @@ ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 APP=/opt/awg31-panel
 [[ -f "$APP/web.py" && -x "$APP/.venv/bin/python3" ]] || die 'AWG31 panel is not installed'
 [[ -f /etc/systemd/system/awg31-panel.service ]] || die 'Panel systemd service is missing'
+# This UI requires the v0.8 root controller and backup scheduling service.
+[[ -f /usr/local/sbin/awg31mgr ]] && grep -Fq "backup-policy-set" /usr/local/sbin/awg31mgr && \
+[[ -f /etc/systemd/system/awg31-backup.service ]] || die "Run sudo bash scripts/upgrade-core.sh first: v0.8 requires new backup backend"
 for asset in web.py md3.css panel.js; do
   [[ -f "$ROOT/src/$asset" && -f "$APP/$asset" ]] || die "Missing required file $asset"
 done

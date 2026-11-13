@@ -176,7 +176,7 @@ def test_web_client_routes_and_i_settings_with_csrf(tmp_path,monkeypatch):
     module.ctl=fake_ctl
     client=TestClient(module.app)
     client.post('/login',data={'password':'testpassword1234'})
-    main=client.get('/')
+    main=client.get('/servers/awg0/clients')
     assert 'routed_subnets' in main.text
     assert 'I1–I5' in main.text
     detail=client.get('/client/router')

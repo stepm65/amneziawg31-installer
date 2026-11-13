@@ -2,7 +2,7 @@
 # Upgrade controller and web together, preserving every running AWG interface.
 set -Eeuo pipefail
 umask 077
-say() { printf '[AWG31 v0.2] %s\n' "$*"; }
+say() { printf '[AWG31 v0.8] %s\n' "$*"; }
 die() { echo "[ERROR] $*" >&2; exit 1; }
 [[ ${EUID} -eq 0 ]] || die 'Run as root'
 DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -18,7 +18,7 @@ for f in web.py amnezialink.py panel.css md3.css panel.js awg31ctl awg31mgr awg3
 done
 "$APP/.venv/bin/python3" -m py_compile "$DIR/src/web.py" "$DIR/src/amnezialink.py"
 python3 -m py_compile "$DIR/src/awg31ctl" "$DIR/src/awg31mgr" "$DIR/src/awg31admin.py"
-backup="$(mktemp -d /var/backups/awg31-v0.2.XXXXXXXX)"
+backup="$(mktemp -d /var/backups/awg31-v0.8.XXXXXXXX)"
 chmod 700 "$backup"
 for spec in "$APP/web.py:web.py" "$APP/amnezialink.py:amnezialink.py" "$APP/panel.css:panel.css" "$APP/md3.css:md3.css" "$APP/panel.js:panel.js" \
             "$CTR:awg31ctl" "$MGR:awg31mgr" "/usr/local/sbin/awg31admin.py:awg31admin.py" "$SUD:sudoers"; do
@@ -68,7 +68,7 @@ say 'Checking existing server inventory'
 say 'Installing narrowly scoped sudo permission'
 tmp="$(mktemp /etc/sudoers.d/.awg31-panel.XXXXXX)"
 cat >"$tmp" <<'EOF'
-awgpanel ALL=(root) NOPASSWD: /usr/local/sbin/awg31mgr servers, /usr/local/sbin/awg31mgr server-create, /usr/local/sbin/awg31mgr server-start, /usr/local/sbin/awg31mgr server-stop, /usr/local/sbin/awg31mgr server-delete, /usr/local/sbin/awg31mgr status, /usr/local/sbin/awg31mgr list, /usr/local/sbin/awg31mgr add, /usr/local/sbin/awg31mgr download, /usr/local/sbin/awg31mgr enable, /usr/local/sbin/awg31mgr disable, /usr/local/sbin/awg31mgr delete, /usr/local/sbin/awg31mgr settings, /usr/local/sbin/awg31mgr client-network, /usr/local/sbin/awg31mgr client-policy, /usr/local/sbin/awg31mgr history, /usr/local/sbin/awg31mgr diagnostics, /usr/local/sbin/awg31mgr profile-export, /usr/local/sbin/awg31mgr profile-import, /usr/local/sbin/awg31mgr backup-create, /usr/local/sbin/awg31mgr backup-list, /usr/local/sbin/awg31mgr backup-export, /usr/local/sbin/awg31mgr backup-check, /usr/local/sbin/awg31mgr backup-restore, /usr/local/sbin/awg31mgr audit, /usr/local/sbin/awg31mgr audit-list, /usr/local/sbin/awg31mgr password-change
+awgpanel ALL=(root) NOPASSWD: /usr/local/sbin/awg31mgr servers, /usr/local/sbin/awg31mgr server-create, /usr/local/sbin/awg31mgr server-start, /usr/local/sbin/awg31mgr server-stop, /usr/local/sbin/awg31mgr server-delete, /usr/local/sbin/awg31mgr status, /usr/local/sbin/awg31mgr list, /usr/local/sbin/awg31mgr add, /usr/local/sbin/awg31mgr download, /usr/local/sbin/awg31mgr enable, /usr/local/sbin/awg31mgr disable, /usr/local/sbin/awg31mgr delete, /usr/local/sbin/awg31mgr settings, /usr/local/sbin/awg31mgr client-network, /usr/local/sbin/awg31mgr client-policy, /usr/local/sbin/awg31mgr history, /usr/local/sbin/awg31mgr diagnostics, /usr/local/sbin/awg31mgr profile-export, /usr/local/sbin/awg31mgr profile-import, /usr/local/sbin/awg31mgr backup-create, /usr/local/sbin/awg31mgr backup-list, /usr/local/sbin/awg31mgr backup-export, /usr/local/sbin/awg31mgr backup-delete, /usr/local/sbin/awg31mgr backup-policy, /usr/local/sbin/awg31mgr backup-policy-set, /usr/local/sbin/awg31mgr backup-check, /usr/local/sbin/awg31mgr backup-restore, /usr/local/sbin/awg31mgr audit, /usr/local/sbin/awg31mgr audit-list, /usr/local/sbin/awg31mgr password-change
 EOF
 chmod 440 "$tmp"
 visudo -cf "$tmp" >/dev/null
@@ -99,7 +99,7 @@ if command -v logrotate >/dev/null 2>&1; then
     install -o root -g root -m 644 "$DIR/scripts/awg31-audit.logrotate" /etc/logrotate.d/awg31-panel
 fi
 install -o root -g root -m 755 "$DIR/scripts/kernel-check.sh" /usr/local/libexec/awg31/scripts/kernel-check.sh
-for unit in awg31-sampler.service awg31-sampler.timer awg31-kernel-check.service awg31-kernel-check.timer; do
+for unit in awg31-sampler.service awg31-sampler.timer awg31-kernel-check.service awg31-kernel-check.timer awg31-backup.service; do
     install -o root -g root -m 644 "$DIR/scripts/$unit" "/etc/systemd/system/$unit"
 done
 systemctl daemon-reload

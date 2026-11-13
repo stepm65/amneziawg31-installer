@@ -1,5 +1,6 @@
 """Root-only administrative operations. Never accepts user-specified filesystem paths."""
 import base64
+import fcntl
 import hashlib
 import io
 import json
@@ -11,14 +12,14 @@ import sqlite3
 import subprocess
 import tarfile
 import tempfile
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 VALID_BACKUP = re.compile(r'^awg31-[0-9]{8}T[0-9]{6}Z-[0-9a-f]{10}\.tar\.gz$')
 VALID_AUDIT = {'login_success', 'login_failed', 'password_changed', 'client_added',
                'client_modified', 'client_deleted', 'client_enabled', 'client_disabled',
                'server_created', 'server_started', 'server_stopped', 'server_deleted',
                'server_settings_changed', 'profile_imported', 'backup_created',
-               'backup_downloaded'}
+               'backup_downloaded', 'backup_deleted', 'backup_policy_changed', 'backup_pruned'}
 
 
 def base_dir():
@@ -31,6 +32,139 @@ def backup_dir():
 
 def auth_file():
     return Path(os.environ.get('AWG31_AUTH', '/etc/awg31-panel/auth.json'))
+
+
+BACKUP_POLICY_DEFAULT = {'frequency': 'off', 'hour': 3, 'minute': 0, 'weekday': 0, 'retention_days': 30, 'max_copies': 20}
+
+
+def policy_path():
+    return Path(os.environ.get('AWG31_BACKUP_POLICY', '/etc/awg31-panel/backup-policy.json'))
+
+
+def timer_path():
+    return Path(os.environ.get('AWG31_BACKUP_TIMER', '/etc/systemd/system/awg31-backup.timer'))
+
+
+def _policy_values(data):
+    allowed = set(BACKUP_POLICY_DEFAULT)
+    if set(data) != allowed: raise ValueError('Invalid backup policy fields')
+    frequency = str(data['frequency'])
+    if frequency not in ('off', 'daily', 'weekly'): raise ValueError('Invalid backup frequency')
+    nums = {}
+    for name, low, high in [('hour', 0, 23), ('minute', 0, 59), ('weekday', 0, 6),
+                             ('retention_days', 1, 365), ('max_copies', 1, 30)]:
+        value = data[name]
+        if isinstance(value, bool) or not str(value).isdecimal(): raise ValueError(f'Invalid {name}')
+        nums[name] = int(value)
+        if not low <= nums[name] <= high: raise ValueError(f'Invalid {name}')
+    return {'frequency': frequency, **nums}
+
+
+def backup_policy():
+    file = policy_path()
+    if not file.exists(): return dict(BACKUP_POLICY_DEFAULT)
+    if file.is_symlink(): raise ValueError('Invalid backup policy file')
+    return _policy_values(json.loads(file.read_text()))
+
+
+def _atomic_private_file(path, data, mode=0o600):
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    if path.exists() and path.is_symlink(): raise ValueError('Refusing symlink')
+    fd, name = tempfile.mkstemp(prefix='.awg31-', dir=path.parent)
+    try:
+        with os.fdopen(fd, 'w') as fp:
+            fp.write(data);fp.flush();os.fsync(fp.fileno());os.fchmod(fp.fileno(), mode)
+        os.replace(name, path)
+    finally: Path(name).unlink(missing_ok=True)
+
+
+def _timer_unit(policy):
+    freq = policy['frequency']
+    if freq == 'off': return None
+    timepart = f"{policy['hour']:02}:{policy['minute']:02}:00 UTC"
+    day = '' if freq == 'daily' else ('Mon','Tue','Wed','Thu','Fri','Sat','Sun')[policy['weekday']] + ' '
+    return ('[Unit]\nDescription=Automatic AWG31 VPN backup (contains secrets)\n'
+            '[Timer]\nOnCalendar=' + day + '*-*-* ' + timepart + '\nPersistent=true\n'
+            'AccuracySec=1min\nUnit=awg31-backup.service\n'
+            '[Install]\nWantedBy=timers.target\n')
+
+
+def save_backup_policy(data, *, apply=True):
+    policy = _policy_values(data)
+    previous = backup_policy()
+    policy_file = policy_path()
+    timer_file = timer_path()
+    old_policy = policy_file.read_text() if policy_file.exists() else None
+    old_timer = timer_file.read_text() if timer_file.exists() else None
+    unit = _timer_unit(policy)
+    try:
+        _atomic_private_file(policy_file, json.dumps(policy, sort_keys=True) + '\n')
+        if unit is not None: _atomic_private_file(timer_file, unit, mode=0o644)
+        else:
+            # Stop/disable before removing the unit file: systemctl may reject
+            # disable after daemon-reload has forgotten a deleted unit.
+            if apply:
+                subprocess.run(['systemctl','disable','--now','awg31-backup.timer'], check=False, timeout=30)
+            if timer_file.exists(): timer_file.unlink()
+        if apply:
+            subprocess.run(['systemctl','daemon-reload'], check=True, timeout=30)
+            if unit is not None:
+                subprocess.run(['systemctl','enable','--now','awg31-backup.timer'], check=True, timeout=30)
+            if unit is not None:
+                subprocess.run(['systemctl','restart','awg31-backup.timer'], check=True, timeout=30)
+    except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
+        if old_policy is None: policy_file.unlink(missing_ok=True)
+        else: _atomic_private_file(policy_file, old_policy)
+        if old_timer is None: timer_file.unlink(missing_ok=True)
+        else: _atomic_private_file(timer_file, old_timer, mode=0o644)
+        if apply:
+            subprocess.run(['systemctl','daemon-reload'],check=False,timeout=15)
+            if old_timer is None: subprocess.run(['systemctl','disable','--now','awg31-backup.timer'],check=False,timeout=15)
+            else: subprocess.run(['systemctl','enable','--now','awg31-backup.timer'],check=False,timeout=15)
+        raise
+    audit({'event':'backup_policy_changed','target':f"{policy['frequency']} / {policy['retention_days']}d / {policy['max_copies']}"})
+    return {'ok': True, 'policy': policy, 'previous': previous}
+
+
+def delete_backup(data):
+    name = str(data.get('name', ''))
+    if not VALID_BACKUP.fullmatch(name): raise ValueError('Invalid backup name')
+    directory = backup_dir()
+    archive = directory / name
+    if not archive.is_file() or archive.is_symlink(): raise ValueError('Backup not found')
+    archive.unlink()
+    audit({'event':'backup_deleted', 'target': name})
+    return {'ok': True, 'deleted': name}
+
+
+def prune_backups(*, now=None):
+    policy = backup_policy()
+    now = now or datetime.now(timezone.utc)
+    cutoff = now - timedelta(days=policy['retention_days'])
+    directory = backup_dir()
+    if not directory.exists(): return {'removed': []}
+    archives = [p for p in directory.iterdir() if VALID_BACKUP.fullmatch(p.name) and p.is_file() and not p.is_symlink()]
+    archives.sort(key=lambda p:p.name, reverse=True)
+    remove = []
+    for index, file in enumerate(archives):
+        try: stamp = datetime.strptime(file.name[6:22], '%Y%m%dT%H%M%SZ').replace(tzinfo=timezone.utc)
+        except ValueError: continue
+        if stamp < cutoff or index >= policy['max_copies']:
+            file.unlink(); remove.append(file.name)
+    if remove: audit({'event':'backup_pruned', 'target':f'{len(remove)} archive(s)'})
+    return {'removed': remove}
+
+
+def scheduled_backup(manager):
+    lock_path = backup_dir().parent / '.backup-schedule.lock'
+    lock_path.parent.mkdir(parents=True,mode=0o700,exist_ok=True)
+    with open(lock_path,'a+') as lock:
+        fcntl.flock(lock.fileno(),fcntl.LOCK_EX)
+        if backup_policy()['frequency'] == 'off': return {'ok':True, 'skipped':True}
+        # Never remove an existing backup until the replacement is complete.
+        result = create_backup(manager, enforce_limit=False)
+        prune_backups()
+        return result
 
 
 def audit_file():
@@ -107,11 +241,11 @@ def _safe_add(tf, name, data):
     tf.addfile(info,io.BytesIO(data))
 
 
-def create_backup(manager):
+def create_backup(manager, *, enforce_limit=True):
     directory=backup_dir();directory.mkdir(parents=True,mode=0o700,exist_ok=True)
     previous=list_backups()['backups']
-    if len(previous)>=30 or sum(item['size'] for item in previous)>250*1024*1024:
-        raise ValueError('Backup retention limit reached; move old archives to secure storage')
+    if enforce_limit and (len(previous)>=30 or sum(item['size'] for item in previous)>250*1024*1024):
+        raise ValueError('Backup limit reached; remove old archives or adjust retention')
     os.chmod(directory,0o700)
     name='awg31-'+datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')+'-'+secrets.token_hex(5)+'.tar.gz'
     archive=directory/name
@@ -149,7 +283,7 @@ def list_backups():
     found=[]
     for p in directory.iterdir():
         if VALID_BACKUP.fullmatch(p.name) and p.is_file() and not p.is_symlink():
-            found.append({'name':p.name,'size':p.stat().st_size})
+            found.append({'name':p.name,'size':p.stat().st_size,'created_at':p.name[6:22]})
     return {'backups':sorted(found,key=lambda x:x['name'],reverse=True)[:30]}
 
 

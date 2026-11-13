@@ -3,22 +3,22 @@
   'use strict';
   const byId = (id) => document.getElementById(id);
   byId('refresh-page')?.addEventListener('click', () => window.location.reload());
-  // Route-aware menu: /maintenance is a separate page; the dashboard uses anchors.
+  // Each navigation item is a separate route; never simulate pages with anchors.
   const navLinks = [...document.querySelectorAll('.side-link')];
-  function syncNav() {
-    let key = window.location.pathname.startsWith('/maintenance') ? 'maintenance' :
-      window.location.pathname.startsWith('/client/') ? 'clients' :
-      window.location.pathname === '/' ? (window.location.hash.slice(1) || 'overview') : '';
-    for (const link of navLinks) {
-      const selected = link.dataset.navKey === key;
-      link.classList.toggle('side-active', selected);
-      if (selected) link.setAttribute('aria-current', 'page');
-      else link.removeAttribute('aria-current');
-    }
+  const current = window.location.pathname;
+  for (const link of navLinks) {
+    const selected = link.getAttribute('href') === current ||
+      (current.startsWith('/maintenance') && link.dataset.navKey === 'maintenance') ||
+      (current.includes('/clients/') && link.dataset.navKey === 'clients');
+    link.classList.toggle('side-active', selected);
+    if (selected) link.setAttribute('aria-current','page');
+    else link.removeAttribute('aria-current');
   }
-  window.addEventListener('hashchange', syncNav);
-  syncNav();
-
+  byId('server-picker')?.addEventListener('change', (event) => {
+    const path = event.target.value;
+    if (/^\/servers\/awg(?:0|[1-9][0-9]?)\/overview$/.test(path)) window.location.assign(path);
+  });
+  const serverScope = document.body.dataset.serverScope || '';
   const mobileToggle = byId('mobile-nav-toggle');
   const mobileClose = byId('sidebar-mobile-close');
   const scrim = byId('nav-scrim');
@@ -77,7 +77,7 @@
     const button = byId('generate-obf');
     button.disabled = true;
     try {
-      const reply = await fetch('/api/obfuscation/generate', {
+      const reply = await fetch(`${serverScope}/api/obfuscation/generate`, {
         credentials:'same-origin', cache:'no-store'
       });
       if (!reply.ok) throw new Error(`HTTP ${reply.status}`);
@@ -122,7 +122,7 @@
     if (busy || document.hidden) return;
     busy = true;
     try {
-      const response = await fetch('/api/traffic', {cache:'no-store', credentials:'same-origin'});
+      const response = await fetch(`${serverScope}/api/traffic`, {cache:'no-store', credentials:'same-origin'});
       if (!response.ok) throw Error(`HTTP ${response.status}`);
       const value = await response.json();
       const now = performance.now();
@@ -208,7 +208,7 @@
   }).join(' ');
   async function load() {
     try {
-      const response=await fetch('/api/history?window='+encodeURIComponent(selector.value),
+      const response=await fetch(`${document.body.dataset.serverScope || ''}/api/history?window=`+encodeURIComponent(selector.value),
          {cache:'no-store',credentials:'same-origin'});
       if (!response.ok) throw Error('HTTP '+response.status);
       const data=await response.json();

@@ -24,7 +24,8 @@ VALID = re.compile(r'^awg(?:0|[1-9][0-9]?)$')
 OPS = {'status', 'list', 'add', 'download', 'enable', 'disable', 'delete', 'settings', 'client-network', 'client-policy', 'history'}
 ADMIN = {'servers', 'server-create', 'server-start', 'server-stop', 'server-delete',
          'sample-all','backup-create','backup-list','backup-export','backup-check','backup-restore','profile-export',
-         'profile-import','audit','audit-list','password-change','diagnostics'}
+         'profile-import','audit','audit-list','password-change','diagnostics',
+         'backup-delete','backup-policy','backup-policy-set','backup-run'}
 
 
 def run(*args, input=None):
@@ -133,8 +134,9 @@ def main():
     if len(sys.argv)!=2 or sys.argv[1] not in OPS|ADMIN:
         raise ValueError('Unsupported operation')
     op=sys.argv[1]
-    # Commands without a payload must never wait for terminal or pipe EOF.
-    no_payload = {'servers', 'sample-all', 'backup-create', 'backup-list', 'audit-list'}
+    # Terminal invocations without JSON must not wait forever for EOF.
+    # The web API still sends structured JSON through a non-TTY pipe.
+    no_payload = {'servers', 'sample-all', 'backup-create', 'backup-list', 'backup-policy', 'backup-run', 'audit-list'}
     raw = '' if op in no_payload or sys.stdin.isatty() else sys.stdin.read(16384)
     data=json.loads(raw) if raw.strip() else {}
     if not isinstance(data,dict): raise ValueError('Expected JSON object')
@@ -144,6 +146,10 @@ def main():
     if op=='audit-list': return admin.audit_recent()
     if op=='password-change': return admin.password_change(data)
     if op=='backup-create': return admin.create_backup(sys.modules[__name__])
+    if op=='backup-run': return admin.scheduled_backup(sys.modules[__name__])
+    if op=='backup-policy': return {'policy': admin.backup_policy()}
+    if op=='backup-policy-set': return admin.save_backup_policy(data)
+    if op=='backup-delete': return admin.delete_backup(data)
     if op=='backup-list': return admin.list_backups()
     if op=='backup-export': return admin.export_backup(data)
     if op in ('backup-check','backup-restore'):
@@ -236,6 +242,6 @@ if __name__=='__main__':
         with open(BASE/'manager.lock','a+') as lock:
             fcntl.flock(lock.fileno(),fcntl.LOCK_EX)
             print(json.dumps(main(),ensure_ascii=False))
-    except (OSError,RuntimeError,ValueError,sqlite3.Error,subprocess.TimeoutExpired) as exc:
+    except (OSError,RuntimeError,ValueError,sqlite3.Error,subprocess.TimeoutExpired,subprocess.CalledProcessError) as exc:
         print(json.dumps({'error':str(exc)},ensure_ascii=False),file=sys.stderr)
         sys.exit(1)

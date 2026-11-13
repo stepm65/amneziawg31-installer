@@ -44,7 +44,7 @@ def test_app_sidebar_sections_are_grouped_no_top_kernel(ui):
     _,client,_=ui
     html=client.get('/').text
     assert '<span class="top-kernel">' not in html
-    assert 'РАБОЧЕЕ ПРОСТРАНСТВО' in html and 'КОНФИГУРАЦИЯ' in html and 'СИСТЕМА' in html
+    assert 'ИНФРАСТРУКТУРА' in html and 'ТЕКУЩИЙ СЕРВЕР' in html and 'СИСТЕМА' in html
     assert 'Серверы и интерфейсы</span></a>' not in html
     assert 'Обслуживание и безопасность</span></a>' not in html
     assert 'data-nav-key="overview"' in html
@@ -52,8 +52,8 @@ def test_app_sidebar_sections_are_grouped_no_top_kernel(ui):
     assert 'data-nav-key="maintenance"' in html
     assert 'aria-controls="app-sidebar"' in html
     assert 'id="sidebar-collapse"' in html
-    assert '/assets/panel.js?v=0.7.0' in html
-    assert '/assets/md3.css?v=0.7.0' in html
+    assert '/assets/panel.js?v=0.8.0' in html
+    assert '/assets/md3.css?v=0.8.0' in html
     js=client.get('/assets/panel.js').text
     assert 'mobile-nav-toggle' in js and 'sidebar-collapse' in js
     assert 'nav-open' in js and 'nav-collapsed' in js
@@ -103,7 +103,7 @@ def test_maintenance_independent_subpages_and_404(ui):
     assert 'backup_created' in a.text
     assert 'action="/maintenance/password"' not in a.text
     p=client.get('/maintenance?tab=profiles')
-    assert 'action="/maintenance/profile"' in p.text
+    assert 'action="/servers/awg0/settings/profile"' in p.text
     assert 'name="profile"' in p.text
     sys=client.get('/maintenance?tab=system')
     assert 'sudo awg31 doctor' in sys.text

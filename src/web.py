@@ -159,6 +159,50 @@ TEXT = {
 }
 
 
+# Dedicated server-aware navigation and backup administration.
+TEXT['ru'].update({
+    'all_servers':'Все серверы', 'server_context':'Текущий экземпляр',
+    'selected_server':'Сервер', 'server_home':'Информация о сервере',
+    'server_clients':'Клиенты сервера', 'server_settings':'Настройки сервера',
+    'server_monitor':'Трафик и история', 'open_server':'Открыть сервер',
+    'global_overview':'Обзор инфраструктуры', 'global_description':'Все экземпляры VPN, состояние системы и общие показатели.',
+    'total_servers':'Всего серверов', 'running_servers':'Работают', 'kernel_status':'Ядро Linux',
+    'kernel_awg':'Модуль AWG', 'system_status':'Состояние системы',
+    'backup_delete':'Удалить', 'backup_delete_confirm':'Удалить эту резервную копию без возможности восстановления?',
+    'backup_select':'Выберите архив', 'backup_check':'Проверить архив',
+    'backup_policy_title':'Автоматическое резервное копирование',
+    'backup_frequency':'Расписание', 'backup_off':'Выключено', 'backup_daily':'Каждый день',
+    'backup_weekly':'Раз в неделю', 'backup_hour':'Час (UTC)', 'backup_minute':'Минуты (UTC)',
+    'backup_weekday':'День недели', 'backup_keep_days':'Срок хранения (дней)',
+    'backup_keep_count':'Максимальное количество архивов', 'backup_policy_save':'Сохранить расписание',
+    'backup_policy_note':'Архивы создаёт системный таймер, даже если панель закрыта. Время — UTC. Устаревшие копии автоматически удаляются после успешного создания.',
+    'backup_global_note':'Резервная копия включает ВСЕ AWG-серверы, их конфигурации и пользователей панели.',
+    'backup_age':'Дата создания (UTC)', 'backup_check_good':'Целостность архива подтверждена',
+    'global_maintenance':'Обслуживание всей системы', 'server_picker':'Выбор экземпляра',
+    'nav_scope_global':'ИНФРАСТРУКТУРА', 'nav_scope_server':'ТЕКУЩИЙ СЕРВЕР',
+})
+TEXT['en'].update({
+    'all_servers':'All servers', 'server_context':'Current instance',
+    'selected_server':'Server', 'server_home':'Server overview',
+    'server_clients':'Server clients', 'server_settings':'Server settings',
+    'server_monitor':'Traffic & history', 'open_server':'Open server',
+    'global_overview':'Infrastructure overview', 'global_description':'All VPN instances, system health and key indicators.',
+    'total_servers':'Servers', 'running_servers':'Running', 'kernel_status':'Linux kernel',
+    'kernel_awg':'AWG module', 'system_status':'System health',
+    'backup_delete':'Delete', 'backup_delete_confirm':'Permanently delete this backup?',
+    'backup_select':'Choose an archive', 'backup_check':'Verify backup',
+    'backup_policy_title':'Automatic backups',
+    'backup_frequency':'Schedule', 'backup_off':'Disabled', 'backup_daily':'Daily',
+    'backup_weekly':'Weekly', 'backup_hour':'Hour (UTC)', 'backup_minute':'Minute (UTC)',
+    'backup_weekday':'Day of week', 'backup_keep_days':'Retention (days)',
+    'backup_keep_count':'Maximum backup count', 'backup_policy_save':'Save schedule',
+    'backup_policy_note':'A systemd timer creates backups even when the browser is closed. Times use UTC. Old backups are pruned after successful backup.',
+    'backup_global_note':'A full archive includes ALL AWG servers, their configs and panel credentials.',
+    'backup_age':'Created (UTC)', 'backup_check_good':'Backup checksum validation passed',
+    'global_maintenance':'System-wide maintenance', 'server_picker':'Select server',
+    'nav_scope_global':'INFRASTRUCTURE', 'nav_scope_server':'SELECTED SERVER',
+})
+
 # Operations/maintenance translations; all UI strings remain self-hosted.
 TEXT['ru'].update({
     'policy':'Политика доступа', 'comment':'Комментарий', 'expires':'Дата отключения (UTC)',
@@ -494,8 +538,45 @@ OBF_EDIT_FIELDS = ('Jc','Jmin','Jmax','S1','S2','S3','S4','H1','H2','H3','H4',
 
 
 def selected_server(request):
+    # URL path takes priority over legacy cookie, preventing cross-tab confusion.
+    explicit = request.path_params.get('interface')
+    if explicit is not None:
+        if not SERVER_RE.fullmatch(explicit): raise HTTPException(404)
+        return explicit
     value = request.cookies.get('awg31_server','awg0')
     return value if SERVER_RE.fullmatch(value) else 'awg0'
+
+
+def scoped_prefix(request):
+    interface = request.path_params.get('interface')
+    if interface is not None:
+        if not SERVER_RE.fullmatch(interface): raise HTTPException(404)
+        return f'/servers/{interface}'
+    return ''
+
+
+def scoped_client(request, name):
+    prefix = scoped_prefix(request)
+    return f'{prefix}/clients/{quote(name, safe="")}' if prefix else f'/client/{quote(name, safe="")}'
+
+
+def scope_content(request, content):
+    prefix = scoped_prefix(request)
+    if not prefix: return content
+    # Only rewrite URLs in HTML attributes, never textareas containing private
+    # client configs, user-supplied comments or other literal configuration.
+    def route_attr(match):
+        attr, path = match.groups()
+        if path.startswith('/client/'):
+            path = prefix + '/clients/' + path[len('/client/'):]
+        elif path == '/client':
+            path = prefix + '/clients'
+        elif path == '/settings':
+            path = prefix + '/settings'
+        elif path == '/#clients':
+            path = prefix + '/clients'
+        return attr + path + '"'
+    return re.sub(r'((?:href|src|action)=")(/(?:client(?:/[^" ]*)?|settings|#clients))"', route_attr, content)
 
 
 def control(request, command, data=None):
@@ -559,14 +640,22 @@ def page(title, content, request):
     path = request.url.path
     is_maintenance = path.startswith('/maintenance')
 
-    def nav_link(label, href, icon_name, section, nav_key):
-        active = (is_maintenance and nav_key == 'maintenance') or (
-            not is_maintenance and path == '/' and nav_key == 'overview')
+    scoped = scoped_prefix(request) if authenticated else ''
+    context = selected_server(request) if authenticated else 'awg0'
+    section = request.path_params.get('section', 'overview')
+    if '/clients/' in path: section = 'clients'
+    if path.startswith('/maintenance'): section = 'maintenance'
+    if path == '/servers': section = 'servers'
+    if path == '/': section = 'overview'
+
+    def nav_link(label, href, icon_name, section_name, nav_key):
+        active = (path == href) or (path == '/' and href == '/') or \
+                 (nav_key == 'servers' and path == '/servers') or \
+                 (nav_key == 'maintenance' and path.startswith('/maintenance')) or \
+                 (scoped and nav_key == section and href.startswith(scoped))
         aria = ' aria-current="page"' if active else ''
-        return (f'<a class="side-link{" side-active" if active else ""}" href="{href}" '
-                f'data-nav-key="{nav_key}" data-section="{section}" title="{h(label)}" '
-                f'aria-label="{h(label)}"'
-                f'{aria}>'
+        return (f'<a class="side-link{" side-active" if active else ""}" href="{h(href)}" '
+                f'data-nav-key="{h(nav_key)}" title="{h(label)}"{aria}>'
                 f'{icon(icon_name,19)}<span class="side-link-label">{h(label)}</span></a>')
 
     sidebar = ''
@@ -577,19 +666,31 @@ def page(title, content, request):
         nav_toggle = (f'<button type="button" id="mobile-nav-toggle" class="icon-btn mobile-menu-toggle" '
                       f'aria-label="{h(t("nav_toggle"))}" aria-expanded="false" '
                       f'aria-controls="app-sidebar">{icon("menu",22)}</button>')
+        available = server_list()
+        names = [x['interface'] for x in available if SERVER_RE.fullmatch(x.get('interface',''))]
+        if not names: names = ['awg0']
+        if context not in names: context = names[0]
+        active_server = context
+        server_select = (f'<div class="server-picker"><label for="server-picker">{h(t("server_picker"))}</label>'
+                         f'<select id="server-picker" aria-label="{h(t("server_picker"))}">'
+                         + ''.join(f'<option value="/servers/{h(x)}/overview" '
+                                   f'{"selected" if x == active_server else ""}>{h(x)}</option>' for x in names)
+                         + '</select></div>')
         groups = [
-            (t('nav_group_workspace'), [
-                (t('nav_overview'), '/#overview', 'home', 'overview', 'overview'),
-                (t('clients'), '/#clients', 'users', 'clients', 'clients'),
-                (t('nav_servers_short'), '/#servers', 'server', 'servers', 'servers'),
-                (t('nav_monitoring'), '/#monitoring', 'activity', 'monitoring', 'monitoring')]),
-            (t('nav_group_config'), [
-                (t('nav_vpn_settings'), '/#settings', 'settings', 'settings', 'settings')]),
+            (t('nav_scope_global'), [
+                (t('nav_overview'), '/', 'home', 'global', 'overview'),
+                (t('all_servers'), '/servers', 'server', 'global', 'servers')]),
+            (t('nav_scope_server'), [
+                (t('server_home'), f'/servers/{active_server}/overview', 'shield', 'server', 'overview'),
+                (t('server_clients'), f'/servers/{active_server}/clients', 'users', 'server', 'clients'),
+                (t('server_monitor'), f'/servers/{active_server}/monitoring', 'activity', 'server', 'monitoring'),
+                (t('server_settings'), f'/servers/{active_server}/settings', 'settings', 'server', 'settings')]),
             (t('nav_group_system'), [
-                (t('nav_maintenance_short'), '/maintenance', 'shield', 'maintenance', 'maintenance')]),
+                (t('nav_maintenance_short'), '/maintenance', 'archive', 'system', 'maintenance')]),
         ]
         nav_html = ''.join(
             '<div class="nav-group"><div class="nav-group-label">'+h(group_name)+'</div>'+
+            (server_select if group_name==t('nav_scope_server') else '')+
             ''.join(nav_link(*entry) for entry in entries)+'</div>' for group_name,entries in groups)
         sidebar = f'''<aside class="sidebar" id="app-sidebar" aria-label="{h(t('dashboard'))}">
           <div class="sidebar-header"><span class="sidebar-nav-caption">AWG CONSOLE</span>
@@ -617,15 +718,15 @@ def page(title, content, request):
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="color-scheme" content="dark">
     <title>{h(title)} — AmneziaWG 3.1</title>
-    <link rel="stylesheet" href="/assets/panel.css?v=0.7.0">
-    <link rel="stylesheet" href="/assets/md3.css?v=0.7.0">
-    <script defer src="/assets/panel.js?v=0.7.0"></script>
-    </head><body>
+    <link rel="stylesheet" href="/assets/panel.css?v=0.8.0">
+    <link rel="stylesheet" href="/assets/md3.css?v=0.8.0">
+    <script defer src="/assets/panel.js?v=0.8.0"></script>
+    </head><body data-server-scope="{h(scoped)}">
     <header class="topbar"><div class="topbar-left">{nav_toggle}<a href="/" class="brand"><span class="brand-emblem">{icon('shield',18)}</span><span>AmneziaWG <b>3.1</b></span></a></div>
     <div class="topbar-right">{language_picker(request)}{refresh_button}{status_link}</div></header>
     {nav_overlay}<div class="shell {'shell-auth' if not authenticated else ''}">{sidebar}<main class="main {'main-login' if not authenticated else ''}">
-    <div class="page-heading"><div><div class="eyebrow">AMNEZIAWG / CONTROL PANEL</div><h1>{h(title)}</h1>
-    <p class="heading-subtitle">{h(subtitle)}</p>{login_intro}</div></div>{content}</main></div></body></html>'''
+    <div class="page-heading"><div><div class="eyebrow">{h(context.upper()+" / "+section.upper() if scoped else "AMNEZIAWG / CONTROL PANEL")}</div><h1>{h(title)}</h1>
+    <p class="heading-subtitle">{h(subtitle)}</p>{login_intro}</div></div>{scope_content(request, content)}</main></div></body></html>'''
     return HTMLResponse(body, headers={
         'Cache-Control': 'no-store',
         'X-Content-Type-Options': 'nosniff',
@@ -655,7 +756,8 @@ def javascript():
 
 
 @app.get('/api/traffic')
-def traffic(request: Request):
+@app.get('/servers/{interface}/api/traffic')
+def traffic(request: Request, interface: str = ''):
     require_auth(request)
     # Only aggregate counters and enabled/connected client counts. Never send
     # private keys, PSKs, configs or privileged controller metadata to JS.
@@ -674,7 +776,8 @@ def traffic(request: Request):
 
 
 @app.get('/api/obfuscation/generate')
-def obfuscation_generate(request: Request):
+@app.get('/servers/{interface}/api/obfuscation/generate')
+def obfuscation_generate(request: Request, interface: str = ''):
     require_auth(request)
     nums = secrets.SystemRandom().sample(range(10000, 2500000),4)
     sizes = [secrets.randbelow(50)+12 for _ in range(4)]
@@ -692,7 +795,7 @@ def server_switch(request:Request, interface:str):
     require_auth(request)
     if not SERVER_RE.fullmatch(interface) or interface not in [x['interface'] for x in server_list()]:
         raise HTTPException(404)
-    response = RedirectResponse('/', status_code=303)
+    response = RedirectResponse(f'/servers/{interface}/overview', status_code=303)
     response.set_cookie('awg31_server',interface,secure=COOKIE_SECURE,httponly=True,
                         samesite='strict',path='/',max_age=365*86400)
     return response
@@ -712,7 +815,7 @@ async def server_create(request:Request):
         audit_event('server_created',iface)
     except RuntimeError as exc:
         return error_page(request,tr(lang,'server_create_failed'),exc)
-    response=RedirectResponse('/',status_code=303)
+    response=RedirectResponse(f'/servers/{iface}/overview',status_code=303)
     response.set_cookie('awg31_server',iface,secure=COOKIE_SECURE,httponly=True,
                         samesite='strict',path='/',max_age=365*86400)
     return response
@@ -838,8 +941,7 @@ def error_page(request, heading, exc):
                 + f'<a class="btn btn-secondary" href="/">{icon("arrow",18)}{h(tr(lang,"back"))}</a></section>', request)
 
 
-@app.get('/')
-def index(request: Request):
+def server_content(request: Request, section: str = 'overview'):
     if not logged(request):
         return RedirectResponse('/login')
     lang = lang_of(request)
@@ -1037,11 +1139,80 @@ def index(request: Request):
         <div class="fields-grid">{fields}</div>{advanced}
         <button class="btn btn-primary" type="submit">{icon('restart',18)}{h(t('save_restart'))}</button>
         </form><p class="info-line">{icon('info',16)}{h(t('settings_note'))}</p></section>'''
-    return page(t('dashboard'), head + history_html + servers_html + clients + settings, request)
+    section_titles={'overview':t('server_home'), 'clients':t('server_clients'),
+                    'monitoring':t('server_monitor'), 'settings':t('server_settings'),
+                    'servers':t('all_servers')}
+    if section not in section_titles: raise HTTPException(404)
+    # Each route renders only its own section, never an anchor in a giant dashboard.
+    section_html={'overview':head.split('<section class="card graph-card"')[0]+'</div>',
+                  'clients':clients, 'monitoring':head[head.index('<section class="card graph-card"'):]+history_html,
+                  'settings':settings, 'servers':servers_html}[section]
+    if section=='overview':
+        section_html = head[:head.index('        <section class="card graph-card"')] + '</div>'
+    if section=='monitoring':
+        section_html = '<div class="server-monitor-stack">' + head[head.index('<section class="card graph-card"'):head.rfind('</section></div>')+10] + history_html + '</div>'
+    scope_note = '' if section=='servers' else f'<div class="scope-banner">{icon("server",19)}<strong>{h(selected_server(request))}</strong><span>{h(state["subnet"])} · UDP {h(state["port"])} · {len(clients_all)} peers</span><a href="/servers">{h(t("all_servers"))}</a></div>'
+    return page(section_titles[section], scope_note + section_html, request)
+
+
+@app.get('/servers')
+def servers_page(request: Request):
+    require_auth(request)
+    return server_content(request, 'servers')
+
+
+@app.get('/servers/{interface}')
+def server_shortcut(request: Request, interface: str):
+    require_auth(request)
+    if not SERVER_RE.fullmatch(interface): raise HTTPException(404)
+    return RedirectResponse(f'/servers/{interface}/overview', status_code=303)
+
+
+@app.get('/servers/{interface}/{section}')
+def server_page(request: Request, interface: str, section: str):
+    require_auth(request)
+    if section not in ('overview','clients','monitoring','settings') or not SERVER_RE.fullmatch(interface):
+        raise HTTPException(404)
+    if interface not in [x['interface'] for x in server_list()]: raise HTTPException(404)
+    return server_content(request, section)
+
+
+@app.get('/')
+def infrastructure_overview(request: Request):
+    if not logged(request): return RedirectResponse('/login')
+    lang=lang_of(request); t=lambda k:tr(lang,k)
+    servers=server_list()
+    online=sum(1 for x in servers if x.get('running'))
+    total_clients=sum(int(x.get('clients',0)) for x in servers)
+    entries=''.join(f'''<article class="fleet-server">
+      <div class="fleet-head"><span class="fleet-icon">{icon('server',22)}</span>
+      <div><h3>{h(x['interface'])}</h3><span>{h(x['subnet'])}</span></div>
+      <span class="pill pill-{'running' if x.get('running') else 'stopped'}"><span class="dot"></span>{h(t('vpn_running' if x.get('running') else 'vpn_stopped'))}</span></div>
+      <div class="fleet-values"><span>UDP <b>{h(x['port'])}</b></span><span>{h(t('clients'))} <b>{h(x.get('clients',0))}</b></span></div>
+      <div class="fleet-actions"><a class="btn btn-primary btn-small" href="/servers/{h(x['interface'])}/overview">{h(t('open_server'))}</a>
+      <a class="btn btn-secondary btn-small" href="/servers/{h(x['interface'])}/clients">{h(t('clients'))}</a>
+      <a class="btn btn-secondary btn-small" href="/servers/{h(x['interface'])}/settings">{h(t('settings'))}</a></div></article>''' for x in servers)
+    diagnostics={}
+    if servers:
+        try: diagnostics=ctl('diagnostics',{'interface':servers[0]['interface']})
+        except RuntimeError: pass
+    health = ''.join(diagnostic_card(lang,k,diagnostics[k]) for k in ('kernel','loaded_module','dkms','secure_boot','forwarding','panel') if k in diagnostics)
+    content = f'''<section class="fleet-summary">
+      <div class="fleet-stat"><span>{h(t('total_servers'))}</span><strong>{len(servers)}</strong></div>
+      <div class="fleet-stat"><span>{h(t('running_servers'))}</span><strong>{online}</strong></div>
+      <div class="fleet-stat"><span>{h(t('total_clients'))}</span><strong>{total_clients}</strong></div>
+    </section><div class="fleet-grid">{entries}</div>
+    <section class="fleet-health"><div class="fleet-health-title"><div><span class="section-overline">SYSTEM / STATUS</span>
+      <h2>{icon('activity',20)}{h(t('system_status'))}</h2></div>
+      <a class="btn btn-secondary btn-small" href="/maintenance?tab=diagnostics">{h(t('maint_details'))}</a></div>
+      <div class="health-grid">{health}</div></section>'''
+    return page(t('global_overview'),content,request)
+
 
 
 @app.post('/settings')
-async def settings(request: Request):
+@app.post('/servers/{interface}/settings')
+async def settings(request: Request, interface: str = ''):
     form=await request.form()
     require_csrf(request,form.get('csrf',''))
     lang=lang_of(request)
@@ -1057,7 +1228,8 @@ async def settings(request: Request):
                 + h(tr(lang,'back')) + '</a></section>',request)
 
 @app.post('/client')
-async def create(request: Request):
+@app.post('/servers/{interface}/clients')
+async def create(request: Request, interface: str = ''):
     data = await request.form()
     require_csrf(request, data.get('csrf',''))
     payload = {'name':str(data.get('name','')),
@@ -1071,8 +1243,8 @@ async def create(request: Request):
         result = control(request, 'add', payload)
     except RuntimeError as exc:
         return error_page(request, tr(lang_of(request), 'create_error'), exc)
-    audit_event('client_added',result['name'])
-    return RedirectResponse('/client/' + quote(result['name'], safe=''), status_code=303)
+    audit_event('client_added',f"{selected_server(request)}/{result['name']}")
+    return RedirectResponse(scoped_client(request, result['name']), status_code=303)
 
 
 def gib_bytes(raw):
@@ -1096,7 +1268,8 @@ def build_client_link(obj, name):
 
 
 @app.get('/client/{name}')
-def detail(request: Request, name: str):
+@app.get('/servers/{interface}/clients/{name}')
+def detail(request: Request, name: str, interface: str = ''):
     require_auth(request)
     lang = lang_of(request)
     try:
@@ -1179,7 +1352,8 @@ def detail(request: Request, name: str):
 
 
 @app.post('/client/{name}/network')
-async def client_network(request: Request, name: str):
+@app.post('/servers/{interface}/clients/{name}/network')
+async def client_network(request: Request, name: str, interface: str = ''):
     data = await request.form()
     require_csrf(request, data.get('csrf', ''))
     payload = {'name':name, 'routed_subnets':str(data.get('routed_subnets','')),
@@ -1187,14 +1361,15 @@ async def client_network(request: Request, name: str):
                **{f'i{n}':str(data.get(f'i{n}','')) for n in range(1,6)}}
     try:
         control(request,'client-network',payload)
-        audit_event('client_modified',name)
+        audit_event('client_modified',f'{selected_server(request)}/{name}')
     except RuntimeError as exc:
         return error_page(request,tr(lang_of(request),'error'),exc)
-    return RedirectResponse('/client/'+quote(name,safe=''),status_code=303)
+    return RedirectResponse(scoped_client(request,name),status_code=303)
 
 
 @app.post('/client/{name}/policy')
-async def policy_update(request: Request, name: str):
+@app.post('/servers/{interface}/clients/{name}/policy')
+async def policy_update(request: Request, name: str, interface: str = ''):
     form=await request.form()
     require_csrf(request,form.get('csrf',''))
     payload={'name':name,'comment':str(form.get('comment','')),
@@ -1202,12 +1377,13 @@ async def policy_update(request: Request, name: str):
              'traffic_limit_bytes':gib_bytes(form.get('quota_gib','0'))}
     try: control(request,'client-policy',payload)
     except RuntimeError as exc: return error_page(request,tr(lang_of(request),'error'),exc)
-    audit_event('client_modified',name)
-    return RedirectResponse('/client/'+quote(name,safe=''),status_code=303)
+    audit_event('client_modified',f'{selected_server(request)}/{name}')
+    return RedirectResponse(scoped_client(request,name),status_code=303)
 
 
 @app.get('/api/history')
-def history_api(request: Request, window: str = '24h'):
+@app.get('/servers/{interface}/api/history')
+def history_api(request: Request, window: str = '24h', interface: str = ''):
     require_auth(request)
     if window not in ('24h','7d','30d'): raise HTTPException(422)
     try: result=control(request,'history',{'window':window})
@@ -1217,7 +1393,8 @@ def history_api(request: Request, window: str = '24h'):
 
 
 @app.get('/client/{name}/download')
-def download(request: Request, name: str):
+@app.get('/servers/{interface}/clients/{name}/download')
+def download(request: Request, name: str, interface: str = ''):
     require_auth(request)
     obj = control(request,'download', {'name': name})
     return Response(obj['config'], media_type='application/octet-stream',
@@ -1226,7 +1403,8 @@ def download(request: Request, name: str):
 
 
 @app.get('/client/{name}/vpn-link')
-def vpn_link(request: Request, name: str, download: bool = False):
+@app.get('/servers/{interface}/clients/{name}/vpn-link')
+def vpn_link(request: Request, name: str, download: bool = False, interface: str = ''):
     require_auth(request)
     obj = control(request, 'download', {'name': name})
     try:
@@ -1240,7 +1418,8 @@ def vpn_link(request: Request, name: str, download: bool = False):
 
 
 @app.get('/client/{name}/qr')
-def qr(request: Request, name: str, mode: str = 'conf', download: bool = False):
+@app.get('/servers/{interface}/clients/{name}/qr')
+def qr(request: Request, name: str, mode: str = 'conf', download: bool = False, interface: str = ''):
     require_auth(request)
     if mode not in ('conf', 'vpn'):
         raise HTTPException(404)
@@ -1265,16 +1444,17 @@ def qr(request: Request, name: str, mode: str = 'conf', download: bool = False):
 
 
 @app.post('/client/{name}/{action}')
-def client_operation(request: Request, name: str, action: str, csrf: str = Form(...)):
+@app.post('/servers/{interface}/clients/{name}/{action}')
+def client_operation(request: Request, name: str, action: str, csrf: str = Form(...), interface: str = ''):
     require_csrf(request, csrf)
     if action not in ('enable', 'disable', 'delete'):
         raise HTTPException(404)
     try:
         control(request,action, {'name': name})
-        audit_event({'enable':'client_enabled','disable':'client_disabled','delete':'client_deleted'}[action],name)
+        audit_event({'enable':'client_enabled','disable':'client_disabled','delete':'client_deleted'}[action],f'{selected_server(request)}/{name}')
     except RuntimeError as exc:
         return error_page(request, tr(lang_of(request), 'error'), exc)
-    return RedirectResponse('/', status_code=303)
+    return RedirectResponse(scoped_prefix(request)+'/clients' if scoped_prefix(request) else '/', status_code=303)
 
 
 # Maintenance panels are fetched/rendered independently. A failed backup/audit
@@ -1371,36 +1551,68 @@ def maintenance(request: Request, tab: str = 'diagnostics'):
         elif tab in ('backups','restore'):
             backups=ctl('backup-list',{}).get('backups',[])
             if tab=='backups':
+                policy_reply=ctl('backup-policy',{})
+                policy=policy_reply.get('policy') or {'frequency':'off','hour':3,'minute':0,'weekday':0,
+                       'retention_days':30,'max_copies':20}
                 cards=''.join(f'''<article class="backup-item"><div class="backup-icon">{icon('archive',20)}</div>
-                  <div class="backup-meta"><strong>{h(item['name'])}</strong><span>{h(item['size'])} B</span></div>
-                  <a class="btn btn-secondary btn-small" href="/maintenance/backup/{quote(item['name'],safe='')}">{icon('download',17)}{h(t('backup_download'))}</a></article>'''
+                  <div class="backup-meta"><strong>{h(item['name'])}</strong><span>{h(item.get('created_at',''))} UTC · {h(item['size'])} B</span></div>
+                  <a class="btn btn-secondary btn-small" href="/maintenance/backup/{quote(item['name'],safe='')}">{icon('download',17)}{h(t('backup_download'))}</a>
+                  <form class="inline" method="post" action="/maintenance/backup/delete" data-confirm="{h(t('backup_delete_confirm'))}">
+                  {csrf(request)}<input type="hidden" name="name" value="{h(item['name'])}">
+                  <button class="btn btn-danger btn-small" type="submit">{icon('trash',16)}{h(t('backup_delete'))}</button></form></article>'''
                   for item in backups)
+                freq_options=''.join(f'<option value="{x}" {"selected" if policy["frequency"]==x else ""}>{h(t("backup_"+x))}</option>'
+                     for x in ('off','daily','weekly'))
+                weekdays = (('Пн','Вт','Ср','Чт','Пт','Сб','Вс') if lang=='ru'
+                            else ('Mon','Tue','Wed','Thu','Fri','Sat','Sun'))
+                weekday_opts=''.join(f'<option value="{i}" {"selected" if int(policy["weekday"])==i else ""}>{h(day)}</option>'
+                                     for i,day in enumerate(weekdays))
                 body+=f'''<section class="maint-info-block"><span class="info-chip">{h(t('maint_backup_count'))}: {len(backups)}</span>
-                  <p>{h(t('backup_secret'))}</p>
+                  <p>{h(t('backup_global_note'))}</p><p>{h(t('backup_secret'))}</p>
                   <form method="post" action="/maintenance/backup">{csrf(request)}
                   <button class="btn btn-primary" type="submit">{icon('plus',19)}{h(t('backup_make'))}</button></form></section>
-                  <div class="backup-list">{cards or '<p class="empty-state">'+h(t('maint_no_backups'))+'</p>'}</div>'''
+                  <div class="backup-list">{cards or '<p class="empty-state">'+h(t('maint_no_backups'))+'</p>'}</div>
+                  <section class="backup-policy-card"><div class="section-title"><h3>{icon('clock',20)}{h(t('backup_policy_title'))}</h3></div>
+                   <p class="info-line">{h(t('backup_policy_note'))}</p>
+                   <form method="post" action="/maintenance/backup/policy">{csrf(request)}
+                     <div class="backup-policy-grid">
+                       <label class="field"><span>{h(t('backup_frequency'))}</span><select name="frequency" id="backup-frequency">{freq_options}</select></label>
+                       <label class="field"><span>{h(t('backup_hour'))}</span><input type="number" name="hour" min="0" max="23" value="{h(policy['hour'])}" required></label>
+                       <label class="field"><span>{h(t('backup_minute'))}</span><input type="number" name="minute" min="0" max="59" value="{h(policy['minute'])}" required></label>
+                       <label class="field"><span>{h(t('backup_weekday'))}</span><select name="weekday">{weekday_opts}</select></label>
+                       <label class="field"><span>{h(t('backup_keep_days'))}</span><input type="number" name="retention_days" min="1" max="365" value="{h(policy['retention_days'])}" required></label>
+                       <label class="field"><span>{h(t('backup_keep_count'))}</span><input type="number" name="max_copies" min="1" max="30" value="{h(policy['max_copies'])}" required></label>
+                     </div><button type="submit" class="btn btn-primary">{icon('check',16)}{h(t('backup_policy_save'))}</button>
+                   </form></section>'''
             else:
-                entries=''.join(f'''<article class="backup-item restore-item">
-                  <div class="backup-icon">{icon('archive',20)}</div>
-                  <div class="backup-meta"><strong>{h(item['name'])}</strong><span>{h(item['size'])} B</span></div>
-                  <form method="post" action="/maintenance/restore" class="restore-form">{csrf(request)}
-                   <input type="hidden" name="name" value="{h(item['name'])}">
-                   <label class="restore-confirm-label"><span>{h(t('restore_confirm'))}</span>
-                   <input type="text" name="confirmation" autocomplete="off" required placeholder="{'ВОССТАНОВИТЬ' if lang=='ru' else 'RESTORE'}"></label>
-                   <button type="submit" class="btn btn-danger btn-small" data-confirm="{h(t('restore_warn'))}">{icon('restart',17)}{h(t('backup_restore'))}</button>
-                  </form></article>''' for item in backups)
+                entries=''.join(f'''<option value="{h(item['name'])}">{h(item['name'])} · {h(item['size'])} B</option>''' for item in backups)
                 body+=f'''<div class="maint-warning">{icon('alert',20)}<p>{h(t('maint_restore_warning_short'))}</p></div>
-                  <div class="backup-list">{entries or '<p class="empty-state">'+h(t('maint_restore_empty'))+'</p>'}</div>'''
+                  <section class="restore-picker-panel"><h3>{icon('archive',20)}{h(t('backup_select'))}</h3>
+                  <p class="info-line">{h(t('backup_global_note'))}</p>
+                  <form method="post" action="/maintenance/restore" class="restore-form" data-confirm="{h(t('restore_warn'))}">{csrf(request)}
+                     <label class="field"><span>{h(t('backup_select'))}</span>
+                     <select id="backup-restore-selection" name="name" required>{entries}</select></label>
+                     <label class="field"><span>{h(t('restore_confirm'))}</span>
+                     <input type="text" name="confirmation" autocomplete="off" required placeholder="{'ВОССТАНОВИТЬ' if lang=='ru' else 'RESTORE'}"></label>
+                     <button type="submit" class="btn btn-danger" {'disabled' if not backups else ''}>{icon('restart',17)}{h(t('backup_restore'))}</button>
+                  </form><form method="post" action="/maintenance/backup/check" class="backup-check-form">{csrf(request)}
+                     <label class="field"><span>{h(t('backup_check'))}</span><select name="name" required>{entries}</select></label>
+                     <button type="submit" class="btn btn-secondary" {'disabled' if not backups else ''}>{icon('check',17)}{h(t('backup_check'))}</button>
+                  </form></section>'''
         elif tab=='profiles':
-            body+=f'''<section class="maint-form-panel"><h3>{icon('download',19)}{h(t('profile_download'))}</h3>
-                <p>{h(t('profile_note'))}</p>
-                <a class="btn btn-secondary" href="/maintenance/profile">{icon('download',18)}{h(t('profile_download'))}</a>
-                </section><section class="maint-form-panel"><h3>{icon('file',19)}{h(t('profile_import'))}</h3>
-                <form method="post" action="/maintenance/profile" data-confirm="{h(t('confirm_import'))}">{csrf(request)}
-                <label class="field"><span>{h(t('profile_content'))}</span>
-                <textarea name="profile" rows="8" required maxlength="16000" spellcheck="false"></textarea></label>
-                <button class="btn btn-primary" type="submit">{h(t('profile_import'))}</button></form></section>'''
+            members=server_list()
+            for server in members:
+                iface=server['interface']
+                if not SERVER_RE.fullmatch(iface): continue
+                body+=f'''<section class="maint-form-panel"><div class="scope-banner">
+                 {icon('server',18)}<strong>{h(iface)}</strong><span>{h(server['subnet'])} · UDP {h(server['port'])}</span></div>
+                 <div class="section-title"><h3>{icon('file',19)}{h(t('profile'))} · {h(iface)}</h3></div>
+                 <p>{h(t('profile_note'))}</p>
+                 <a class="btn btn-secondary" href="/servers/{h(iface)}/settings/profile">{icon('download',18)}{h(t('profile_download'))}</a>
+                 <form method="post" action="/servers/{h(iface)}/settings/profile" data-confirm="{h(t('confirm_import'))}">{csrf(request)}
+                 <label class="field"><span>{h(t('profile_content'))} · {h(iface)}</span>
+                 <textarea name="profile" rows="5" required maxlength="16000" spellcheck="false"></textarea></label>
+                 <button class="btn btn-primary" type="submit">{h(t('profile_import'))} · {h(iface)}</button></form></section>'''
         elif tab=='security':
             body+=f'''<section class="maint-form-panel"><h3>{icon('key',19)}{h(t('password_change'))}</h3>
                 <form method="post" action="/maintenance/password">{csrf(request)}
@@ -1430,6 +1642,41 @@ async def make_backup(request: Request):
     try: result=ctl('backup-create',{})
     except RuntimeError as exc: return error_page(request,tr(lang_of(request),'maintenance_error'),exc)
     return RedirectResponse('/maintenance?tab=backups',status_code=303)
+
+
+@app.post('/maintenance/backup/delete')
+async def remove_backup(request: Request):
+    form=await request.form();require_csrf(request,form.get('csrf',''))
+    name=str(form.get('name',''))
+    if not re.fullmatch(r'awg31-[0-9]{8}T[0-9]{6}Z-[0-9a-f]{10}\.tar\.gz',name):
+        raise HTTPException(400,detail='Invalid backup name')
+    try: ctl('backup-delete',{'name':name})
+    except RuntimeError as exc: return error_page(request,tr(lang_of(request),'maintenance_error'),exc)
+    return RedirectResponse('/maintenance?tab=backups',status_code=303)
+
+
+@app.post('/maintenance/backup/policy')
+async def backup_schedule_update(request: Request):
+    form=await request.form();require_csrf(request,form.get('csrf',''))
+    fields=('frequency','hour','minute','weekday','retention_days','max_copies')
+    data={key: str(form.get(key,'')) for key in fields}
+    try: ctl('backup-policy-set',data)
+    except RuntimeError as exc: return error_page(request,tr(lang_of(request),'maintenance_error'),exc)
+    return RedirectResponse('/maintenance?tab=backups',status_code=303)
+
+
+@app.post('/maintenance/backup/check')
+async def verify_backup(request: Request):
+    form=await request.form();require_csrf(request,form.get('csrf',''))
+    name=str(form.get('name',''))
+    if not re.fullmatch(r'awg31-[0-9]{8}T[0-9]{6}Z-[0-9a-f]{10}\.tar\.gz',name):
+        raise HTTPException(400)
+    try: outcome=ctl('backup-check',{'name':name})
+    except RuntimeError as exc: return error_page(request,tr(lang_of(request),'maintenance_error'),exc)
+    return page(tr(lang_of(request),'backup_check'),f'''<section class="card message-card">
+       <h2>{icon('check',22)}{h(tr(lang_of(request),'backup_check_good'))}</h2>
+       <p class="mono">{h(name)}</p>
+       <a href="/maintenance?tab=restore" class="btn btn-secondary">{h(tr(lang_of(request),'back'))}</a></section>''',request)
 
 
 @app.post('/maintenance/restore')
@@ -1472,7 +1719,8 @@ def download_backup(request: Request, name: str):
 
 
 @app.get('/maintenance/profile')
-def export_profile(request: Request):
+@app.get('/servers/{interface}/settings/profile')
+def export_profile(request: Request, interface: str = ''):
     require_auth(request)
     try: profile=control(request,'profile-export')
     except RuntimeError as exc: return error_page(request,tr(lang_of(request),'maintenance_error'),exc)
@@ -1483,7 +1731,8 @@ def export_profile(request: Request):
 
 
 @app.post('/maintenance/profile')
-async def import_profile(request: Request):
+@app.post('/servers/{interface}/settings/profile')
+async def import_profile(request: Request, interface: str = ''):
     form=await request.form();require_csrf(request,form.get('csrf',''))
     content=str(form.get('profile',''))
     if len(content)>16000: raise HTTPException(413)

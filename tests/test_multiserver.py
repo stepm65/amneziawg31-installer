@@ -88,9 +88,10 @@ def test_web_server_switch_and_generator(tmp_path,monkeypatch):
     c=TestClient(module.app)
     assert c.get('/api/obfuscation/generate').status_code==401
     c.post('/login',data={'password':'testpassword1234'})
-    page=c.get('/').text
-    assert 'Создать сервер' in page and 'HeaderProtectionKey' in page
-    assert 'Сгенерировать параметры' in page
+    page=c.get('/servers').text
+    settings=c.get('/servers/awg1/settings').text
+    assert 'Создать сервер' in page and 'HeaderProtectionKey' in settings
+    assert 'Сгенерировать параметры' in settings
     result=c.get('/api/obfuscation/generate')
     assert result.status_code==200 and len(base64.b64decode(result.json()['HeaderProtectionKey']))==32
     assert c.get('/server/awg1',follow_redirects=False).status_code==303
@@ -131,7 +132,7 @@ def test_server_creation_form_is_authenticated_and_csrf_protected(tmp_path, monk
     assert c.post('/server/create',data=payload).status_code==401
     c.post('/login',data={'password':'testpassword1234'})
     assert c.post('/server/create',data=payload).status_code==403
-    token=c.get('/').text.split('name="csrf" value="')[1].split('"')[0]
+    token=c.get('/servers').text.split('name="csrf" value="')[1].split('"')[0]
     payload['csrf']=token
     result=c.post('/server/create',data=payload,follow_redirects=False)
     assert result.status_code==303
@@ -139,21 +140,25 @@ def test_server_creation_form_is_authenticated_and_csrf_protected(tmp_path, monk
 
 
 def test_manager_servers_does_not_read_interactive_stdin(tmp_path, monkeypatch):
-    class UnexpectedRead:
+    """A terminal command without JSON must not block waiting for Ctrl-D."""
+    class InteractiveStdin:
         def isatty(self): return True
-        def read(self, *args): raise AssertionError("stdin must not be read")
-    monkeypatch.setattr(mgr.sys, 'stdin', UnexpectedRead())
+        def read(self, *args): raise AssertionError('interactive stdin was read')
+
+    monkeypatch.setattr(mgr.sys, 'stdin', InteractiveStdin())
     monkeypatch.setattr(mgr.sys, 'argv', ['awg31mgr', 'servers'])
     monkeypatch.setattr(mgr, 'BASE', tmp_path / 'db')
     monkeypatch.setattr(mgr, 'CONFIG_DIR', tmp_path / 'cfg')
     monkeypatch.setattr(mgr.os, 'geteuid', lambda: 0)
+    # In the actual process the admin module is dynamically loaded before
+    # dispatch; emulate that import while leaving the terminal untouched.
     assert mgr.main() == {'servers': []}
 
-
 def test_manager_servers_ignores_non_tty_payload(tmp_path, monkeypatch):
+    """No-arg admin operations also cannot wait on a retained pipe."""
     class UnexpectedRead:
         def isatty(self): return False
-        def read(self, *args): raise AssertionError("stdin must not be read")
+        def read(self, *args): raise AssertionError('stdin should not be read')
     monkeypatch.setattr(mgr.sys, 'stdin', UnexpectedRead())
     monkeypatch.setattr(mgr.sys, 'argv', ['awg31mgr', 'servers'])
     monkeypatch.setattr(mgr, 'BASE', tmp_path / 'db')
