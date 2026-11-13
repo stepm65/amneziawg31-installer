@@ -1301,7 +1301,11 @@ def server_content(request: Request, section: str = 'overview'):
           <label class="obf-timing-switch"><input type="checkbox" id="generate-timings"><span>{'Генерировать тайминги AWG 3.1' if lang=='ru' else 'Generate AWG 3.1 timing ranges'}</span></label></div>
           <p class="obf-help">{'По умолчанию тайминги остаются пустыми; включайте только при необходимости. Изменения применятся после сохранения сервера.' if lang=='ru' else 'Timings remain unset by default. Enable only when needed; save the server to apply changes.'}</p>
           <div class="fields-grid" id="obfuscation-fields">{obf_inputs}</div></section>'''
-    settings = f'''<section class="card settings-card" id="settings">
+    saved_notice = (f'<div class="settings-success" role="status">{icon("check",20)}'
+                    f'<div><strong>{h(t("settings_saved"))}</strong><p>{h(t("settings_saved_hint"))}</p></div>'
+                    f'<a class="btn btn-secondary btn-small" href="/servers/{h(state["interface"])}/clients">{h(t("clients"))}</a></div>'
+                    if request.query_params.get('saved') == '1' else '')
+    settings = f'''{saved_notice}<section class="card settings-card" id="settings">
         <form method="post" action="/settings" data-confirm="{h(t('confirm_restart'))}">{csrf(request)}
         <div class="config-group-header"><div><h2>{h('Подключение' if lang=='ru' else 'Connection')}</h2>
         <p>{h('Параметры только этого VPN-интерфейса' if lang=='ru' else 'Settings for this VPN instance only')}</p></div></div>
@@ -1509,9 +1513,7 @@ async def settings(request: Request, interface: str = ''):
         audit_event('server_settings_changed',selected_server(request))
     except RuntimeError as exc:
         return error_page(request,tr(lang,'settings_error'),exc)
-    return page(tr(lang,'settings_saved'),'<section class="card message-card">'
-                + f'<p>{h(tr(lang,"settings_saved_hint"))}</p><a class="btn btn-primary" href="/">'
-                + h(tr(lang,'back')) + '</a></section>',request)
+    return RedirectResponse(f'/servers/{selected_server(request)}/settings?saved=1',status_code=303)
 
 @app.post('/client')
 @app.post('/servers/{interface}/clients')
@@ -1738,6 +1740,24 @@ def qr(request: Request, name: str, mode: str = 'conf', download: bool = False, 
     if download:
         headers['Content-Disposition'] = f'attachment; filename="{name}-{mode}-qr.png"'
     return Response(buffer.getvalue(), media_type='image/png', headers=headers)
+
+
+@app.post('/clients/bulk-delete')
+@app.post('/servers/{interface}/clients/bulk-delete')
+async def clients_bulk_delete(request: Request, interface: str = ''):
+    form = await request.form()
+    require_csrf(request, form.get('csrf', ''))
+    names = form.getlist('names')
+    if (not 1 <= len(names) <= 256 or len(set(names)) != len(names)
+            or any(not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_-]{0,31}', name) for name in names)):
+        raise HTTPException(422, detail='Invalid client selection')
+    try:
+        control(request, 'delete-batch', {'names': names})
+        for name in names:
+            audit_event('client_deleted', f'{selected_server(request)}/{name}')
+    except RuntimeError as exc:
+        return error_page(request, tr(lang_of(request), 'error'), exc)
+    return RedirectResponse(scoped_prefix(request)+'/clients' if scoped_prefix(request) else '/servers/'+selected_server(request)+'/clients', status_code=303)
 
 
 @app.post('/client/{name}/{action}')
