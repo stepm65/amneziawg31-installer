@@ -644,65 +644,73 @@ def page(title, content, request):
     context = selected_server(request) if authenticated else 'awg0'
     section = request.path_params.get('section', 'overview')
     if '/clients/' in path: section = 'clients'
+    if '/settings/' in path: section = 'settings'
     if path.startswith('/maintenance'): section = 'maintenance'
     if path == '/servers': section = 'servers'
     if path == '/': section = 'overview'
 
-    def nav_link(label, href, icon_name, section_name, nav_key):
-        active = (path == href) or (path == '/' and href == '/') or \
-                 (nav_key == 'servers' and path == '/servers') or \
-                 (nav_key == 'maintenance' and path.startswith('/maintenance')) or \
-                 (scoped and nav_key == section and href.startswith(scoped))
-        aria = ' aria-current="page"' if active else ''
+    def nav_link(label, href, icon_name, nav_key):
+        active = ((href == '/' and path == '/') or (href == '/servers' and path == '/servers')
+                  or (nav_key == 'maintenance' and path.startswith('/maintenance')))
         return (f'<a class="side-link{" side-active" if active else ""}" href="{h(href)}" '
-                f'data-nav-key="{h(nav_key)}" title="{h(label)}"{aria}>'
+                f'data-nav-key="{h(nav_key)}" title="{h(label)}"'
+                f'{" aria-current=page" if active else ""}>'
                 f'{icon(icon_name,19)}<span class="side-link-label">{h(label)}</span></a>')
 
     sidebar = ''
     nav_overlay = ''
     nav_toggle = ''
+    server_tabs = ''
+    active_metadata = None
     if authenticated:
         t = lambda key: tr(lang,key)
         nav_toggle = (f'<button type="button" id="mobile-nav-toggle" class="icon-btn mobile-menu-toggle" '
                       f'aria-label="{h(t("nav_toggle"))}" aria-expanded="false" '
                       f'aria-controls="app-sidebar">{icon("menu",22)}</button>')
         available = server_list()
-        names = [x['interface'] for x in available if SERVER_RE.fullmatch(x.get('interface',''))]
-        if not names: names = ['awg0']
-        if context not in names: context = names[0]
-        active_server = context
-        server_select = (f'<div class="server-picker"><label for="server-picker">{h(t("server_picker"))}</label>'
-                         f'<select id="server-picker" aria-label="{h(t("server_picker"))}">'
-                         + ''.join(f'<option value="/servers/{h(x)}/overview" '
-                                   f'{"selected" if x == active_server else ""}>{h(x)}</option>' for x in names)
-                         + '</select></div>')
-        groups = [
-            (t('nav_scope_global'), [
-                (t('nav_overview'), '/', 'home', 'global', 'overview'),
-                (t('all_servers'), '/servers', 'server', 'global', 'servers')]),
-            (t('nav_scope_server'), [
-                (t('server_home'), f'/servers/{active_server}/overview', 'shield', 'server', 'overview'),
-                (t('server_clients'), f'/servers/{active_server}/clients', 'users', 'server', 'clients'),
-                (t('server_monitor'), f'/servers/{active_server}/monitoring', 'activity', 'server', 'monitoring'),
-                (t('server_settings'), f'/servers/{active_server}/settings', 'settings', 'server', 'settings')]),
-            (t('nav_group_system'), [
-                (t('nav_maintenance_short'), '/maintenance', 'archive', 'system', 'maintenance')]),
-        ]
-        nav_html = ''.join(
-            '<div class="nav-group"><div class="nav-group-label">'+h(group_name)+'</div>'+
-            (server_select if group_name==t('nav_scope_server') else '')+
-            ''.join(nav_link(*entry) for entry in entries)+'</div>' for group_name,entries in groups)
+        for server in available:
+            if server.get('interface') == context:
+                active_metadata = server
+                break
+        top_links=(nav_link(t('nav_overview'), '/', 'home','overview')+
+                   nav_link(t('all_servers'), '/servers', 'server', 'servers'))
+        server_links=''.join(
+            f'<a class="instance-nav-link{" instance-current" if scoped.startswith("/servers/"+item["interface"]) else ""}" '
+            f'href="/servers/{h(item["interface"])}/overview" '
+            f'aria-label="{h(item["interface"])} — {h(item.get("subnet",""))}" '
+            f'{"aria-current=location" if scoped.startswith("/servers/"+item["interface"]) else ""}>'
+            f'<span class="instance-nav-status {"is-up" if item.get("running") else "is-down"}"></span>'
+            f'<span class="instance-nav-text"><strong>{h(item["interface"])}</strong>'
+            f'<small>{h(item.get("subnet",""))}</small></span>'
+            f'<span class="instance-nav-chevron">{icon("chevron-right",16)}</span></a>'
+            for item in available if SERVER_RE.fullmatch(item.get('interface','')))
         sidebar = f'''<aside class="sidebar" id="app-sidebar" aria-label="{h(t('dashboard'))}">
           <div class="sidebar-header"><span class="sidebar-nav-caption">AWG CONSOLE</span>
           <button type="button" id="sidebar-collapse" class="sidebar-collapse" aria-expanded="true"
             aria-label="{h(t('nav_collapse'))}" title="{h(t('nav_collapse'))}">{icon('chevron-left',18)}</button>
-          <button type="button" class="sidebar-mobile-close" id="sidebar-mobile-close" aria-label="{h(t('nav_close'))}">{icon('chevron-left',18)}</button>
-          </div><nav class="sidebar-navigation" aria-label="{h(t('dashboard'))}">{nav_html}</nav>
-          <div class="side-footer"><span class="side-footer-top"><span class="live-beacon"></span><span class="side-footer-title">AmneziaWG 3.1</span></span>
-          <strong>{h(t('module_active'))}</strong></div></aside>'''
+          <button type="button" class="sidebar-mobile-close" id="sidebar-mobile-close"
+            aria-label="{h(t('nav_close'))}">{icon('chevron-left',18)}</button></div>
+          <nav class="sidebar-navigation" aria-label="{h(t('dashboard'))}">
+            <div class="nav-group"><div class="nav-group-label">{h(t('nav_scope_global'))}</div>{top_links}</div>
+            <div class="nav-group nav-server-group"><div class="nav-group-label">{h('ЭКЗЕМПЛЯРЫ' if lang=='ru' else 'INSTANCES')}
+              <span class="instance-count">{len(available)}</span></div>
+              <div class="instance-nav-list">{server_links}</div></div>
+            <div class="nav-group"><div class="nav-group-label">{h(t('nav_group_system'))}</div>
+              {nav_link(t('nav_maintenance_short'),'/maintenance?tab=diagnostics','settings','maintenance')}</div>
+          </nav></aside>'''
         nav_overlay = '<button type="button" class="nav-scrim" id="nav-scrim" aria-label="'+h(t('nav_close'))+'" tabindex="-1"></button>'
-
-    subtitle = tr(lang,'maint_page_subtitle' if is_maintenance else 'top_subtitle')
+        if scoped and active_metadata:
+            active_section = section if section in ('overview','clients','monitoring','settings') else 'clients'
+            section_labels = [('overview','Обзор','Overview'),('clients','Клиенты','Clients'),
+                              ('monitoring','Трафик','Traffic'),('settings','Настройки','Settings')]
+            server_tabs = '<nav class="server-tabs" aria-label="'+h(t('nav_scope_server'))+'">'+''.join(
+                f'<a class="server-tab{" active" if key==active_section else ""}" '
+                f'href="/servers/{h(context)}/{key}" '
+                f'{"aria-current=page" if key==active_section else ""}>'
+                f'{h(ru if lang=="ru" else en)}</a>' for key,ru,en in section_labels)+'</nav>'
+    subtitle = (f'{active_metadata.get("subnet","")}  ·  UDP {active_metadata.get("port","")}'
+                if scoped and active_metadata else
+                (tr(lang,'maint_page_subtitle') if is_maintenance else ''))
     status_link = (f'<a class="top-link" href="/logout" title="{h(tr(lang,"logout"))}">{icon("logout",18)}<span>{h(tr(lang,"logout"))}</span></a>'
                    if authenticated else '')
     refresh_button = (f'<button class="icon-btn" id="refresh-page" type="button" aria-label="{h(tr(lang,"refresh"))}" title="{h(tr(lang,"refresh"))}">{icon("restart",18)}</button>'
@@ -718,15 +726,16 @@ def page(title, content, request):
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="color-scheme" content="dark">
     <title>{h(title)} — AmneziaWG 3.1</title>
-    <link rel="stylesheet" href="/assets/panel.css?v=0.8.0">
-    <link rel="stylesheet" href="/assets/md3.css?v=0.8.0">
-    <script defer src="/assets/panel.js?v=0.8.0"></script>
+    <link rel="stylesheet" href="/assets/panel.css?v=0.9.0">
+    <link rel="stylesheet" href="/assets/md3.css?v=0.9.0">
+    <script defer src="/assets/panel.js?v=0.9.0"></script>
     </head><body data-server-scope="{h(scoped)}">
     <header class="topbar"><div class="topbar-left">{nav_toggle}<a href="/" class="brand"><span class="brand-emblem">{icon('shield',18)}</span><span>AmneziaWG <b>3.1</b></span></a></div>
     <div class="topbar-right">{language_picker(request)}{refresh_button}{status_link}</div></header>
     {nav_overlay}<div class="shell {'shell-auth' if not authenticated else ''}">{sidebar}<main class="main {'main-login' if not authenticated else ''}">
-    <div class="page-heading"><div><div class="eyebrow">{h(context.upper()+" / "+section.upper() if scoped else "AMNEZIAWG / CONTROL PANEL")}</div><h1>{h(title)}</h1>
-    <p class="heading-subtitle">{h(subtitle)}</p>{login_intro}</div></div>{scope_content(request, content)}</main></div></body></html>'''
+    <div class="page-heading"><div><div class="eyebrow">{h((('СЕРВЕРЫ / ' if lang=='ru' else 'SERVERS / ')+context.upper()) if scoped else ('AWG CONSOLE / SYSTEM' if is_maintenance else 'AWG CONSOLE'))}</div>
+    <h1>{h(title)}</h1>{f'<p class="heading-subtitle">{h(subtitle)}</p>' if subtitle else ''}{login_intro}</div></div>
+    {server_tabs}{scope_content(request, content)}</main></div></body></html>'''
     return HTMLResponse(body, headers={
         'Cache-Control': 'no-store',
         'X-Content-Type-Options': 'nosniff',
@@ -1132,13 +1141,14 @@ def server_content(request: Request, section: str = 'overview'):
           <p class="info-line">{h(t('advanced_hint'))}</p>
           <button class="btn btn-secondary" id="generate-obf" type="button">{icon('restart',16)}{h(t('generate'))}</button>
           <div class="fields-grid" id="obfuscation-fields">{obf_inputs}</div></details>'''
-    settings = f'''<section class="card settings-card" id="settings"><div class="section-title">
-        <div><span class="section-overline">SYSTEM / CONFIG</span><h2>{icon('settings',20)}{h(t('settings'))}</h2></div></div>
-        <p class="section-subtitle">{h(t('settings_hint'))}</p>
+    settings = f'''<section class="card settings-card" id="settings">
         <form method="post" action="/settings" data-confirm="{h(t('confirm_restart'))}">{csrf(request)}
-        <div class="fields-grid">{fields}</div>{advanced}
-        <button class="btn btn-primary" type="submit">{icon('restart',18)}{h(t('save_restart'))}</button>
-        </form><p class="info-line">{icon('info',16)}{h(t('settings_note'))}</p></section>'''
+        <div class="config-group-header"><div><h2>{h('Подключение' if lang=='ru' else 'Connection')}</h2>
+        <p>{h('Параметры только этого VPN-интерфейса' if lang=='ru' else 'Settings for this VPN instance only')}</p></div></div>
+        <div class="fields-grid config-fields">{fields}</div>{advanced}
+        <div class="config-savebar"><span>{icon('info',16)}{h(t('settings_hint'))}</span>
+        <button class="btn btn-primary" type="submit">{icon('check',18)}{h(t('save_restart'))}</button></div>
+        </form></section>'''
     section_titles={'overview':t('server_home'), 'clients':t('server_clients'),
                     'monitoring':t('server_monitor'), 'settings':t('server_settings'),
                     'servers':t('all_servers')}
@@ -1148,11 +1158,31 @@ def server_content(request: Request, section: str = 'overview'):
                   'clients':clients, 'monitoring':head[head.index('<section class="card graph-card"'):]+history_html,
                   'settings':settings, 'servers':servers_html}[section]
     if section=='overview':
-        section_html = head[:head.index('        <section class="card graph-card"')] + '</div>'
+        details = [
+            (t('subnet'),state['subnet']),
+            (t('udp_port'),str(state['port'])),
+            (t('public_endpoint'),state['endpoint']),
+            ('MTU',str(state['mtu'])),
+            (t('client_dns'),state['dns']),
+            (t('mode'),t('full' if state['mode']=='full' else 'split')),
+        ]
+        details_html=''.join(f'<div class="server-detail"><dt>{h(label)}</dt><dd>{h(value)}</dd></div>' for label,value in details)
+        section_html=f'''<div class="server-home-grid">
+          <section class="card server-home-card"><div class="server-home-top">
+            <div><h2>{h('Состояние' if lang=='ru' else 'Status')}</h2>
+              <span class="pill pill-{state_pill}"><span class="dot"></span>{h(t('vpn_running' if running else 'vpn_stopped'))}</span></div>
+            <a class="btn btn-secondary btn-small" href="/servers/{h(state['interface'])}/monitoring">{h(t('server_monitor'))}</a></div>
+            <div class="server-home-numbers"><div><strong>{len(clients_all)}</strong><span>{h(t('total_clients'))}</span></div>
+              <div><strong>{connected_count}</strong><span>{h(t('connected'))}</span></div>
+              <div><strong>{h(friendly_size(total_rx+total_tx))}</strong><span>{h(t('total_transfer'))}</span></div></div>
+          </section>
+          <section class="card server-connection-card"><div class="server-home-top"><h2>{h('Подключение' if lang=='ru' else 'Connection')}</h2>
+            <a class="quiet-link" href="/servers/{h(state['interface'])}/settings">{h(t('server_settings'))}{icon('chevron-right',15)}</a></div>
+            <dl class="server-details">{details_html}</dl>
+          </section></div>'''
     if section=='monitoring':
         section_html = '<div class="server-monitor-stack">' + head[head.index('<section class="card graph-card"'):head.rfind('</section></div>')+10] + history_html + '</div>'
-    scope_note = '' if section=='servers' else f'<div class="scope-banner">{icon("server",19)}<strong>{h(selected_server(request))}</strong><span>{h(state["subnet"])} · UDP {h(state["port"])} · {len(clients_all)} peers</span><a href="/servers">{h(t("all_servers"))}</a></div>'
-    return page(section_titles[section], scope_note + section_html, request)
+    return page(section_titles[section], section_html, request)
 
 
 @app.get('/servers')
@@ -1184,28 +1214,46 @@ def infrastructure_overview(request: Request):
     servers=server_list()
     online=sum(1 for x in servers if x.get('running'))
     total_clients=sum(int(x.get('clients',0)) for x in servers)
-    entries=''.join(f'''<article class="fleet-server">
-      <div class="fleet-head"><span class="fleet-icon">{icon('server',22)}</span>
-      <div><h3>{h(x['interface'])}</h3><span>{h(x['subnet'])}</span></div>
-      <span class="pill pill-{'running' if x.get('running') else 'stopped'}"><span class="dot"></span>{h(t('vpn_running' if x.get('running') else 'vpn_stopped'))}</span></div>
-      <div class="fleet-values"><span>UDP <b>{h(x['port'])}</b></span><span>{h(t('clients'))} <b>{h(x.get('clients',0))}</b></span></div>
-      <div class="fleet-actions"><a class="btn btn-primary btn-small" href="/servers/{h(x['interface'])}/overview">{h(t('open_server'))}</a>
-      <a class="btn btn-secondary btn-small" href="/servers/{h(x['interface'])}/clients">{h(t('clients'))}</a>
-      <a class="btn btn-secondary btn-small" href="/servers/{h(x['interface'])}/settings">{h(t('settings'))}</a></div></article>''' for x in servers)
+    entries=''.join(f'''<tr class="fleet-row">
+      <td><a class="fleet-name" href="/servers/{h(x['interface'])}/overview">
+        <span class="instance-nav-status {'is-up' if x.get('running') else 'is-down'}"></span>
+        <strong>{h(x['interface'])}</strong></a></td>
+      <td class="mono">{h(x['subnet'])}</td>
+      <td class="mono">{h(x['port'])}</td>
+      <td>{int(x.get('clients',0))}</td>
+      <td><span class="fleet-state {'fleet-state-up' if x.get('running') else 'fleet-state-down'}">
+        {h(t('vpn_running' if x.get('running') else 'vpn_stopped'))}</span></td>
+      <td><a class="quiet-link" href="/servers/{h(x['interface'])}/overview">{h('Открыть' if lang=='ru' else 'Open')}{icon('chevron-right',16)}</a></td>
+      </tr>''' for x in servers)
     diagnostics={}
     if servers:
         try: diagnostics=ctl('diagnostics',{'interface':servers[0]['interface']})
         except RuntimeError: pass
-    health = ''.join(diagnostic_card(lang,k,diagnostics[k]) for k in ('kernel','loaded_module','dkms','secure_boot','forwarding','panel') if k in diagnostics)
-    content = f'''<section class="fleet-summary">
-      <div class="fleet-stat"><span>{h(t('total_servers'))}</span><strong>{len(servers)}</strong></div>
-      <div class="fleet-stat"><span>{h(t('running_servers'))}</span><strong>{online}</strong></div>
-      <div class="fleet-stat"><span>{h(t('total_clients'))}</span><strong>{total_clients}</strong></div>
-    </section><div class="fleet-grid">{entries}</div>
-    <section class="fleet-health"><div class="fleet-health-title"><div><span class="section-overline">SYSTEM / STATUS</span>
-      <h2>{icon('activity',20)}{h(t('system_status'))}</h2></div>
-      <a class="btn btn-secondary btn-small" href="/maintenance?tab=diagnostics">{h(t('maint_details'))}</a></div>
-      <div class="health-grid">{health}</div></section>'''
+    indicators=[]
+    health_labels={'kernel':('Ядро','Kernel'),'loaded_module':('AmneziaWG','AmneziaWG'),
+                   'dkms':('DKMS','DKMS'),'secure_boot':('Secure Boot','Secure Boot')}
+    for key,labels in health_labels.items():
+        item=diagnostics.get(key)
+        if not isinstance(item,dict):continue
+        raw=str(item.get('output','')).strip()
+        short=raw.splitlines()[0] if raw else '—'
+        if key=='dkms':short='installed' if 'installed' in raw.lower() else short[:38]
+        if key=='secure_boot':short='Enabled' if 'enabled' in raw.lower() else 'Disabled' if 'disabled' in raw.lower() else short[:28]
+        indicators.append(f'<div class="system-line-item"><span class="system-status-dot {"is-up" if item.get("ok") else "is-down"}"></span>'
+                          f'<span>{h(labels[0 if lang=="ru" else 1])}</span><strong>{h(short)}</strong></div>')
+    overview_counts = (f'Серверов: {len(servers)}  ·  Работают: {online}  ·  Клиентов: {total_clients}' if lang=='ru'
+                       else f'Servers: {len(servers)}  ·  Running: {online}  ·  Clients: {total_clients}')
+    content=f'''<div class="fleet-headerline"><p>{h(overview_counts)}</p>
+      <a href="/servers" class="quiet-link">{h(t('all_servers'))}{icon('chevron-right',16)}</a></div>
+    <section class="fleet-list-panel" aria-label="{h(t('all_servers'))}">
+      <div class="fleet-table-scroll"><table class="fleet-table"><thead><tr>
+      <th>{h('Интерфейс' if lang=='ru' else 'Interface')}</th>
+      <th>{h(t('subnet'))}</th><th>UDP</th><th>{h(t('clients'))}</th>
+      <th>{h(t('status'))}</th><th></th></tr></thead>
+      <tbody>{entries or '<tr><td colspan="6">'+h('Серверов пока нет' if lang=='ru' else 'No servers')+'</td></tr>'}</tbody></table></div></section>
+    <section class="system-line"><div class="system-line-heading"><strong>{h(t('system_status'))}</strong>
+      <a class="quiet-link" href="/maintenance?tab=diagnostics">{h(t('maint_details'))}{icon('chevron-right',16)}</a></div>
+      <div class="system-line-details">{''.join(indicators)}</div></section>'''
     return page(t('global_overview'),content,request)
 
 
@@ -1479,27 +1527,28 @@ DIAG_LABELS = {
 
 
 def diagnostic_card(lang, key, value):
-    # Presentation only: health is derived from the controller, not inferred.
     if not isinstance(value,dict): return ''
-    t=lambda k:tr(lang,k)
+    t=lambda key:tr(lang,key)
     label_key,icon_name=DIAG_LABELS.get(key,(None,'info'))
     title=t(label_key) if label_key else key.replace('_',' ').title()
     ok=value.get('ok') is True
     raw=str(value.get('output') or '')
     short=raw.strip().splitlines()[0] if raw.strip() else t('maint_missing')
-    if key=='device' and len(short)>58:
+    if key=='device':
         match=re.search(r'awg(?:0|[1-9][0-9]?)',short)
-        short=(match.group(0) + ' · ' + ('UP' if ',UP,' in short else t('maint_unknown'))) if match else short[:60]+'…'
-    elif len(short)>70: short=short[:67]+'…'
-    if key=='forwarding':
-        short = t('maint_status_enabled') if short=='1' else (t('maint_status_disabled') if short=='0' else short)
-    if key in ('service','panel') and short=='active': short=t('maint_status_active')
-    return f'''<article class="health-card {'health-good' if ok else 'health-warning'}">
-      <div class="health-top"><span class="health-icon">{icon(icon_name,21)}</span>
-      <span class="health-chip"><span class="health-chip-dot"></span>{h(t('maint_healthy' if ok else 'maint_attention'))}</span></div>
-      <h3>{h(title)}</h3><p class="health-value" title="{h(raw[:400])}">{h(short)}</p>
-      <details class="health-details"><summary>{h(t('maint_details'))}</summary>
-      <pre>{h(raw or t('maint_missing'))}</pre></details></article>'''
+        if match:short=f'{match.group(0)} · '+('UP' if ',UP,' in short else t('maint_unknown'))
+    elif key=='dkms':
+        short='installed' if 'installed' in short.lower() else short[:64]
+    elif len(short)>80:short=short[:77]+'…'
+    if key=='forwarding': short=t('maint_status_enabled') if short=='1' else t('maint_status_disabled') if short=='0' else short
+    if key in ('service','panel') and short=='active':short=t('maint_status_active')
+    return f'''<div class="diag-row {'diag-ok' if ok else 'diag-bad'}">
+      <span class="diag-icon">{icon(icon_name,18)}</span>
+      <div class="diag-entry"><strong>{h(title)}</strong><span>{h(short)}</span></div>
+      <span class="diag-state"><span class="system-status-dot {'is-up' if ok else 'is-down'}"></span>
+        {h(t('maint_healthy' if ok else 'maint_attention'))}</span>
+      <details class="diag-details"><summary aria-label="{h(t('maint_details'))}">{icon('chevron-right',16)}</summary>
+        <pre>{h(raw or t('maint_missing'))}</pre></details></div>'''
 
 
 @app.get('/maintenance')
@@ -1521,9 +1570,7 @@ def maintenance(request: Request, tab: str = 'diagnostics'):
     body=f'''<div class="maint-workspace"><nav class="maint-nav" aria-label="{h(t('maint_choose'))}">
       <div class="maint-nav-heading">{h(t('maint_choose'))}</div>{nav}</nav>
       <div class="maint-panel" id="maintenance-panel"><div class="maint-panel-heading">
-      <div><div class="section-overline">AWG / SYSTEM</div><h2>{h(section_title)}</h2>
-      <p>{h(t(info_key[tab]))}</p></div>
-      <span class="maint-section-icon">{icon(next(g for key,_,g in MAINTENANCE_TABS if key==tab),24)}</span>
+      <div><h2>{h(section_title)}</h2><p>{h(t(info_key[tab]))}</p></div>
       </div>'''
     try:
         if tab in ('diagnostics','system'):
@@ -1532,15 +1579,21 @@ def maintenance(request: Request, tab: str = 'diagnostics'):
             items=[(k,v) for k,v in diag.items() if isinstance(v,dict)]
             passed=sum(v.get('ok') is True for _,v in items)
             if tab=='diagnostics':
-                checks=''.join(diagnostic_card(lang,k,v) for k,v in items)
-                checked=datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')
-                body+=f'''<section class="health-overview"><span class="health-overview-icon">{icon('shield',26)}</span>
-                  <div><div class="health-overview-kicker">{h(t('maint_diag_summary'))}</div>
-                  <div class="health-overview-number">{passed}<span> / {len(items)}</span></div>
-                  <p>{h(t('maint_checks_passed'))}</p></div>
-                  <div class="health-overview-right"><span class="health-overview-time">{h(t('maint_checked_at'))}: {h(checked)}</span>
-                  <a class="btn btn-secondary btn-small" href="/maintenance?tab=diagnostics">{icon('restart',17)}{h(t('maint_refresh'))}</a></div>
-                  </section><div class="health-grid">{checks}</div>'''
+                core_keys=('kernel','installed_module','loaded_module','dkms','secure_boot')
+                runtime_keys=('device','forwarding','service','panel')
+                known_keys=set(core_keys+runtime_keys)
+                def diag_group(title,keys):
+                    rows=''.join(diagnostic_card(lang,k,diag[k]) for k in keys if k in diag)
+                    return f'<section class="diag-group"><h3>{h(title)}</h3><div class="diag-list">{rows}</div></section>' if rows else ''
+                checks=(diag_group('Платформа и модуль' if lang=='ru' else 'Platform and module',core_keys)+
+                        diag_group('Сеть и службы' if lang=='ru' else 'Network and services',runtime_keys)+
+                        diag_group('Прочее' if lang=='ru' else 'Other',tuple(k for k,_ in items if k not in known_keys)))
+                checked=datetime.now(timezone.utc).strftime('%H:%M UTC')
+                body+=f'''<div class="diagnostics-toolbar"><span class="system-status-dot {'is-up' if passed==len(items) else 'is-down'}"></span>
+                    <strong>{passed} / {len(items)}</strong><span>{h(t('maint_checks_passed'))}</span>
+                    <span class="diagnostics-checked">{h(checked)}</span>
+                    <a class="quiet-link" href="/maintenance?tab=diagnostics">{icon('restart',15)}{h(t('maint_refresh'))}</a></div>
+                    {checks}'''
             else:
                 core=''.join(diagnostic_card(lang,k,diag[k]) for k in ('kernel','installed_module','loaded_module','dkms') if k in diag)
                 body+=f'''<div class="health-grid health-grid-compact">{core}</div>
@@ -1633,7 +1686,7 @@ def maintenance(request: Request, tab: str = 'diagnostics'):
     except (RuntimeError,ValueError,KeyError,TypeError) as exc:
         return error_page(request,t('maintenance_error'),exc)
     body+='</div></div>'
-    return page(t('maintenance'),body,request)
+    return page(t('nav_maintenance_short'),body,request)
 
 
 @app.post('/maintenance/backup')

@@ -524,3 +524,193 @@ body.nav-collapsed .sidebar-collapse .icon {transform:rotate(180deg)}
   body.nav-collapsed .sidebar {width:80px}
   body.nav-collapsed .server-picker,body.nav-collapsed .nav-group-label {display:none}
 }
+
+/* v0.9 — calmer information architecture. One server = one workspace. */
+:root { --ui-bg:#101216; --ui-panel:#191c20; --ui-panel-2:#20242a;
+  --ui-stroke:#30353c; --ui-quiet:#929aa6; --ui-ink:#f1f2f4; --ui-accent:#f8b444; }
+body {background:var(--ui-bg);font-size:14px;line-height:1.48;}
+.topbar {height:64px;background:#15181c;border-bottom:1px solid #282d34;box-shadow:none;}
+.brand {font-size:15px;letter-spacing:-.015em}
+.brand-emblem {width:34px;height:34px;border-radius:10px;background:rgba(248,180,68,.08)}
+.shell:not(.shell-auth) {display:grid;grid-template-columns:248px minmax(0,1fr);min-height:calc(100vh - 64px)}
+.shell:not(.shell-auth) .sidebar {width:248px;top:64px;height:calc(100vh - 64px);background:#15181c;
+  border-right:1px solid #282d34;padding:22px 13px 18px;display:flex;align-items:stretch;overflow-y:auto}
+.sidebar-header {margin:0 0 20px;padding:0 11px}
+.sidebar-nav-caption {font-size:10px;letter-spacing:.2em;color:#a9aeb6;font-weight:700}
+.sidebar-navigation {gap:28px}
+.nav-group {margin:0;display:flex;flex-direction:column;gap:4px}
+.nav-group-label {font-size:10px;letter-spacing:.12em;font-weight:670;color:#717c8b;padding:0 11px 8px;
+  display:flex;justify-content:space-between;align-items:center}
+.nav-group .side-link {height:42px!important;min-height:42px;padding:10px 12px;border-radius:9px;gap:12px;
+  color:#b4bcc8;font-size:13px;font-weight:550;border:0;}
+.nav-group .side-link:hover {background:#20252b;color:#f3f4f6}
+.nav-group .side-link.side-active {background:#2a251d;color:#ffc365;border:0;padding:10px 12px}
+.nav-group .side-link .icon {color:#8f99a6;flex:none}
+.nav-group .side-link.side-active .icon {color:#f8b444}
+.instance-count {background:#242931;color:#a7b0bd;border-radius:7px;padding:1px 7px;letter-spacing:0}
+.instance-nav-list {display:grid;gap:4px}
+.instance-nav-link {display:flex;align-items:center;gap:12px;min-height:59px;padding:11px 12px;
+  text-decoration:none;color:#cdd4de;border-radius:11px;border:1px solid transparent;
+  transition:background .15s ease,border-color .15s ease}
+.instance-nav-link:hover {background:#20252b;color:#fff}
+.instance-nav-link.instance-current {background:#25231f;border-color:#51412a;color:#fff}
+.instance-nav-status,.system-status-dot {display:inline-block;flex:none;width:8px;height:8px;border-radius:50%;background:#73808e}
+.instance-nav-status.is-up,.system-status-dot.is-up {background:#63c99d;box-shadow:0 0 0 3px rgba(99,201,157,.09)}
+.instance-nav-status.is-down,.system-status-dot.is-down {background:#e78d83;box-shadow:0 0 0 3px rgba(231,141,131,.08)}
+.instance-nav-text {display:flex;flex-direction:column;min-width:0;gap:3px}
+.instance-nav-text strong {font:660 14px/1.3 ui-monospace,SFMono-Regular,Consolas,monospace}
+.instance-nav-text small {font:11px/1.3 ui-monospace,SFMono-Regular,Consolas,monospace;color:#83909e;overflow:hidden;text-overflow:ellipsis}
+.instance-nav-chevron {margin-left:auto;color:#818a95;display:grid;place-items:center}
+.instance-current .instance-nav-chevron {color:#eab55f}
+.sidebar-collapse,.side-footer {display:none!important}
+.shell:not(.shell-auth) .main {width:100%;min-width:0;max-width:1520px;margin:0 auto;
+  padding:42px clamp(24px,3vw,58px) 90px}
+.page-heading {margin-bottom:24px}
+.page-heading .eyebrow {font-size:10px;letter-spacing:.16em;color:#b89354;margin-bottom:11px}
+.page-heading h1 {font-size:clamp(26px,2.2vw,33px);font-weight:650;letter-spacing:-.035em;line-height:1.2}
+.page-heading .heading-subtitle {color:#94a0ae;font-size:13px;margin-top:8px}
+.card {background:var(--ui-panel);border:1px solid var(--ui-stroke);box-shadow:none;border-radius:16px;padding:26px}
+.card .section-overline {display:none}
+/* Server identity is persistent in the page header; navigation is horizontal and scoped. */
+.server-tabs {display:flex;align-items:center;gap:4px;margin:0 0 26px;border-bottom:1px solid var(--ui-stroke);
+  overflow-x:auto;scrollbar-width:thin;white-space:nowrap}
+.server-tab {display:flex;align-items:center;min-height:46px;padding:10px 17px;border-bottom:2px solid transparent;
+  text-decoration:none;color:#9aa4b1;font-size:13px;font-weight:580;transition:color .15s}
+.server-tab:hover {color:#eef1f5}
+.server-tab.active {color:#ffc66d;border-bottom-color:#f8b444}
+.server-tab:focus-visible {outline:2px solid #f8b444;outline-offset:-3px}
+/* Overview: a quiet table of servers instead of scorecards and repeated actions. */
+.fleet-headerline {display:flex;align-items:center;justify-content:space-between;gap:14px;margin:-6px 0 14px}
+.fleet-headerline p {color:#aab4c1;font-size:13px;margin:0}
+.quiet-link {display:inline-flex;gap:7px;align-items:center;color:#edbe77;text-decoration:none;font-size:13px;font-weight:590;white-space:nowrap}
+.quiet-link:hover {color:#ffdc9e}
+.fleet-list-panel {border:1px solid var(--ui-stroke);border-radius:16px;overflow:hidden;background:var(--ui-panel)}
+.fleet-table-scroll {width:100%;overflow-x:auto}
+.fleet-table {width:100%;min-width:640px;border-collapse:collapse}
+.fleet-table thead {background:#1c2025}
+.fleet-table th {font-size:11px;font-weight:600;color:#909ba9;text-align:left;padding:16px 22px;letter-spacing:.02em}
+.fleet-table td {font-size:13px;color:#d5dbe3;padding:20px 22px;white-space:nowrap;border-top:1px solid #2c3239}
+.fleet-table tbody tr:hover {background:#22272d}
+.fleet-table td:last-child {text-align:right}
+.fleet-name {display:inline-flex;align-items:center;gap:13px;color:#fff;text-decoration:none}
+.fleet-name strong {font:660 15px/1.3 ui-monospace,SFMono-Regular,Consolas,monospace}
+.fleet-state {color:#aeb7c3;font-size:12px}
+.fleet-state-up {color:#78d1aa}.fleet-state-down {color:#ed9991}
+.system-line {display:block;background:#181b20;border:1px solid var(--ui-stroke);border-radius:14px;padding:19px 23px;margin-top:22px}
+.system-line-heading {display:flex;align-items:center;justify-content:space-between;gap:14px;margin-bottom:17px}
+.system-line-heading strong {font-size:14px;font-weight:650}
+.system-line-details {display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:13px}
+.system-line-item {display:flex;align-items:center;flex-wrap:wrap;column-gap:9px;row-gap:5px;min-width:0}
+.system-line-item span:not(.system-status-dot) {font-size:12px;color:#a3aebb}
+.system-line-item strong {font-size:12px;color:#e6e9ee;font-weight:580;overflow-wrap:anywhere}
+/* Per-instance overview */
+.server-home-grid {display:grid;grid-template-columns:minmax(290px,.9fr) minmax(400px,1.25fr);gap:19px}
+.server-home-top {display:flex;justify-content:space-between;align-items:start;gap:14px;margin-bottom:22px}
+.server-home-top h2,.config-group-header h2 {margin:0 0 9px;font-size:17px;font-weight:650;letter-spacing:-.02em}
+.server-home-top .pill {font-size:11px}
+.server-home-numbers {display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:15px;margin-top:36px}
+.server-home-numbers div {display:flex;flex-direction:column;gap:8px}
+.server-home-numbers strong {font-size:clamp(19px,2vw,27px);font-weight:660;letter-spacing:-.04em;overflow-wrap:anywhere}
+.server-home-numbers span {font-size:12px;color:#9ea9b6}
+.server-details {display:grid;grid-template-columns:repeat(2,minmax(0,1fr));column-gap:22px;row-gap:16px;margin:0}
+.server-detail {border-top:1px solid #2e343b;padding-top:10px;min-width:0}
+.server-detail dt {font-size:11px;color:#8995a3;margin-bottom:5px}
+.server-detail dd {font-size:13px;font-weight:560;color:#e5e9ee;margin:0;overflow-wrap:anywhere}
+/* Settings: one header, logical grouping, one clear save action. */
+.settings-card {margin-top:0;padding:29px 32px;max-width:950px}
+.config-group-header {margin-bottom:24px}
+.config-group-header p {font-size:12px;color:#929dab;margin:0}
+.settings-card .config-fields {gap:12px 25px;margin-bottom:24px}
+.settings-card .field {margin:0 0 10px}
+.settings-card .field input {height:46px;background:#14171b;border-color:#38404a;border-radius:9px}
+.settings-card .advanced-box {margin:20px 0;padding:0;background:#1c2025;border:1px solid #343a42;border-radius:12px}
+.settings-card .advanced-box > summary {min-height:59px;padding:16px 19px;color:#d9dfe8;font-size:13px}
+.settings-card .advanced-box[open] {padding:0 19px 20px}
+.settings-card .advanced-box[open] > summary {padding:16px 0}
+.settings-card .advanced-box .fields-grid {gap:9px 20px}
+.config-savebar {border-top:1px solid #343941;padding-top:20px;display:flex;justify-content:space-between;align-items:center;gap:24px}
+.config-savebar > span {font-size:12px;color:#96a2b1;display:flex;align-items:center;gap:8px;max-width:500px}
+.config-savebar > span svg {flex:none;color:#cfad6b}
+.config-savebar .btn {flex:none}
+/* Clients and server listing: keep controls readable, remove repeating decorative headings. */
+.clients-card,.instances-card {margin-top:0}
+.clients-card > .section-title,.instances-card > .section-title {margin-bottom:24px}
+.clients-card > .section-title .section-overline,.instances-card > .section-title .section-overline {display:none}
+.clients-card > .section-title h2,.instances-card > .section-title h2 {display:none}
+.clients-card > .section-title .section-subtitle {margin:0;color:#a4aeb9}
+.clients-card .add-client {background:#1b1f24;border-color:#343a41;border-radius:12px;margin-top:26px}
+.instance-item {border-radius:12px;padding:16px}
+/* Diagnostics: grouped rows, status at a glance; detail is opt-in. */
+.maint-panel {background:#191c20;border:1px solid var(--ui-stroke);border-radius:16px;box-shadow:none}
+.maint-nav {background:#191c20;border:1px solid var(--ui-stroke);border-radius:14px}
+.maint-panel-heading {margin-bottom:24px}
+.maint-panel-heading h2 {font-size:22px}
+.maint-panel-heading p {font-size:13px;color:#a2acb9}
+.maint-panel-heading .section-overline,.maint-section-icon {display:none}
+.diagnostics-toolbar {display:flex;align-items:center;gap:10px;margin:0 0 25px;padding:13px 18px;background:#222720;border:1px solid #3d483a;border-radius:11px;color:#c5dcca}
+.diagnostics-toolbar strong {font-size:16px;color:#f1f5f0}
+.diagnostics-toolbar span:not(.system-status-dot) {font-size:12px;color:#acc3b0}
+.diagnostics-toolbar .diagnostics-checked {margin-left:auto;color:#8fa498!important}
+.diagnostics-toolbar .quiet-link {font-size:12px}
+.diag-group {margin-bottom:24px}
+.diag-group > h3 {font-size:12px;font-weight:650;color:#9da8b6;margin:0 0 9px}
+.diag-list {border:1px solid #323941;border-radius:12px;overflow:hidden}
+.diag-row {display:flex;align-items:center;gap:14px;padding:13px 15px;min-height:65px;border-bottom:1px solid #30363d;background:#1b2025;flex-wrap:wrap}
+.diag-row:last-child {border-bottom:0}
+.diag-icon {width:35px;height:35px;background:#252b32;border-radius:9px;display:grid;place-items:center;color:#acb6c2;flex:none}
+.diag-entry {display:grid;gap:4px;min-width:0;flex:1}
+.diag-entry strong {font-size:12px;color:#e7eaf0;font-weight:600}
+.diag-entry span {font-size:12px;color:#a8b3bf;overflow-wrap:anywhere}
+.diag-state {display:flex;align-items:center;gap:8px;font-size:11px;color:#a4cfb8;white-space:nowrap}
+.diag-bad .diag-state {color:#f2a19a}
+.diag-details {position:relative;margin:0 0 0 6px;flex:none}
+.diag-details summary {height:31px;width:31px;border-radius:8px;display:grid;place-items:center;cursor:pointer;color:#8996a4;list-style:none}
+.diag-details summary:hover {background:#303840;color:#eee}
+.diag-details summary::-webkit-details-marker {display:none}
+.diag-details[open] {width:100%;flex:auto;margin-left:49px}
+.diag-details[open] summary {margin-left:auto}
+.diag-details pre {white-space:pre-wrap;overflow-wrap:anywhere;color:#b4c0cc;background:#111519;border-radius:9px;border:1px solid #333943;padding:14px;font-size:11px;line-height:1.6}
+/* Keep responsive layout intentional; mobile nav is a drawer, not an extra full-width menu. */
+@media(max-width:1140px) {
+  .server-home-grid {grid-template-columns:minmax(0,1fr)}
+  .system-line-details {grid-template-columns:repeat(2,minmax(0,1fr))}
+}
+@media(max-width:860px) {
+  .shell:not(.shell-auth) {display:block!important;grid-template-columns:none!important}
+  .shell:not(.shell-auth) .main {width:100%;padding:27px 18px 65px}
+  .shell:not(.shell-auth) .sidebar {position:fixed;top:0;bottom:0;height:100dvh;width:min(300px,88vw);transform:translateX(-105%);z-index:42;overflow-y:auto;padding:24px 13px}
+  body.nav-open .shell:not(.shell-auth) .sidebar {transform:translateX(0)}
+  body.nav-open .nav-scrim {display:block;position:fixed;inset:0;z-index:40;background:rgba(0,0,0,.7);border:0}
+  .server-tabs {margin-bottom:23px}
+  .settings-card {padding:22px 18px}
+  .maint-workspace {display:flex;flex-direction:column}
+}
+@media(max-width:650px) {
+  .topbar {height:60px}
+  .page-heading h1 {font-size:27px}
+  .shell:not(.shell-auth) .main {padding:24px 14px 58px}
+  .fleet-headerline {align-items:flex-start;gap:8px;flex-direction:column}
+  .system-line-details {grid-template-columns:minmax(0,1fr)}
+  .fleet-table td,.fleet-table th {padding:15px}
+  .server-home-grid .card {padding:20px}
+  .server-home-numbers {margin-top:22px}
+  .server-details {grid-template-columns:minmax(0,1fr)}
+  .config-savebar {flex-direction:column;align-items:stretch}
+  .config-savebar .btn {width:100%}
+  .diagnostics-toolbar {flex-wrap:wrap}
+  .diagnostics-toolbar .diagnostics-checked {margin-left:0}
+  .diag-state {font-size:0}
+  .diag-details {margin-left:0}
+  .diag-details[open] {margin-left:0}
+  .maint-panel {padding:20px 14px}
+}
+@media(max-width:650px) {
+  .topbar .brand {font-size:13px;white-space:nowrap;letter-spacing:-.03em;gap:6px}
+  .topbar .brand-emblem {width:31px;height:31px;flex:none}
+  .topbar #refresh-page {display:none}
+  .topbar .topbar-left {gap:7px}
+  .topbar .topbar-right {gap:6px}
+  .topbar .language-picker a {min-width:34px;padding:6px}
+  .server-tabs {justify-content:space-between;gap:0}
+  .server-tab {font-size:12px;padding:10px 10px}
+}

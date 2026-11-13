@@ -58,7 +58,7 @@ def test_fleet_home_and_server_pages_are_separate(ui):
     _,c,calls=ui
     root=c.get('/'); assert root.status_code==200
     assert 'Обзор инфраструктуры' in root.text
-    assert root.text.count('class="fleet-server"')==2
+    assert root.text.count('class="fleet-row"')==2
     assert '7.0.0-43' in root.text and '3.1.20260812' in root.text
     assert 'action="/client"' not in root.text
     listing=c.get('/servers');assert 'Создать сервер' in listing.text
@@ -74,7 +74,9 @@ def test_fleet_home_and_server_pages_are_separate(ui):
     assert '10.77.20.0/24' in settings.text and '51821' in settings.text
     assert 'client-search' not in settings.text
     assert 'name="server-picker"' not in root.text
-    assert 'id="server-picker"' in root.text
+    assert 'id="server-picker"' not in root.text
+    assert root.text.count('class="instance-nav-link')==2
+    assert 'href="/servers/awg1/overview"' in root.text
     assert 'href="/#clients"' not in root.text
     assert c.get('/servers/awg2/clients').status_code==404
     assert c.get('/servers/awg1/invalid').status_code==404

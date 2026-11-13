@@ -44,32 +44,34 @@ def test_app_sidebar_sections_are_grouped_no_top_kernel(ui):
     _,client,_=ui
     html=client.get('/').text
     assert '<span class="top-kernel">' not in html
-    assert 'ИНФРАСТРУКТУРА' in html and 'ТЕКУЩИЙ СЕРВЕР' in html and 'СИСТЕМА' in html
+    assert 'ИНФРАСТРУКТУРА' in html and 'ЭКЗЕМПЛЯРЫ' in html and 'СИСТЕМА' in html
     assert 'Серверы и интерфейсы</span></a>' not in html
     assert 'Обслуживание и безопасность</span></a>' not in html
     assert 'data-nav-key="overview"' in html
-    assert 'data-nav-key="clients"' in html
+    assert 'class="instance-nav-list"' in html
+    assert 'href="/servers/awg0/overview"' in html
+    assert 'id="server-picker"' not in html
     assert 'data-nav-key="maintenance"' in html
     assert 'aria-controls="app-sidebar"' in html
-    assert 'id="sidebar-collapse"' in html
-    assert '/assets/panel.js?v=0.8.0' in html
-    assert '/assets/md3.css?v=0.8.0' in html
+    assert 'class="server-tabs"' not in html
+    assert '/assets/panel.js?v=0.9.0' in html
+    assert '/assets/md3.css?v=0.9.0' in html
     js=client.get('/assets/panel.js').text
-    assert 'mobile-nav-toggle' in js and 'sidebar-collapse' in js
+    assert 'mobile-nav-toggle' in js and 'server-picker' not in js
     assert 'nav-open' in js and 'nav-collapsed' in js
     css=client.get('/assets/md3.css').text
     assert '.maint-workspace' in css and '.health-grid' in css and '.nav-scrim' in css
-    assert 'grid-template-columns:252px minmax(0,1fr)' in css
+    assert 'grid-template-columns:248px minmax(0,1fr)' in css
 
 
 def test_diagnostics_cards_health_and_no_duplicate_title(ui):
     _,client,calls=ui
     html=client.get('/maintenance').text
-    assert html.count('<h1>Обслуживание и безопасность</h1>')==1
+    assert html.count('<h1>Обслуживание</h1>')==1
     assert '<h2>Обслуживание и безопасность</h2>' not in html
     assert 'Диагностика, резервные копии и управление доступом' in html
-    assert html.count('class="health-card ') == 5
-    assert '4<span> / 5</span>' in html
+    assert html.count('class="diag-row ') == 5
+    assert '<strong>4 / 5</strong>' in html
     assert '7.0.0-43-generic' in html
     assert 'awg0 · UP' in html
     assert 'Требует внимания' in html

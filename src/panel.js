@@ -14,10 +14,6 @@
     if (selected) link.setAttribute('aria-current','page');
     else link.removeAttribute('aria-current');
   }
-  byId('server-picker')?.addEventListener('change', (event) => {
-    const path = event.target.value;
-    if (/^\/servers\/awg(?:0|[1-9][0-9]?)\/overview$/.test(path)) window.location.assign(path);
-  });
   const serverScope = document.body.dataset.serverScope || '';
   const mobileToggle = byId('mobile-nav-toggle');
   const mobileClose = byId('sidebar-mobile-close');
@@ -38,23 +34,8 @@
   document.addEventListener('keydown', (event) => {
     if (event.key === 'Escape' && document.body.classList.contains('nav-open')) setDrawer(false);
   });
-  // Store only the navigation's presentation preference, never credentials.
-  const collapse = byId('sidebar-collapse');
-  const collapsedKey = 'awg31.ui.sidebar.collapsed';
-  try {
-    document.body.classList.toggle('nav-collapsed', localStorage.getItem(collapsedKey) === '1');
-  } catch (_) { /* Private browsing / blocked storage. */ }
-  const syncCollapse = () => {
-    const c = document.body.classList.contains('nav-collapsed');
-    collapse?.setAttribute('aria-expanded', String(!c));
-  };
-  syncCollapse();
-  collapse?.addEventListener('click', () => {
-    const next = !document.body.classList.contains('nav-collapsed');
-    document.body.classList.toggle('nav-collapsed', next);
-    try {localStorage.setItem(collapsedKey, next ? '1' : '0');} catch (_) {}
-    syncCollapse();
-  });
+  // Server selection is done with real links in the sidebar; no stored global selector.
+  document.body.classList.remove("nav-collapsed");
   for (const form of document.querySelectorAll('form[data-confirm]')) {
     form.addEventListener('submit', (event) => {
       if (!window.confirm(form.dataset.confirm)) event.preventDefault();
