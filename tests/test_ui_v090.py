@@ -64,8 +64,8 @@ def test_css_mobile_layout_and_no_selector_js(ui):
     assert 'server-picker' not in js
     assert 'nav-open' in js
     home = client.get('/').text
-    assert 'md3.css?v=0.9.2' in home
-    assert 'panel.js?v=0.9.2' in home
+    assert 'md3.css?v=0.9.3' in home
+    assert 'panel.js?v=0.9.3' in home
     english = client.get('/lang/en?next=%2Fservers%2Fawg1%2Fsettings')
     assert english.status_code == 200
     text = english.text
