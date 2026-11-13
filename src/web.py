@@ -37,7 +37,7 @@ TEXT = {
         'new_server_hint':'Каждый сервер использует отдельные ключи, подсеть, UDP-порт и список клиентов.',
         'server_name':'Интерфейс (например awg1)', 'server_subnet':'Подсеть IPv4',
         'server_uplink':'Внешний интерфейс', 'server_mode':'Маршрутизация',
-        'server_switch':'Перейти', 'server_stop':'Остановить', 'server_start':'Запустить', 'server_remove':'Удалить сервер', 'server_remove_confirm':'Удалить сервер? Сначала удалите всех клиентов. Конфигурация будет перемещена в резервную копию.',
+        'server_switch':'Перейти', 'server_stop':'Остановить', 'server_start':'Запустить', 'server_remove':'Удалить сервер', 'server_remove_confirm':'Удалить сервер и всех клиентов? Конфигурация и база клиентов будут сохранены в резервной копии.',
         'advanced':'Параметры обфускации AWG 3.1', 'generate':'Сгенерировать параметры',
         'advanced_hint':'Изменение S/H и HeaderProtectionKey потребует переимпорта конфигураций всех клиентов этого сервера.',
         'new_server_note':'Создание второго сервера не изменяет awg0. Подсети и UDP-порты не должны пересекаться.',
@@ -93,13 +93,14 @@ TEXT = {
         'traffic_unavailable': 'Данные временно недоступны',
         'no_matching_clients': 'Клиенты не найдены',
         'confirm_restart': 'Применить настройки и перезапустить VPN? Активные соединения могут прерваться.',
+        'cancel_action':'Отмена', 'confirm_action':'Подтвердить', 'select_all':'Выбрать всех', 'bulk_delete':'Удалить выбранных', 'selected_count':'Выбрано', 'bulk_delete_confirm':'Удалить выбранных клиентов? Действие нельзя отменить.',
     },
     'en': {
         'server_instances':'Servers and interfaces', 'new_server':'Create server',
         'new_server_hint':'Each server has independent keys, subnet, UDP port and clients.',
         'server_name':'Interface (e.g. awg1)', 'server_subnet':'IPv4 subnet',
         'server_uplink':'Uplink interface', 'server_mode':'Routing',
-        'server_switch':'Open', 'server_stop':'Stop', 'server_start':'Start', 'server_remove':'Delete server', 'server_remove_confirm':'Delete server? Remove all clients first. The configuration will be backed up.',
+        'server_switch':'Open', 'server_stop':'Stop', 'server_start':'Start', 'server_remove':'Delete server', 'server_remove_confirm':'Delete server and all clients? Configuration and client database will be backed up.',
         'advanced':'AWG 3.1 obfuscation parameters', 'generate':'Generate parameters',
         'advanced_hint':'Changing S/H and HeaderProtectionKey requires clients on this server to re-import their configurations.',
         'new_server_note':'Creating another server does not change awg0. Subnets and UDP ports must be unique.',
@@ -155,6 +156,7 @@ TEXT = {
         'traffic_unavailable': 'Traffic data temporarily unavailable',
         'no_matching_clients': 'No matching clients',
         'confirm_restart': 'Apply settings and restart VPN? Active connections may be interrupted.',
+        'cancel_action':'Cancel', 'confirm_action':'Confirm', 'select_all':'Select all', 'bulk_delete':'Delete selected', 'selected_count':'Selected', 'bulk_delete_confirm':'Permanently delete selected clients?',
     },
 }
 
@@ -545,7 +547,10 @@ def selected_server(request):
         if not SERVER_RE.fullmatch(explicit): raise HTTPException(404)
         return explicit
     value = request.cookies.get('awg31_server','awg0')
-    return value if SERVER_RE.fullmatch(value) else 'awg0'
+    # awg0 can be deleted; a stale cookie must never hide remaining servers.
+    available = [item['interface'] for item in server_list()
+                 if SERVER_RE.fullmatch(item.get('interface',''))]
+    return value if SERVER_RE.fullmatch(value) and value in available else (available[0] if available else 'awg0')
 
 
 def scoped_prefix(request):
@@ -727,9 +732,9 @@ def page(title, content, request):
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="color-scheme" content="dark">
     <title>{h(title)} — AmneziaWG 3.1</title>
-    <link rel="stylesheet" href="/assets/panel.css?v=0.9.2">
-    <link rel="stylesheet" href="/assets/md3.css?v=0.9.2">
-    <script defer src="/assets/panel.js?v=0.9.2"></script>
+    <link rel="stylesheet" href="/assets/panel.css?v=0.9.3">
+    <link rel="stylesheet" href="/assets/md3.css?v=0.9.3">
+    <script defer src="/assets/panel.js?v=0.9.3"></script>
     </head><body data-server-scope="{h(scoped)}">
     <header class="topbar"><div class="topbar-left">{nav_toggle}<a href="/" class="brand"><span class="brand-emblem">{icon('shield',18)}</span><span>AmneziaWG <b>3.1</b></span></a></div>
     <div class="topbar-right">{language_picker(request)}{refresh_button}{status_link}</div></header>
@@ -969,7 +974,7 @@ async def server_create(request:Request):
             ('interface','subnet','port','mtu','endpoint','dns','mode','uplink')}
     try:
         iface=data['interface']
-        if not SERVER_RE.fullmatch(iface) or iface=='awg0':
+        if not SERVER_RE.fullmatch(iface):
             raise RuntimeError('Use an interface name such as awg1')
         ctl('server-create',data)
         audit_event('server_created',iface)
@@ -997,10 +1002,10 @@ async def server_service_action(request:Request,interface:str,action:str):
     except RuntimeError as exc:
         return error_page(request,tr(lang_of(request),'error'),exc)
     if action == 'delete':
-        response=RedirectResponse('/',status_code=303)
+        response=RedirectResponse('/servers',status_code=303)
         response.delete_cookie('awg31_server')
         return response
-    return RedirectResponse('/',status_code=303)
+    return RedirectResponse(f'/servers/{interface}/overview',status_code=303)
 
 
 @app.get('/lang/{language}')
@@ -1111,7 +1116,13 @@ def server_content(request: Request, section: str = 'overview'):
     try:
         state = control(request,'list')
     except RuntimeError as exc:
-        return error_page(request, t('error'), exc)
+        if section != 'servers' or server_list():
+            return error_page(request, t('error'), exc)
+        # The last server was deleted: keep the creation page usable.
+        state = {'interface':'awg0','subnet':'10.77.10.0/24','port':51820,
+                 'running':False,'clients':[],'mtu':1280,'dns':'1.1.1.1',
+                 'endpoint':'vpn.example.com','mode':'full','uplink':'ens3',
+                 'obfuscation':{}}
 
     try:
         instances=server_list()
@@ -1195,7 +1206,7 @@ def server_content(request: Request, section: str = 'overview'):
         actions += (f'<form method="post" action="/client/{encoded_name}/delete" class="inline" data-confirm="{h(t("confirm_delete"))}">'
                     f'{csrf(request)}<button class="btn btn-danger btn-small" type="submit">'
                     f'{icon("trash",16)}{h(t("delete"))}</button></form>')
-        rows += (f'<tr class="client-row" data-name="{h(c["name"].lower())}" data-ip="{h(c["ip"])}" data-enabled="{int(active)}"><td class="client-name">{icon("server",16)}<span>{h(c["name"])}</span></td>'
+        rows += (f'<tr class="client-row" data-name="{h(c["name"].lower())}" data-ip="{h(c["ip"])}" data-enabled="{int(active)}"><td><input class="peer-select" type="checkbox" form="bulk-delete-form" name="names" value="{name}" aria-label="{name}"></td><td class="client-name">{icon("server",16)}<span>{h(c["name"])}</span></td>'
                  f'<td><code class="ip-pill">{h(c["ip"])}</code>'
                  f'<small class="peer-routes-compact">{h(c.get("routed_subnets", ""))}</small></td>'
                  f'<td><span class="pill pill-{status_class}"><span class="dot"></span>'
@@ -1205,7 +1216,7 @@ def server_content(request: Request, section: str = 'overview'):
                  f'<td><div class="actions">{actions}</div></td></tr>')
 
     if not rows:
-        rows = (f'<tr><td colspan="5"><div class="empty-state">{icon("users",26)}'
+        rows = (f'<tr><td colspan="6"><div class="empty-state">{icon("users",26)}'
                 f'<strong>{h(t("no_clients"))}</strong><span>{h(t("no_clients_hint"))}</span>'
                 '</div></td></tr>')
     clients = f'''<section class="card clients-card" id="clients">
@@ -1215,9 +1226,12 @@ def server_content(request: Request, section: str = 'overview'):
         <a class="btn btn-primary" href="#add-client">{icon('plus',16)}{h(t('add_client'))}</a></div>
         <div class="table-tools"><label class="table-search">{icon('search',16)}<input id="client-search" type="search" placeholder="{h(t('search_clients'))}" aria-label="{h(t('search_clients'))}"></label>
         <select id="client-filter" aria-label="{h(t('status'))}"><option value="all">{h(t('all_clients'))}</option><option value="enabled">{h(t('active_only'))}</option></select>
-        <span class="table-count mono">{len(clients_all)} PEERS</span></div>
+        <span class="table-count mono">{len(clients_all)} {h('клиентов' if lang=='ru' else 'peers')}</span></div>
+        <form id="bulk-delete-form" method="post" action="/servers/{h(state['interface'])}/clients/bulk-delete" data-confirm="{h(t('bulk_delete_confirm'))}">{csrf(request)}
+        <div class="bulk-toolbar"><span id="bulk-selection-count">{h(t('selected_count'))}: 0</span>
+        <button id="bulk-delete-button" type="submit" class="btn btn-danger btn-small" disabled>{icon('trash',16)}{h(t('bulk_delete'))}</button></div></form>
         <div class="table-scroll"><table><thead><tr>
-        <th>{h(t('name'))}</th><th>{h(t('vpn_ip'))}</th><th>{h(t('status'))}</th>
+        <th><input type="checkbox" id="select-all-peers" aria-label="{h(t('select_all'))}"></th><th>{h(t('name'))}</th><th>{h(t('vpn_ip'))}</th><th>{h(t('status'))}</th>
         <th>{h(t('traffic'))}</th><th>{h(t('actions'))}</th></tr></thead><tbody>{rows}</tbody></table></div>
         <div class="add-client" id="add-client"><div><span class="section-overline">NEW PEER</span><h3>{icon('plus',18)}{h(t('add_client'))}</h3></div>
         <form class="add-client-form" method="post" action="/client">{csrf(request)}
@@ -1255,7 +1269,7 @@ def server_content(request: Request, section: str = 'overview'):
            f'data-confirm="{h(t("server_remove_confirm"))}">{csrf(request)}'
            f'<input type="hidden" name="confirm" value="{h(x["interface"])}">'
            f'<button class="btn btn-danger btn-small" type="submit">{h(t("server_remove"))}</button></form>'
-           if x['interface'] != 'awg0' and not x.get('clients',0) else '')
+           if True else '')
         + '</div>' for x in instances)
     servers_html=f'''<section class="card instances-card" id="servers"><div class="section-title"><div>
         <span class="section-overline">SERVERS / INSTANCES</span><h2>{icon('server',20)}{h(t('server_instances'))}</h2>
@@ -1290,13 +1304,17 @@ def server_content(request: Request, section: str = 'overview'):
              +''.join('<option value="'+val+'" '+('selected' if obf.get(key,'on')==val else '')+'>'
              +val+'</option>' for val in ('on','off'))+'</select></label>'
              for key in ('RandomTrailers','DisableCookies'))
-    advanced=f'''<details class="advanced-box" id="obfuscation"><summary>{icon('settings',16)}{h(t('advanced'))}</summary>
+    advanced=f'''<section class="advanced-box" id="obfuscation"><h3>{icon('settings',16)}{h(t('advanced'))}</h3>
           <p class="info-line">{h(t('advanced_hint'))}</p>
           <div class="obf-generate-controls"><button class="btn btn-secondary" id="generate-obf" type="button">{icon('restart',16)}{h(t('generate'))}</button>
           <label class="obf-timing-switch"><input type="checkbox" id="generate-timings"><span>{'Генерировать тайминги AWG 3.1' if lang=='ru' else 'Generate AWG 3.1 timing ranges'}</span></label></div>
           <p class="obf-help">{'По умолчанию тайминги остаются пустыми; включайте только при необходимости. Изменения применятся после сохранения сервера.' if lang=='ru' else 'Timings remain unset by default. Enable only when needed; save the server to apply changes.'}</p>
-          <div class="fields-grid" id="obfuscation-fields">{obf_inputs}</div></details>'''
-    settings = f'''<section class="card settings-card" id="settings">
+          <div class="fields-grid" id="obfuscation-fields">{obf_inputs}</div></section>'''
+    saved_notice = (f'<div class="settings-success" role="status">{icon("check",20)}'
+                    f'<div><strong>{h(t("settings_saved"))}</strong><p>{h(t("settings_saved_hint"))}</p></div>'
+                    f'<a class="btn btn-secondary btn-small" href="/servers/{h(state["interface"])}/clients">{h(t("clients"))}</a></div>'
+                    if request.query_params.get('saved') == '1' else '')
+    settings = f'''{saved_notice}<section class="card settings-card" id="settings">
         <form method="post" action="/settings" data-confirm="{h(t('confirm_restart'))}">{csrf(request)}
         <div class="config-group-header"><div><h2>{h('Подключение' if lang=='ru' else 'Connection')}</h2>
         <p>{h('Параметры только этого VPN-интерфейса' if lang=='ru' else 'Settings for this VPN instance only')}</p></div></div>
@@ -1326,7 +1344,9 @@ def server_content(request: Request, section: str = 'overview'):
           <section class="card server-home-card"><div class="server-home-top">
             <div><h2>{h('Состояние' if lang=='ru' else 'Status')}</h2>
               <span class="pill pill-{state_pill}"><span class="dot"></span>{h(t('vpn_running' if running else 'vpn_stopped'))}</span></div>
-            <a class="btn btn-secondary btn-small" href="/servers/{h(state['interface'])}/monitoring">{h(t('server_monitor'))}</a></div>
+            <div class="server-state-actions"><a class="btn btn-secondary btn-small" href="/servers/{h(state['interface'])}/monitoring">{h(t('server_monitor'))}</a>
+             <form method="post" action="/server/{h(state['interface'])}/{'stop' if running else 'start'}" {'data-confirm="'+h(t('confirm_restart'))+'"' if running else ''}>{csrf(request)}
+             <button class="btn {'btn-danger' if running else 'btn-primary'} btn-small" type="submit">{h(t('server_stop' if running else 'server_start'))}</button></form></div></div>
             <div class="server-home-numbers"><div><strong>{len(clients_all)}</strong><span>{h(t('total_clients'))}</span></div>
               <div><strong>{connected_count}</strong><span>{h(t('connected'))}</span></div>
               <div><strong>{h(friendly_size(total_rx+total_tx))}</strong><span>{h(t('total_transfer'))}</span></div></div>
@@ -1410,17 +1430,17 @@ def infrastructure_overview(request: Request):
       <svg viewBox="0 0 280 48" preserveAspectRatio="none" class="host-kpi-chart" aria-label="{h(title)}">
         <path data-kpi-area="{key}"/><path data-kpi-line="{key}"/></svg></article>'''
     cards=''.join(dash_metric(key,title,title,detail) for key,title,detail in [
-       ('cpu','CPU','Логические ядра' if ru else 'Logical cores'),
-       ('ram','RAM','Оперативная память' if ru else 'System memory'),
-       ('swap','SWAP','Использование подкачки' if ru else 'Swap usage'),
-       ('disk','DISK','Корневая файловая система' if ru else 'Root filesystem')])
+       ('cpu','Процессор' if ru else 'CPU','Логические ядра' if ru else 'Logical cores'),
+       ('ram','Память' if ru else 'RAM','Оперативная память' if ru else 'System memory'),
+       ('swap','Подкачка' if ru else 'SWAP','Использование подкачки' if ru else 'Swap usage'),
+       ('disk','Диск' if ru else 'DISK','Корневая файловая система' if ru else 'Root filesystem')])
     traffic=_dashboard_plot('wan','Трафик внешнего интерфейса' if ru else 'Uplink traffic',
                             'WAN · RX / TX' if ru else 'WAN · RX / TX',174)
     host=f'''<div class="infra-section-head"><h2>{'Система' if ru else 'System'}</h2>
       <span class="infra-pulse"><i></i>{'Автообновление 5 с' if ru else 'Live · 5 s'}</span></div>
       <div class="host-kpi-grid">{cards}</div>
       <div class="host-chart-grid"><section class="host-traffic-panel">
-        <div class="host-panel-head"><div><span class="host-panel-eyebrow">NETWORK / WAN</span>
+        <div class="host-panel-head"><div><span class="host-panel-eyebrow">{'СЕТЬ / ВНЕШНИЙ ИНТЕРФЕЙС' if ru else 'NETWORK / WAN'}</span>
           <h3>{'Скорость трафика хоста' if ru else 'Host traffic speed'}</h3></div>
           <div class="dash-live-legend"><span><i class="dash-dot rx"></i>{'Получение' if ru else 'Download'} <b id="wan-rx-rate">—</b></span>
           <span><i class="dash-dot tx"></i>{'Отправка' if ru else 'Upload'} <b id="wan-tx-rate">—</b></span></div></div>
@@ -1429,7 +1449,7 @@ def infrastructure_overview(request: Request):
           <div><small>{tx_label}</small><strong id="wan-tx-total">—</strong></div>
           <div><small>{'Сетевой интерфейс' if ru else 'Uplink'}</small><strong id="wan-interface">—</strong></div></div>
       </section>
-      <section class="host-connections-panel"><div class="host-panel-head"><div><span class="host-panel-eyebrow">NETWORK / SOCKETS</span>
+      <section class="host-connections-panel"><div class="host-panel-head"><div><span class="host-panel-eyebrow">{'СЕТЬ / СОЕДИНЕНИЯ' if ru else 'NETWORK / SOCKETS'}</span>
         <h3>{'Соединения' if ru else 'Connections'}</h3></div></div>
         <strong class="host-connections-number" id="host-sockets-total">—</strong>
         <span class="host-submetric">{'TCP + UDP сокеты' if ru else 'TCP + UDP sockets'}</span>
@@ -1504,9 +1524,7 @@ async def settings(request: Request, interface: str = ''):
         audit_event('server_settings_changed',selected_server(request))
     except RuntimeError as exc:
         return error_page(request,tr(lang,'settings_error'),exc)
-    return page(tr(lang,'settings_saved'),'<section class="card message-card">'
-                + f'<p>{h(tr(lang,"settings_saved_hint"))}</p><a class="btn btn-primary" href="/">'
-                + h(tr(lang,'back')) + '</a></section>',request)
+    return RedirectResponse(f'/servers/{selected_server(request)}/settings?saved=1',status_code=303)
 
 @app.post('/client')
 @app.post('/servers/{interface}/clients')
@@ -1733,6 +1751,24 @@ def qr(request: Request, name: str, mode: str = 'conf', download: bool = False, 
     if download:
         headers['Content-Disposition'] = f'attachment; filename="{name}-{mode}-qr.png"'
     return Response(buffer.getvalue(), media_type='image/png', headers=headers)
+
+
+@app.post('/clients/bulk-delete')
+@app.post('/servers/{interface}/clients/bulk-delete')
+async def clients_bulk_delete(request: Request, interface: str = ''):
+    form = await request.form()
+    require_csrf(request, form.get('csrf', ''))
+    names = form.getlist('names')
+    if (not 1 <= len(names) <= 256 or len(set(names)) != len(names)
+            or any(not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_-]{0,31}', name) for name in names)):
+        raise HTTPException(422, detail='Invalid client selection')
+    try:
+        control(request, 'delete-batch', {'names': names})
+        for name in names:
+            audit_event('client_deleted', f'{selected_server(request)}/{name}')
+    except RuntimeError as exc:
+        return error_page(request, tr(lang_of(request), 'error'), exc)
+    return RedirectResponse(scoped_prefix(request)+'/clients' if scoped_prefix(request) else '/servers/'+selected_server(request)+'/clients', status_code=303)
 
 
 @app.post('/client/{name}/{action}')

@@ -95,7 +95,7 @@ def test_explicit_url_prevents_cookie_cross_server_writes(ui):
     assert c.get('/servers/awg1/api/traffic').status_code==200
     assert ('list',{'interface':'awg1'}) in calls
     assert c.post('/servers/awg1/settings',data={'csrf':token(c.get('/servers/awg1/settings')),
-                  'port':'51822','endpoint':'new.example'},follow_redirects=False).status_code==200
+                  'port':'51822','endpoint':'new.example'},follow_redirects=False).status_code==303
     assert any(op=='settings' and d['interface']=='awg1' and d['port']=='51822' for op,d in calls)
     assert not any(op=='settings' and d['interface']=='awg0' for op,d in calls)
     assert c.get('/servers/awg1/clients/beta').status_code==200
