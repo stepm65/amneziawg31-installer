@@ -262,6 +262,129 @@ TEXT['en'].update({
     'qr_overflow': 'QR is too large. Copy the link or download the .conf instead.',
 })
 
+
+# v0.7 layout and maintenance navigation labels.
+TEXT['ru'].update({
+    'nav_group_workspace':'РАБОЧЕЕ ПРОСТРАНСТВО',
+    'nav_group_config':'КОНФИГУРАЦИЯ',
+    'nav_group_system':'СИСТЕМА',
+    'nav_servers_short':'Серверы',
+    'nav_maintenance_short':'Обслуживание',
+    'nav_vpn_settings':'Настройки VPN',
+    'nav_toggle':'Открыть меню',
+    'nav_close':'Закрыть меню',
+    'nav_collapse':'Свернуть меню',
+    'nav_expand':'Развернуть меню',
+    'maint_diagnostics':'Диагностика',
+    'maint_backups':'Резервные копии',
+    'maint_restore':'Восстановление',
+    'maint_profiles':'Профили сервера',
+    'maint_security':'Безопасность',
+    'maint_audit':'Журнал действий',
+    'maint_system':'Система',
+    'maint_choose':'Разделы обслуживания',
+    'maint_diagnostics_hint':'Состояние ядра, модуля и служб VPN. Результаты получены непосредственно с сервера.',
+    'maint_healthy':'В порядке',
+    'maint_attention':'Требует внимания',
+    'maint_checks_passed':'Проверок пройдено',
+    'maint_checked_at':'Проверено',
+    'maint_details':'Технические сведения',
+    'maint_refresh':'Проверить ещё раз',
+    'maint_backup_count':'Доступные архивы',
+    'maint_no_backups':'Резервных копий пока нет',
+    'maint_backups_hint':'Архив содержит конфигурации, базы и приватные ключи. Скачивайте его только в доверенном окружении.',
+    'maint_restore_hint':'Выберите сохранённый архив. Перед восстановлением содержимое проверяется, а текущее состояние сохраняется в аварийной копии.',
+    'maint_restore_empty':'Сначала создайте резервную копию во вкладке «Резервные копии».',
+    'maint_profile_hint':'Переносите параметры выбранного VPN-сервера без замены его приватного ключа.',
+    'maint_security_hint':'Обновите пароль администратора. После смены пароля действующие сессии станут недействительными.',
+    'maint_audit_hint':'История административных действий. Приватные ключи и пароли в журнал не записываются.',
+    'maint_system_hint':'Техническое обслуживание выполняется из локального терминала с правами администратора.',
+    'maint_system_kernel':'Проверка модуля после обновления ядра',
+    'maint_system_cmds':'Команды обслуживания',
+    'maint_system_hint_vpn':'Команды не перезапускают VPN-интерфейс без отдельного действия.',
+    'maint_backup_name':'Архив',
+    'maint_backup_size':'Размер',
+    'maint_backup_actions':'Действия',
+    'maint_restore_warning_short':'Восстановление прервёт VPN-подключения. Предварительная проверка выполняется автоматически.',
+    'maint_missing':'Нет данных',
+    'maint_kern':'Ядро Linux',
+    'maint_mod_installed':'Модуль AWG · установлен',
+    'maint_mod_loaded':'Модуль AWG · загружен',
+    'maint_dkms':'DKMS',
+    'maint_device':'VPN-интерфейс',
+    'maint_forward':'IPv4 Forwarding',
+    'maint_service':'VPN-служба',
+    'maint_secureboot':'Secure Boot',
+    'maint_panel':'Веб-панель',
+    'maint_conn':'Сервис',
+    'maint_status_enabled':'Включено',
+    'maint_status_disabled':'Отключено',
+    'maint_status_active':'Активен',
+    'maint_diag_summary':'Состояние компонентов',
+    'maint_unknown':'Неизвестно',
+    'maint_page_subtitle':'Диагностика, резервные копии и управление доступом'
+})
+TEXT['en'].update({
+    'nav_group_workspace':'WORKSPACE',
+    'nav_group_config':'CONFIGURATION',
+    'nav_group_system':'SYSTEM',
+    'nav_servers_short':'Servers',
+    'nav_maintenance_short':'Maintenance',
+    'nav_vpn_settings':'VPN settings',
+    'nav_toggle':'Open menu',
+    'nav_close':'Close menu',
+    'nav_collapse':'Collapse menu',
+    'nav_expand':'Expand menu',
+    'maint_diagnostics':'Diagnostics',
+    'maint_backups':'Backups',
+    'maint_restore':'Restore',
+    'maint_profiles':'Server profiles',
+    'maint_security':'Security',
+    'maint_audit':'Audit log',
+    'maint_system':'System',
+    'maint_choose':'Maintenance sections',
+    'maint_diagnostics_hint':'Kernel, module and VPN service health. Results are read directly from the server.',
+    'maint_healthy':'Healthy',
+    'maint_attention':'Needs attention',
+    'maint_checks_passed':'Checks passed',
+    'maint_checked_at':'Checked',
+    'maint_details':'Technical details',
+    'maint_refresh':'Run checks again',
+    'maint_backup_count':'Available archives',
+    'maint_no_backups':'No backups yet',
+    'maint_backups_hint':'Archives contain configuration, databases and private keys. Download only to a trusted environment.',
+    'maint_restore_hint':'Select an existing backup. Its contents are verified and a safety snapshot is created before restoration.',
+    'maint_restore_empty':'Create a backup first in the Backups section.',
+    'maint_profile_hint':'Transfer settings of the selected VPN server without replacing its private key.',
+    'maint_security_hint':'Change the administrator password. Existing sessions will be invalidated.',
+    'maint_audit_hint':'Administrative activity history. Private keys and passwords are not written to the log.',
+    'maint_system_hint':'Maintenance commands run from the local terminal as an administrator.',
+    'maint_system_kernel':'Kernel module check after an update',
+    'maint_system_cmds':'Maintenance commands',
+    'maint_system_hint_vpn':'These commands do not restart the VPN interface without an explicit action.',
+    'maint_backup_name':'Backup',
+    'maint_backup_size':'Size',
+    'maint_backup_actions':'Actions',
+    'maint_restore_warning_short':'Restoration interrupts VPN connections. Archive validation runs automatically.',
+    'maint_missing':'No data',
+    'maint_kern':'Linux kernel',
+    'maint_mod_installed':'AWG module · installed',
+    'maint_mod_loaded':'AWG module · loaded',
+    'maint_dkms':'DKMS',
+    'maint_device':'VPN interface',
+    'maint_forward':'IPv4 forwarding',
+    'maint_service':'VPN service',
+    'maint_secureboot':'Secure Boot',
+    'maint_panel':'Web panel',
+    'maint_conn':'Service',
+    'maint_status_enabled':'Enabled',
+    'maint_status_disabled':'Disabled',
+    'maint_status_active':'Active',
+    'maint_diag_summary':'Component health',
+    'maint_unknown':'Unknown',
+    'maint_page_subtitle':'Diagnostics, backups and access controls'
+})
+
 # Translate expected validation errors from the privileged controller; unfamiliar errors
 # remain escaped and visible for debugging (no controller functionality is changed).
 KNOWN_ERRORS = {
@@ -309,6 +432,19 @@ ICONS = {
     'info': '<circle cx="12" cy="12" r="10"/><path d="M12 11v6M12 7h.01"/>',
     'check': '<path d="m5 12 4 4L19 6"/>',
     'arrow': '<path d="M5 12h14m-6-6 6 6-6 6"/>',
+    'menu': '<path d="M4 7h16M4 12h16M4 17h16"/>',
+    'chevron-left': '<path d="m15 18-6-6 6-6"/>',
+    'chevron-right': '<path d="m9 18 6-6-6-6"/>',
+    'download': '<path d="M12 3v12m-4-4 4 4 4-4M4 17v4h16v-4"/>',
+    'archive': '<rect x="3" y="4" width="18" height="5" rx="1"/><path d="M5 9v12h14V9M10 14h4"/>',
+    'alert': '<path d="M12 3 2 21h20L12 3zM12 9v5M12 18h.01"/>',
+    'terminal': '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="m7 9 4 3-4 3m6 0h4"/>',
+    'key': '<circle cx="8" cy="15" r="4"/><path d="m11 12 10-10m-5 5 3 3"/>',
+    'list': '<path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/>',
+    'cpu': '<rect x="5" y="5" width="14" height="14" rx="2"/><path d="M9 9h6v6H9zM9 1v4M15 1v4M9 19v4M15 19v4M1 9h4M1 15h4M19 9h4M19 15h4"/>',
+    'hard-drive': '<rect x="2" y="7" width="20" height="11" rx="2"/><path d="M6 14h.01M10 14h.01"/>',
+    'route': '<circle cx="5" cy="6" r="2"/><circle cx="19" cy="18" r="2"/><path d="M5 8v7a3 3 0 0 0 3 3h9M19 16V9a3 3 0 0 0-3-3H9"/>',
+
 }
 
 
@@ -420,22 +556,55 @@ def language_picker(request):
 def page(title, content, request):
     lang = lang_of(request)
     authenticated = logged(request)
+    path = request.url.path
+    is_maintenance = path.startswith('/maintenance')
+
+    def nav_link(label, href, icon_name, section, nav_key):
+        active = (is_maintenance and nav_key == 'maintenance') or (
+            not is_maintenance and path == '/' and nav_key == 'overview')
+        aria = ' aria-current="page"' if active else ''
+        return (f'<a class="side-link{" side-active" if active else ""}" href="{href}" '
+                f'data-nav-key="{nav_key}" data-section="{section}" title="{h(label)}" '
+                f'aria-label="{h(label)}"'
+                f'{aria}>'
+                f'{icon(icon_name,19)}<span class="side-link-label">{h(label)}</span></a>')
+
     sidebar = ''
+    nav_overlay = ''
+    nav_toggle = ''
     if authenticated:
-        sidebar = f'''<aside class="sidebar" aria-label="{h(tr(lang,'dashboard'))}">
-          <div class="sidebar-nav-caption">AWG CONSOLE</div>
-          <a class="side-link side-active" href="/#overview">{icon('home',17)}<span>{h(tr(lang,'nav_overview'))}</span></a>
-          <a class="side-link" href="/#clients">{icon('users',17)}<span>{h(tr(lang,'clients'))}</span></a>
-          <a class="side-link" href="/#servers">{icon('server',17)}<span>{h(tr(lang,'server_instances'))}</span></a>
-          <a class="side-link" href="/#monitoring">{icon('activity',17)}<span>{h(tr(lang,'nav_monitoring'))}</span></a>
-          <a class="side-link" href="/#settings">{icon('settings',17)}<span>{h(tr(lang,'settings'))}</span></a>
-          <a class="side-link" href="/maintenance">{icon('shield',17)}<span>{h(tr(lang,'maintenance'))}</span></a>
-          <div class="side-footer"><span class="side-footer-top"><span class="live-beacon"></span>{h(tr(lang,'module_info'))}</span>
-          <strong>{h(tr(lang,'module_active'))}</strong><span class="side-footer-caption">KERNEL · NO DOCKER</span></div>
-          </aside>'''
-    status_link = (f'<a class="top-link" href="/logout">{icon("logout",16)}<span>{h(tr(lang,"logout"))}</span></a>'
+        t = lambda key: tr(lang,key)
+        nav_toggle = (f'<button type="button" id="mobile-nav-toggle" class="icon-btn mobile-menu-toggle" '
+                      f'aria-label="{h(t("nav_toggle"))}" aria-expanded="false" '
+                      f'aria-controls="app-sidebar">{icon("menu",22)}</button>')
+        groups = [
+            (t('nav_group_workspace'), [
+                (t('nav_overview'), '/#overview', 'home', 'overview', 'overview'),
+                (t('clients'), '/#clients', 'users', 'clients', 'clients'),
+                (t('nav_servers_short'), '/#servers', 'server', 'servers', 'servers'),
+                (t('nav_monitoring'), '/#monitoring', 'activity', 'monitoring', 'monitoring')]),
+            (t('nav_group_config'), [
+                (t('nav_vpn_settings'), '/#settings', 'settings', 'settings', 'settings')]),
+            (t('nav_group_system'), [
+                (t('nav_maintenance_short'), '/maintenance', 'shield', 'maintenance', 'maintenance')]),
+        ]
+        nav_html = ''.join(
+            '<div class="nav-group"><div class="nav-group-label">'+h(group_name)+'</div>'+
+            ''.join(nav_link(*entry) for entry in entries)+'</div>' for group_name,entries in groups)
+        sidebar = f'''<aside class="sidebar" id="app-sidebar" aria-label="{h(t('dashboard'))}">
+          <div class="sidebar-header"><span class="sidebar-nav-caption">AWG CONSOLE</span>
+          <button type="button" id="sidebar-collapse" class="sidebar-collapse" aria-expanded="true"
+            aria-label="{h(t('nav_collapse'))}" title="{h(t('nav_collapse'))}">{icon('chevron-left',18)}</button>
+          <button type="button" class="sidebar-mobile-close" id="sidebar-mobile-close" aria-label="{h(t('nav_close'))}">{icon('chevron-left',18)}</button>
+          </div><nav class="sidebar-navigation" aria-label="{h(t('dashboard'))}">{nav_html}</nav>
+          <div class="side-footer"><span class="side-footer-top"><span class="live-beacon"></span><span class="side-footer-title">AmneziaWG 3.1</span></span>
+          <strong>{h(t('module_active'))}</strong></div></aside>'''
+        nav_overlay = '<button type="button" class="nav-scrim" id="nav-scrim" aria-label="'+h(t('nav_close'))+'" tabindex="-1"></button>'
+
+    subtitle = tr(lang,'maint_page_subtitle' if is_maintenance else 'top_subtitle')
+    status_link = (f'<a class="top-link" href="/logout" title="{h(tr(lang,"logout"))}">{icon("logout",18)}<span>{h(tr(lang,"logout"))}</span></a>'
                    if authenticated else '')
-    refresh_button = (f'<button class="icon-btn" id="refresh-page" type="button" aria-label="{h(tr(lang,"refresh"))}" title="{h(tr(lang,"refresh"))}">{icon("restart",16)}</button>'
+    refresh_button = (f'<button class="icon-btn" id="refresh-page" type="button" aria-label="{h(tr(lang,"refresh"))}" title="{h(tr(lang,"refresh"))}">{icon("restart",18)}</button>'
                       if authenticated else '')
     login_intro = '' if authenticated else f'''<div class="login-overview">
       <p class="login-lede">{h(tr(lang,'login_intro'))}</p>
@@ -448,15 +617,15 @@ def page(title, content, request):
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="color-scheme" content="dark">
     <title>{h(title)} — AmneziaWG 3.1</title>
-    <link rel="stylesheet" href="/assets/panel.css?v=0.6.0">
-    <link rel="stylesheet" href="/assets/md3.css?v=0.6.2">
-    <script defer src="/assets/panel.js?v=0.6.0"></script>
+    <link rel="stylesheet" href="/assets/panel.css?v=0.7.0">
+    <link rel="stylesheet" href="/assets/md3.css?v=0.7.0">
+    <script defer src="/assets/panel.js?v=0.7.0"></script>
     </head><body>
-    <header class="topbar"><a href="/" class="brand"><span class="brand-emblem">{icon('shield',18)}</span><span>AmneziaWG <b>3.1</b></span></a>
-    <div class="topbar-right"><span class="top-kernel">KERNEL</span>{language_picker(request)}{refresh_button}{status_link}</div></header>
-    <div class="shell {'shell-auth' if not authenticated else ''}">{sidebar}<main class="main {'main-login' if not authenticated else ''}">
+    <header class="topbar"><div class="topbar-left">{nav_toggle}<a href="/" class="brand"><span class="brand-emblem">{icon('shield',18)}</span><span>AmneziaWG <b>3.1</b></span></a></div>
+    <div class="topbar-right">{language_picker(request)}{refresh_button}{status_link}</div></header>
+    {nav_overlay}<div class="shell {'shell-auth' if not authenticated else ''}">{sidebar}<main class="main {'main-login' if not authenticated else ''}">
     <div class="page-heading"><div><div class="eyebrow">AMNEZIAWG / CONTROL PANEL</div><h1>{h(title)}</h1>
-    <p class="heading-subtitle">{h(tr(lang,'top_subtitle'))}</p>{login_intro}</div></div>{content}</main></div></body></html>'''
+    <p class="heading-subtitle">{h(subtitle)}</p>{login_intro}</div></div>{content}</main></div></body></html>'''
     return HTMLResponse(body, headers={
         'Cache-Control': 'no-store',
         'X-Content-Type-Options': 'nosniff',
@@ -1108,53 +1277,150 @@ def client_operation(request: Request, name: str, action: str, csrf: str = Form(
     return RedirectResponse('/', status_code=303)
 
 
+# Maintenance panels are fetched/rendered independently. A failed backup/audit
+# command must not make the diagnostics tab unavailable (or vice versa).
+MAINTENANCE_TABS = (
+    ('diagnostics', 'maint_diagnostics', 'activity'),
+    ('backups', 'maint_backups', 'archive'),
+    ('restore', 'maint_restore', 'restart'),
+    ('profiles', 'maint_profiles', 'file'),
+    ('security', 'maint_security', 'lock'),
+    ('audit', 'maint_audit', 'list'),
+    ('system', 'maint_system', 'terminal'),
+)
+
+DIAG_LABELS = {
+    'kernel':('maint_kern','cpu'), 'installed_module':('maint_mod_installed','layers'),
+    'loaded_module':('maint_mod_loaded','shield'), 'dkms':('maint_dkms','hard-drive'),
+    'device':('maint_device','server'), 'forwarding':('maint_forward','route'),
+    'service':('maint_service','activity'), 'secure_boot':('maint_secureboot','lock'),
+    'panel':('maint_panel','globe'),
+}
+
+
+def diagnostic_card(lang, key, value):
+    # Presentation only: health is derived from the controller, not inferred.
+    if not isinstance(value,dict): return ''
+    t=lambda k:tr(lang,k)
+    label_key,icon_name=DIAG_LABELS.get(key,(None,'info'))
+    title=t(label_key) if label_key else key.replace('_',' ').title()
+    ok=value.get('ok') is True
+    raw=str(value.get('output') or '')
+    short=raw.strip().splitlines()[0] if raw.strip() else t('maint_missing')
+    if key=='device' and len(short)>58:
+        match=re.search(r'awg(?:0|[1-9][0-9]?)',short)
+        short=(match.group(0) + ' · ' + ('UP' if ',UP,' in short else t('maint_unknown'))) if match else short[:60]+'…'
+    elif len(short)>70: short=short[:67]+'…'
+    if key=='forwarding':
+        short = t('maint_status_enabled') if short=='1' else (t('maint_status_disabled') if short=='0' else short)
+    if key in ('service','panel') and short=='active': short=t('maint_status_active')
+    return f'''<article class="health-card {'health-good' if ok else 'health-warning'}">
+      <div class="health-top"><span class="health-icon">{icon(icon_name,21)}</span>
+      <span class="health-chip"><span class="health-chip-dot"></span>{h(t('maint_healthy' if ok else 'maint_attention'))}</span></div>
+      <h3>{h(title)}</h3><p class="health-value" title="{h(raw[:400])}">{h(short)}</p>
+      <details class="health-details"><summary>{h(t('maint_details'))}</summary>
+      <pre>{h(raw or t('maint_missing'))}</pre></details></article>'''
+
+
 @app.get('/maintenance')
-def maintenance(request: Request):
+def maintenance(request: Request, tab: str = 'diagnostics'):
     require_auth(request)
     lang=lang_of(request);t=lambda k:tr(lang,k)
+    known={key for key, _, _ in MAINTENANCE_TABS}
+    if tab not in known: raise HTTPException(status_code=404,detail='Unknown maintenance section')
+
+    nav=''.join(f'<a class="maint-nav-link{" is-active" if key==tab else ""}" '
+                f'href="/maintenance?tab={key}" aria-current="{"page" if key==tab else "false"}">'
+                f'{icon(glyph,19)}<span>{h(t(label))}</span></a>'
+                for key,label,glyph in MAINTENANCE_TABS)
+    info_key={
+        'diagnostics':'maint_diagnostics_hint','backups':'maint_backups_hint','restore':'maint_restore_hint',
+        'profiles':'maint_profile_hint','security':'maint_security_hint','audit':'maint_audit_hint',
+        'system':'maint_system_hint'}
+    section_title=next(t(label) for key,label,_ in MAINTENANCE_TABS if key==tab)
+    body=f'''<div class="maint-workspace"><nav class="maint-nav" aria-label="{h(t('maint_choose'))}">
+      <div class="maint-nav-heading">{h(t('maint_choose'))}</div>{nav}</nav>
+      <div class="maint-panel" id="maintenance-panel"><div class="maint-panel-heading">
+      <div><div class="section-overline">AWG / SYSTEM</div><h2>{h(section_title)}</h2>
+      <p>{h(t(info_key[tab]))}</p></div>
+      <span class="maint-section-icon">{icon(next(g for key,_,g in MAINTENANCE_TABS if key==tab),24)}</span>
+      </div>'''
     try:
-        diag=control(request,'diagnostics')
-        backups=ctl('backup-list',{}).get('backups',[])
-        entries=ctl('audit-list',{}).get('entries',[])
-    except RuntimeError as exc: return error_page(request,t('maintenance_error'),exc)
-    checks=''.join(f'<tr><td>{h(key)}</td><td class="mono">{h(str(value.get("output",""))[:320])}</td><td>{"OK" if value.get("ok") else "WARN"}</td></tr>'
-                   for key,value in diag.items() if isinstance(value,dict))
-    backup_rows=''.join(f'<li class="audit-item"><span class="mono">{h(item["name"])}</span> · {h(item["size"])} B '
-                  f'<a class="btn btn-secondary btn-small" href="/maintenance/backup/{h(item["name"])}">{h(t("backup_download"))}</a>'
-                  f'<form method="post" action="/maintenance/restore" class="inline-form">{csrf(request)}'
-                  f'<input type="hidden" name="name" value="{h(item["name"])}">'
-                  f'<label>{h(t("restore_confirm"))}<input type="text" name="confirmation" autocomplete="off" required></label>'
-                  f'<button type="submit" class="btn btn-secondary btn-small">{h(t("backup_restore"))}</button></form></li>'
+        if tab in ('diagnostics','system'):
+            diag=control(request,'diagnostics')
+            if not isinstance(diag,dict): raise RuntimeError('Invalid diagnostics data')
+            items=[(k,v) for k,v in diag.items() if isinstance(v,dict)]
+            passed=sum(v.get('ok') is True for _,v in items)
+            if tab=='diagnostics':
+                checks=''.join(diagnostic_card(lang,k,v) for k,v in items)
+                checked=datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')
+                body+=f'''<section class="health-overview"><span class="health-overview-icon">{icon('shield',26)}</span>
+                  <div><div class="health-overview-kicker">{h(t('maint_diag_summary'))}</div>
+                  <div class="health-overview-number">{passed}<span> / {len(items)}</span></div>
+                  <p>{h(t('maint_checks_passed'))}</p></div>
+                  <div class="health-overview-right"><span class="health-overview-time">{h(t('maint_checked_at'))}: {h(checked)}</span>
+                  <a class="btn btn-secondary btn-small" href="/maintenance?tab=diagnostics">{icon('restart',17)}{h(t('maint_refresh'))}</a></div>
+                  </section><div class="health-grid">{checks}</div>'''
+            else:
+                core=''.join(diagnostic_card(lang,k,diag[k]) for k in ('kernel','installed_module','loaded_module','dkms') if k in diag)
+                body+=f'''<div class="health-grid health-grid-compact">{core}</div>
+                 <section class="maint-command-box"><h3>{icon('terminal',18)}{h(t('maint_system_cmds'))}</h3>
+                 <p>{h(t('maint_system_hint_vpn'))}</p>
+                 <code>sudo awg31 doctor</code><code>sudo awg31 status</code><code>sudo awg31 restart-panel</code>
+                 </section>'''
+        elif tab in ('backups','restore'):
+            backups=ctl('backup-list',{}).get('backups',[])
+            if tab=='backups':
+                cards=''.join(f'''<article class="backup-item"><div class="backup-icon">{icon('archive',20)}</div>
+                  <div class="backup-meta"><strong>{h(item['name'])}</strong><span>{h(item['size'])} B</span></div>
+                  <a class="btn btn-secondary btn-small" href="/maintenance/backup/{quote(item['name'],safe='')}">{icon('download',17)}{h(t('backup_download'))}</a></article>'''
                   for item in backups)
-    log_rows=''.join(f'<li class="audit-item"><span class="mono">{h(item.get("timestamp",""))}</span> '
-                  f'{h(item.get("event",""))} · {h(item.get("target",""))}</li>' for item in reversed(entries))
-    body=f'''<section class="card settings-card">
-      <h2>{icon('shield',20)}{h(t('maintenance'))}</h2>
-      <div class="maintenance-columns"><div><h3>{h(t('diagnostics'))}</h3>
-      <p class="info-line">{h(t('kernel_check'))}</p>
-      <div class="table-scroll"><table><tbody>{checks}</tbody></table></div></div>
-    </section>
-    <section class="card settings-card"><h2>{h(t('backup'))}</h2>
-      <p class="info-line">{h(t('backup_secret'))} {h(t('restore_warn'))}</p>
-      <form method="post" action="/maintenance/backup">{csrf(request)}
-      <button class="btn btn-primary" type="submit">{h(t('backup_make'))}</button></form>
-      <ul>{backup_rows}</ul></section>
-    <section class="card settings-card"><h2>{h(t('profile'))}</h2>
-      <p class="info-line">{h(t('profile_note'))}</p>
-      <a class="btn btn-secondary" href="/maintenance/profile">{h(t('profile_download'))}</a>
-      <form method="post" action="/maintenance/profile" data-confirm="{h(t('confirm_import'))}">{csrf(request)}
-      <label class="field"><span>{h(t('profile_content'))}</span>
-      <textarea name="profile" rows="7" required maxlength="16000" spellcheck="false"></textarea></label>
-      <button class="btn btn-primary" type="submit">{h(t('profile_import'))}</button></form></section>
-    <section class="card settings-card"><h2>{h(t('password_change'))}</h2>
-      <form method="post" action="/maintenance/password">{csrf(request)}
-      <div class="fields-grid">
-      <label class="field"><span>{h(t('password_old'))}</span><input type="password" name="old" required autocomplete="current-password"></label>
-      <label class="field"><span>{h(t('password_new'))}</span><input type="password" name="new" minlength="12" required autocomplete="new-password"></label>
-      <label class="field"><span>{h(t('password_confirm'))}</span><input type="password" name="confirm" minlength="12" required autocomplete="new-password"></label>
-      </div><button class="btn btn-primary" type="submit">{h(t('password_change'))}</button></form></section>
-    <section class="card settings-card"><h2>{h(t('audit'))}</h2>
-      <ul>{log_rows or h(t('audit_empty'))}</ul></section>'''
+                body+=f'''<section class="maint-info-block"><span class="info-chip">{h(t('maint_backup_count'))}: {len(backups)}</span>
+                  <p>{h(t('backup_secret'))}</p>
+                  <form method="post" action="/maintenance/backup">{csrf(request)}
+                  <button class="btn btn-primary" type="submit">{icon('plus',19)}{h(t('backup_make'))}</button></form></section>
+                  <div class="backup-list">{cards or '<p class="empty-state">'+h(t('maint_no_backups'))+'</p>'}</div>'''
+            else:
+                entries=''.join(f'''<article class="backup-item restore-item">
+                  <div class="backup-icon">{icon('archive',20)}</div>
+                  <div class="backup-meta"><strong>{h(item['name'])}</strong><span>{h(item['size'])} B</span></div>
+                  <form method="post" action="/maintenance/restore" class="restore-form">{csrf(request)}
+                   <input type="hidden" name="name" value="{h(item['name'])}">
+                   <label class="restore-confirm-label"><span>{h(t('restore_confirm'))}</span>
+                   <input type="text" name="confirmation" autocomplete="off" required placeholder="{'ВОССТАНОВИТЬ' if lang=='ru' else 'RESTORE'}"></label>
+                   <button type="submit" class="btn btn-danger btn-small" data-confirm="{h(t('restore_warn'))}">{icon('restart',17)}{h(t('backup_restore'))}</button>
+                  </form></article>''' for item in backups)
+                body+=f'''<div class="maint-warning">{icon('alert',20)}<p>{h(t('maint_restore_warning_short'))}</p></div>
+                  <div class="backup-list">{entries or '<p class="empty-state">'+h(t('maint_restore_empty'))+'</p>'}</div>'''
+        elif tab=='profiles':
+            body+=f'''<section class="maint-form-panel"><h3>{icon('download',19)}{h(t('profile_download'))}</h3>
+                <p>{h(t('profile_note'))}</p>
+                <a class="btn btn-secondary" href="/maintenance/profile">{icon('download',18)}{h(t('profile_download'))}</a>
+                </section><section class="maint-form-panel"><h3>{icon('file',19)}{h(t('profile_import'))}</h3>
+                <form method="post" action="/maintenance/profile" data-confirm="{h(t('confirm_import'))}">{csrf(request)}
+                <label class="field"><span>{h(t('profile_content'))}</span>
+                <textarea name="profile" rows="8" required maxlength="16000" spellcheck="false"></textarea></label>
+                <button class="btn btn-primary" type="submit">{h(t('profile_import'))}</button></form></section>'''
+        elif tab=='security':
+            body+=f'''<section class="maint-form-panel"><h3>{icon('key',19)}{h(t('password_change'))}</h3>
+                <form method="post" action="/maintenance/password">{csrf(request)}
+                <div class="fields-grid"><label class="field"><span>{h(t('password_old'))}</span>
+                <input type="password" name="old" required autocomplete="current-password"></label>
+                <label class="field"><span>{h(t('password_new'))}</span>
+                <input type="password" name="new" minlength="12" required autocomplete="new-password"></label>
+                <label class="field"><span>{h(t('password_confirm'))}</span>
+                <input type="password" name="confirm" minlength="12" required autocomplete="new-password"></label></div>
+                <button class="btn btn-primary" type="submit">{icon('lock',18)}{h(t('password_change'))}</button></form>
+                </section>'''
+        elif tab=='audit':
+            entries=ctl('audit-list',{}).get('entries',[])
+            rows=''.join(f'''<li class="audit-entry"><span class="audit-time">{h(item.get('timestamp',''))}</span>
+                <span class="audit-event">{h(item.get('event',''))}</span><span class="audit-target">{h(item.get('target',''))}</span></li>'''
+                for item in reversed(entries))
+            body+=f'''<ol class="audit-entries">{rows or '<li class="empty-state">'+h(t('audit_empty'))+'</li>'}</ol>'''
+    except (RuntimeError,ValueError,KeyError,TypeError) as exc:
+        return error_page(request,t('maintenance_error'),exc)
+    body+='</div></div>'
     return page(t('maintenance'),body,request)
 
 
@@ -1163,7 +1429,7 @@ async def make_backup(request: Request):
     form=await request.form();require_csrf(request,form.get('csrf',''))
     try: result=ctl('backup-create',{})
     except RuntimeError as exc: return error_page(request,tr(lang_of(request),'maintenance_error'),exc)
-    return RedirectResponse('/maintenance',status_code=303)
+    return RedirectResponse('/maintenance?tab=backups',status_code=303)
 
 
 @app.post('/maintenance/restore')
@@ -1181,9 +1447,15 @@ async def restore_backup(request: Request):
         result=ctl('backup-restore',{'name':name})
     except RuntimeError as exc:
         return error_page(request,tr(lang,'maintenance_error'),exc)
-    return HTMLResponse('<!doctype html><html lang="'+lang+'"><meta charset="utf-8"><title>AWG restore</title>'
-                        '<body><h2>'+h(tr(lang,'restore_sent'))+'</h2><p>'+h(result['scheduled'])+'</p></body></html>',
-                        status_code=202,headers={'Cache-Control':'no-store'})
+    response = page(tr(lang,'maint_restore'), f'''<section class="card message-card">
+       <div class="section-overline">AWG / RESTORE</div>
+       <h2>{icon('check',22)} {h(tr(lang,'maint_restore'))}</h2>
+       <p>{h(tr(lang,'restore_sent'))}</p>
+       <code class="mono">{h(result['scheduled'])}</code>
+       <p><a class="btn btn-secondary" href="/maintenance?tab=restore">{h(tr(lang,'back'))}</a></p>
+       </section>''', request)
+    response.status_code = 202
+    return response
 
 
 @app.get('/maintenance/backup/{name}')
@@ -1221,7 +1493,7 @@ async def import_profile(request: Request):
     except (RuntimeError,ValueError) as exc:
         return error_page(request,tr(lang_of(request),'maintenance_error'),exc)
     audit_event('profile_imported',selected_server(request))
-    return RedirectResponse('/maintenance',status_code=303)
+    return RedirectResponse('/maintenance?tab=profiles',status_code=303)
 
 
 @app.post('/maintenance/password')

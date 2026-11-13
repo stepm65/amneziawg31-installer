@@ -164,7 +164,7 @@ def test_web_policy_history_maintenance_security(tmp_path,monkeypatch):
     assert 'Резервные копии' in client.get('/maintenance').text
     assert client.get('/api/history').json()['points']==[]
     assert client.get('/api/history?window=bad').status_code==422
-    csrf=client.get('/maintenance').text.split('name="csrf" value="')[1].split('"')[0]
+    csrf=client.get('/maintenance?tab=backups').text.split('name="csrf" value="')[1].split('"')[0]
     assert client.post('/maintenance/backup',data={'csrf':'bad'}).status_code==403
     assert client.post('/maintenance/backup',data={'csrf':csrf},follow_redirects=False).status_code==303
     assert ('backup-create',{}) in calls

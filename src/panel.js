@@ -3,13 +3,58 @@
   'use strict';
   const byId = (id) => document.getElementById(id);
   byId('refresh-page')?.addEventListener('click', () => window.location.reload());
+  // Route-aware menu: /maintenance is a separate page; the dashboard uses anchors.
   const navLinks = [...document.querySelectorAll('.side-link')];
   function syncNav() {
-    const fragment = window.location.hash || '#overview';
-    for (const link of navLinks) link.classList.toggle('side-active', link.hash === fragment);
+    let key = window.location.pathname.startsWith('/maintenance') ? 'maintenance' :
+      window.location.pathname.startsWith('/client/') ? 'clients' :
+      window.location.pathname === '/' ? (window.location.hash.slice(1) || 'overview') : '';
+    for (const link of navLinks) {
+      const selected = link.dataset.navKey === key;
+      link.classList.toggle('side-active', selected);
+      if (selected) link.setAttribute('aria-current', 'page');
+      else link.removeAttribute('aria-current');
+    }
   }
   window.addEventListener('hashchange', syncNav);
   syncNav();
+
+  const mobileToggle = byId('mobile-nav-toggle');
+  const mobileClose = byId('sidebar-mobile-close');
+  const scrim = byId('nav-scrim');
+  const sidebar = byId('app-sidebar');
+  const setDrawer = (open) => {
+    document.body.classList.toggle('nav-open', open);
+    mobileToggle?.setAttribute('aria-expanded', String(open));
+    if (open) mobileClose?.focus();
+    else if (document.activeElement === mobileClose) mobileToggle?.focus();
+  };
+  mobileToggle?.addEventListener('click', () => setDrawer(!document.body.classList.contains('nav-open')));
+  mobileClose?.addEventListener('click', () => setDrawer(false));
+  scrim?.addEventListener('click', () => setDrawer(false));
+  sidebar?.querySelectorAll('.side-link').forEach((link) => {
+    link.addEventListener('click', () => setDrawer(false));
+  });
+  document.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape' && document.body.classList.contains('nav-open')) setDrawer(false);
+  });
+  // Store only the navigation's presentation preference, never credentials.
+  const collapse = byId('sidebar-collapse');
+  const collapsedKey = 'awg31.ui.sidebar.collapsed';
+  try {
+    document.body.classList.toggle('nav-collapsed', localStorage.getItem(collapsedKey) === '1');
+  } catch (_) { /* Private browsing / blocked storage. */ }
+  const syncCollapse = () => {
+    const c = document.body.classList.contains('nav-collapsed');
+    collapse?.setAttribute('aria-expanded', String(!c));
+  };
+  syncCollapse();
+  collapse?.addEventListener('click', () => {
+    const next = !document.body.classList.contains('nav-collapsed');
+    document.body.classList.toggle('nav-collapsed', next);
+    try {localStorage.setItem(collapsedKey, next ? '1' : '0');} catch (_) {}
+    syncCollapse();
+  });
   for (const form of document.querySelectorAll('form[data-confirm]')) {
     form.addEventListener('submit', (event) => {
       if (!window.confirm(form.dataset.confirm)) event.preventDefault();
