@@ -971,7 +971,7 @@ async def server_create(request:Request):
             ('interface','subnet','port','mtu','endpoint','dns','mode','uplink')}
     try:
         iface=data['interface']
-        if not SERVER_RE.fullmatch(iface) or iface=='awg0':
+        if not SERVER_RE.fullmatch(iface):
             raise RuntimeError('Use an interface name such as awg1')
         ctl('server-create',data)
         audit_event('server_created',iface)
