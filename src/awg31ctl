@@ -520,7 +520,7 @@ def apply(cfg, con, initial=False, restart=False):
         else:
             # syncconf applies peer changes without resetting sessions.
             stripped = run('awg-quick', 'strip', str(CONF)) + '\n'
-            with tempfile.NamedTemporaryFile(dir='/run', mode='w', delete=False) as tf:
+            with tempfile.NamedTemporaryFile(dir=CONF.parent, mode='w', delete=False) as tf:
                 tf.write(stripped)
                 os.fchmod(tf.fileno(), 0o600); tmp = tf.name
             try: run('awg', 'syncconf', IFACE, tmp)
@@ -536,7 +536,7 @@ def apply(cfg, con, initial=False, restart=False):
                 if restart: run('systemctl', 'restart', f'awg-quick@{IFACE}')
                 else:
                     prior = run('awg-quick', 'strip', str(CONF)) + '\n'
-                    with tempfile.NamedTemporaryFile(dir='/run', mode='w', delete=False) as f:
+                    with tempfile.NamedTemporaryFile(dir=CONF.parent, mode='w', delete=False) as f:
                         f.write(prior); os.fchmod(f.fileno(),0o600); oldtemp=f.name
                     try: run('awg', 'syncconf', IFACE, oldtemp)
                     finally: os.unlink(oldtemp)
