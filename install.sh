@@ -1,312 +1,183 @@
 #!/usr/bin/env bash
-# AWG31 installer for Ubuntu 24.04/26.04 and Rocky Linux 9/10.
+# AmneziaWG 3.1 Console — one-command installer and updater.
+#
+#   bash <(curl -Ls https://raw.githubusercontent.com/stepm65/amneziawg31-installer/main/install.sh)
+#   bash <(curl -Ls .../install.sh) v0.9.6        a specific release
+#   bash <(curl -Ls .../install.sh) dev-latest    rolling build from main
+#   bash <(curl -Ls .../install.sh) --upgrade     update panel + controller only
+#   bash <(curl -Ls .../install.sh) --doctor      read-only diagnostics
+#
+# Run it as root. Release archives are verified against the SHA256 sum
+# published next to them; a mismatch aborts before anything is unpacked.
 set -Eeuo pipefail
 umask 077
-trap 'echo "[ERROR] installation failed at line $LINENO; see output above" >&2' ERR
-DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+REPO=stepm65/amneziawg31-installer
+RAW="https://raw.githubusercontent.com/$REPO/main/install.sh"
+say(){ printf '\n[AWG31] %s\n' "$*"; }
+die(){ printf '[AWG31 ERROR] %s\n' "$*" >&2; exit 1; }
+usage(){
+    cat <<EOF
+AmneziaWG 3.1 Console installer
 
-say() { printf '\n[%s] %s\n' 'AWG31' "$*"; }
-die() { echo "[ERROR] $*" >&2; exit 1; }
-ask() { local key="$1" text="$2" default="$3" answer; read -r -p "$text [$default]: " answer; printf -v "$key" '%s' "${answer:-$default}"; }
-
-[[ $EUID -eq 0 ]] || die 'Запустите: sudo bash install.sh'
-[[ -f "$DIR/src/awg31ctl" && -f "$DIR/src/web.py" ]] || die 'Запустите install.sh из полного каталога проекта'
-source "$DIR/scripts/os-support.sh"
-awg31_detect_os
-case "$(uname -m)" in x86_64|aarch64) ;; *) die 'Поддерживаются x86_64 и aarch64';; esac
-[[ -e /etc/amnezia/amneziawg/awg0.conf || -e /var/lib/awg31-panel/state.sqlite3 ]] && die 'Найдены существующие настройки awg0, перезапись запрещена'
-if ip link show awg0 >/dev/null 2>&1; then die 'Интерфейс awg0 уже существует'; fi
-if [[ -f /proc/sys/net/ipv6/conf/all/disable_ipv6 ]]; then
-    say "IPv6 kernel switch: $(cat /proc/sys/net/ipv6/conf/all/disable_ipv6). IPv6 не включаем и не настраиваем."
-else
-    say 'IPv6 в ядре не обнаружен — это допустимо.'
-fi
-
-say 'Мастер установки AmneziaWG 3.1 · только модуль ядра · IPv4 only · без Docker'
-DEFAULT_UPLINK="$(ip -4 route show default | awk '/default/ {print $5; exit}')"
-DEFAULT_IP="$(curl -4fsS --connect-timeout 3 --max-time 5 https://api.ipify.org 2>/dev/null || true)"
-if [[ -z "$DEFAULT_IP" ]]; then
-    DEFAULT_IP="$(ip -4 -o addr show dev "${DEFAULT_UPLINK:-lo}" scope global | awk 'NR==1 {split($4,a,"/"); print a[1]}')"
-    say 'Публичный IPv4 не определён. Для локального теста будет предложен адрес интерфейса; для доступа из интернета укажите внешний IP/DNS и настройте проброс UDP.'
-fi
-ask SUBNET 'VPN-подсеть (CIDR, /24…/29)' '10.77.10.0/24'
-ask PORT 'UDP-порт AmneziaWG' '51820'
-ask MTU 'MTU туннеля (576…1420)' '1280'
-ask ENDPOINT 'Публичный IPv4 или DNS-имя (без порта)' "$DEFAULT_IP"
-ask DNS 'DNS клиентов (IPv4; без локального DNS по умолчанию)' '1.1.1.1'
-ask MODE 'Трафик клиента: full (весь IPv4 через VPN; рекомендуется) или split (только VPN-подсеть)' 'full'
-ask UPLINK 'Внешний интерфейс для выхода клиентов в интернет (NAT в режиме full)' "${DEFAULT_UPLINK:-eth0}"
-ask PANEL_PORT 'TCP-порт localhost для веб-панели' '8080'
-ask FIRST_CLIENT 'Имя первого клиента (skip = не создавать)' 'test-client'
-[[ "$FIRST_CLIENT" == 'skip' ]] && FIRST_CLIENT='' || true
-# Plain ASCII digits only. Python's int() also accepts '8_080', '+8080' and
-# full-width digits, which would pass validation and then break systemd/curl
-# after the VPN has already been created.
-need_number() {  # name value min max
-    [[ "$2" =~ ^[0-9]{1,5}$ ]] && ((10#$2 >= $3 && 10#$2 <= $4)) || die "$1: нужно целое число $3…$4 (только цифры), получено '$2'"
-}
-need_number 'UDP-порт AmneziaWG' "$PORT" 1 65535
-need_number 'MTU туннеля' "$MTU" 576 1420
-need_number 'TCP-порт веб-панели' "$PANEL_PORT" 1 65535
-PORT=$((10#$PORT)); MTU=$((10#$MTU)); PANEL_PORT=$((10#$PANEL_PORT))
-
-say 'HTTPS reverse proxy — по желанию (веб-панель всегда слушает только localhost)'
-echo '  0) Без Nginx / reverse proxy (можно настроить позднее)'
-echo '  1) Nginx + новый самоподписанный сертификат (браузер предупредит о недоверенном CA)'
-echo '  2) Nginx + существующий сертификат и приватный ключ PEM'
-ask NGINX_CHOICE 'Выберите вариант 0/1/2' '0'
-case "$NGINX_CHOICE" in
-    0) NGINX_MODE=none ;;
-    1) NGINX_MODE=self-signed ;;
-    2) NGINX_MODE=existing ;;
-    *) die 'Нужно выбрать 0, 1 или 2' ;;
-esac
-NGINX_HOST='' NGINX_HTTPS_PORT=443 NGINX_CERT='' NGINX_KEY=''
-if [[ "$NGINX_MODE" != none ]]; then
-    ask NGINX_HOST 'Домен или IPv4 для HTTPS Nginx (без схемы и порта)' "$ENDPOINT"
-    ask NGINX_HTTPS_PORT 'Публичный HTTPS TCP-порт' '443'
-    if [[ "$NGINX_MODE" == existing ]]; then
-        ask NGINX_CERT 'Абсолютный путь к PEM сертификату (fullchain)' '/etc/letsencrypt/live/vpn.example.net/fullchain.pem'
-        ask NGINX_KEY 'Абсолютный путь к PEM приватному ключу' '/etc/letsencrypt/live/vpn.example.net/privkey.pem'
-    fi
-    # Pre-check input before the first package installation. A second check is
-    # done by setup-nginx.sh immediately before Nginx is changed.
-    source "$DIR/scripts/setup-nginx.sh"
-    proxy_validate_host "$NGINX_HOST"
-    proxy_validate_port "$NGINX_HTTPS_PORT"
-    [[ "$NGINX_HTTPS_PORT" != "$PANEL_PORT" ]] || die 'Порт Nginx совпадает с портом панели'
-    if [[ "$NGINX_MODE" == existing ]]; then
-        [[ -r "$NGINX_CERT" && -r "$NGINX_KEY" ]] || die 'Сертификат или ключ отсутствуют / недоступны'
-    fi
-    if [[ "$(getenforce 2>/dev/null || :)" == Enforcing ]] && [[ "$AWG31_OS_FAMILY" == rpm ]]; then
-        [[ "$NGINX_HTTPS_PORT" == 443 ]] || die 'Для Rocky с SELinux Enforcing пока поддерживается HTTPS-порт 443'
-        echo 'Rocky SELinux: Nginx потребуется право httpd_can_network_connect для reverse proxy.'
-        read -r -p 'Разрешить установщику включить SELinux boolean (без отключения SELinux)? [y/N]: ' ACK_SELINUX
-        [[ "${ACK_SELINUX,,}" == y || "${ACK_SELINUX,,}" == yes ]] || die 'Выбор отменён: без разрешения SELinux Nginx proxy не заработает'
-        NGINX_SELINUX_ACK=yes
-    fi
-fi
-
-# Pure validation; aborts before apt installation or writing any system files.
-export AWG31_SUBNET="$SUBNET" AWG31_PORT="$PORT" AWG31_MTU="$MTU" AWG31_ENDPOINT="$ENDPOINT" AWG31_DNS="$DNS" AWG31_MODE="$MODE" AWG31_UPLINK="$UPLINK" AWG31_PANEL_PORT="$PANEL_PORT" AWG31_FIRST_CLIENT="$FIRST_CLIENT"
-python3 - "$DIR/src" <<'PY'
-import ipaddress,json,os,pathlib,subprocess,sys
-from importlib.machinery import SourceFileLoader
-m=SourceFileLoader('awg31ctl',str(pathlib.Path(sys.argv[1])/'awg31ctl')).load_module()
-d={k:os.environ[f'AWG31_{k.upper()}'] for k in ('subnet','port','mtu','endpoint','dns','mode','uplink')}
-setting=m.validate_settings(d,initial=True)
-port=int(os.environ['AWG31_PANEL_PORT'])
-assert 1<=port<=65535 and port!=setting['port'], 'Порт веб-панели некорректен или совпадает с UDP VPN'
-name=os.environ['AWG31_FIRST_CLIENT']
-assert not name or m.NAME_RE.fullmatch(name), 'Неверное имя первого клиента'
-net=ipaddress.ip_network(d['subnet'])
-for line in subprocess.run(['ip','-4','-o','addr','show'],capture_output=True,text=True,check=True).stdout.splitlines():
-    fields=line.split()
-    if 'inet' in fields:
-        current=ipaddress.ip_interface(fields[fields.index('inet')+1]).network
-        if current.overlaps(net): raise ValueError(f'VPN-подсеть пересекается с адресами сервера: {current}')
-for line in subprocess.run(['ip','-4','route','show'],capture_output=True,text=True,check=True).stdout.splitlines():
-    target=line.split()[0]
-    try: route=ipaddress.ip_network(target,strict=False)
-    except ValueError: continue
-    if route.prefixlen and route.overlaps(net): raise ValueError(f'VPN-подсеть пересекается с маршрутом: {route}')
-if setting['mode']=='full':
-    subprocess.run(['ip','link','show',setting['uplink']],check=True,capture_output=True)
-print('Параметры проверены: ',json.dumps(setting,ensure_ascii=False))
-PY
-
-if [[ "$AWG31_OS_FAMILY" == rpm ]] && systemctl is-active --quiet firewalld 2>/dev/null; then
-    say 'ВНИМАНИЕ: Rocky Linux использует firewalld. Для Full Tunnel может понадобиться отдельная настройка policy/masquerading; наши правила iptables не гарантируют обход политики firewalld.'
-    if [[ "$MODE" == 'full' ]]; then
-        read -r -p 'Продолжить установку с firewalld (после установки проверить NAT)? [y/N]: ' FIREWALL_ACK
-        [[ "${FIREWALL_ACK,,}" == y || "${FIREWALL_ACK,,}" == yes ]] || die 'Отменено. Правила firewalld не изменены.'
-    fi
-fi
-if ss -H -ltn "sport = :$PANEL_PORT" | grep -q .; then die 'TCP-порт панели уже занят'; fi
-if ss -H -lun "sport = :$PORT" | grep -q .; then die 'UDP-порт VPN уже занят'; fi
-say 'Проверка завершена. AWG 3.1 устанавливается Quick Start отдельно (prepare-awg31.sh). PPA и Docker не требуются.'
-read -r -p 'Подтверждаете установку? [y/N]: ' AGREE
-[[ "${AGREE,,}" == y || "${AGREE,,}" == yes || "$AGREE" == 'д' ]] || die 'Установка отменена'
-
-say 'Проверяем зависимости для выбранной системы'
-awg31_install_packages
-say 'Проверяем заранее установленный модуль и инструменты AmneziaWG 3.1'
-command -v dkms >/dev/null || die 'Отсутствует DKMS'
-command -v awg >/dev/null || die 'Отсутствует awg (требуется amneziawg-tools 3.1)'
-command -v awg-quick >/dev/null || die 'Отсутствует awg-quick (требуется amneziawg-tools 3.1)'
-modprobe amneziawg || die 'Не удалось загрузить amneziawg. Проверьте DKMS, Secure Boot и зарегистрированный MOK.'
-MODVER="$(cat /sys/module/amneziawg/version 2>/dev/null || modinfo -F version amneziawg || true)"
-TOOLSVER="$(awg --version 2>/dev/null || true)"
-printf 'Kernel module: %s\nTools: %s\n' "$MODVER" "$TOOLSVER"
-[[ "$MODVER" =~ ^3\.1\. ]] || die 'Требуется загруженный модуль AmneziaWG 3.1; устанавливать 2.0 не будем'
-[[ "$TOOLSVER" =~ v3\.1\. ]] || die 'Требуются утилиты AmneziaWG 3.1; устанавливать 2.0 не будем'
-if ! dkms status -m amneziawg | grep -Fq "$(uname -r)"; then
-    die 'DKMS для текущего ядра не найден: проверьте dkms status'
-fi
-if ! systemctl list-unit-files 'awg-quick@.service' --no-legend | grep -q 'awg-quick@'; then
-    die 'Отсутствует systemd unit awg-quick@.service'
-fi
-
-say 'Настройка файлов и контроллера'
-install -d -o root -g root -m 700 /etc/awg31-panel /var/lib/awg31-panel /etc/amnezia/amneziawg
-install -d -o root -g root -m 755 /opt/awg31-panel
-install -o root -g root -m 755 "$DIR/src/awg31ctl" /usr/local/sbin/awg31ctl
-install -o root -g root -m 755 "$DIR/src/awg31mgr" /usr/local/sbin/awg31mgr
-install -o root -g root -m 644 "$DIR/src/awg31admin.py" /usr/local/sbin/awg31admin.py
-install -d -o root -g root -m 755 /usr/local/libexec/awg31/scripts
-install -o root -g root -m 755 "$DIR/scripts/restore-backup.py" /usr/local/libexec/awg31/scripts/restore-backup.py
-install -o root -g root -m 644 "$DIR/src/web.py" /opt/awg31-panel/web.py
-install -o root -g root -m 644 "$DIR/src/amnezialink.py" /opt/awg31-panel/amnezialink.py
-install -o root -g root -m 644 "$DIR/src/panel.css" /opt/awg31-panel/panel.css
-install -o root -g root -m 644 "$DIR/src/md3.css" /opt/awg31-panel/md3.css
-install -o root -g root -m 644 "$DIR/src/panel.js" /opt/awg31-panel/panel.js
-install -d -o root -g root -m 755 /opt/awg31-panel/fonts
-install -o root -g root -m 644 "$DIR"/src/fonts/* /opt/awg31-panel/fonts/
-install -o root -g root -m 644 "$DIR/src/requirements.txt" /opt/awg31-panel/requirements.txt
-
-say 'Настройка Python-окружения'
-python3 -m venv /opt/awg31-panel/.venv
-/opt/awg31-panel/.venv/bin/pip install --disable-pip-version-check -r /opt/awg31-panel/requirements.txt
-
-# Enable IPv4 forwarding before bringing up the VPN, not after it.
-# We deliberately do not reference net.ipv6.*: IPv6 can be compiled out.
-if [[ "$MODE" == 'full' ]]; then
-    say 'Включаем IPv4 forwarding для выхода VPN-клиентов в интернет'
-    printf 'net.ipv4.ip_forward = 1\n' > /etc/sysctl.d/96-awg31-ipv4.conf
-    sysctl -p /etc/sysctl.d/96-awg31-ipv4.conf
-    [[ "$(sysctl -n net.ipv4.ip_forward)" == '1' ]] || die 'IPv4 forwarding не включился'
-fi
-
-say 'Инициализация профиля AWG 3.1 и запуск awg0'
-# Fresh random S/H/Jc values for the primary server, exactly like servers
-# created later from the panel. Never ship the static WireGuard-like defaults.
-python3 - <<'PY' | AWG31_GENERATE_PARAMS=1 /usr/local/sbin/awg31ctl init
-import json,os
-print(json.dumps({k:os.environ[f'AWG31_{k.upper()}'] for k in ('subnet','port','mtu','endpoint','dns','mode','uplink')}))
-PY
-# If awg-quick cannot accept a 3.1 parameter, the controller stops here.
-awg show awg0 >/dev/null || die 'awg0 не отвечает после запуска'
-
-if [[ -n "$FIRST_CLIENT" ]]; then
-    printf '%s\n' "$FIRST_CLIENT" | python3 -c 'import json,sys; print(json.dumps({"name":sys.stdin.read().strip()}))' | /usr/local/sbin/awg31ctl add >/dev/null
-    say "Создан первый клиент: $FIRST_CLIENT (конфигурация доступна в панели)"
-fi
-
-say 'Создание системного пользователя и администратора панели'
-if ! id awgpanel >/dev/null 2>&1; then
-    useradd --system --no-create-home --home /nonexistent --shell /usr/sbin/nologin awgpanel
-fi
-# Let awgpanel execute venv entry points without granting write privileges.
-chgrp -R awgpanel /opt/awg31-panel/.venv
-chmod -R g+rX /opt/awg31-panel/.venv
-install -d -o root -g awgpanel -m 750 /etc/awg31-panel
-while :; do
-    IFS= read -r -s -p 'Пароль администратора веб-панели (минимум 12 символов): ' PANEL_PASSWORD; echo
-    if [[ ${#PANEL_PASSWORD} -lt 12 ]]; then echo 'Пароль слишком короткий'; continue; fi
-    if [[ ${#PANEL_PASSWORD} -gt 256 ]]; then echo 'Пароль длиннее 256 символов'; continue; fi
-    IFS= read -r -s -p 'Повторите пароль: ' PANEL_PASSWORD_REPEAT; echo
-    [[ "$PANEL_PASSWORD" == "$PANEL_PASSWORD_REPEAT" ]] && break
-    echo 'Пароли не совпадают, попробуйте ещё раз'
-done
-unset PANEL_PASSWORD_REPEAT
-# Password travels over stdin, not argv or environment.
-printf '%s' "$PANEL_PASSWORD" | python3 -c '
-import hashlib,json,secrets,sys
-salt=secrets.token_bytes(16)
-password=sys.stdin.buffer.read()
-cred={"salt":salt.hex(), "password_hash":hashlib.scrypt(password,salt=salt,n=2**14,r=8,p=1,dklen=32).hex(), "session_key":secrets.token_urlsafe(48)}
-with open("/etc/awg31-panel/auth.json","w") as f: json.dump(cred,f)
-'
-unset PANEL_PASSWORD
-echo 'Забытый пароль можно сбросить из консоли сервера: sudo awg31 reset-password'
-chown root:awgpanel /etc/awg31-panel/auth.json
-chmod 640 /etc/awg31-panel/auth.json
-
-say 'Настройка минимального sudo-доступа для контроллера'
-# Ubuntu 26.04 sudo does not recognize the legacy requiretty setting.
-# Validate candidate in an ignored (dot-prefixed) file, then install.
-source "$DIR/scripts/sudoers.sh"
-awg31_install_sudoers /etc/sudoers.d/awg31-panel || die 'Не удалось установить sudoers для панели'
-
-cat >/etc/systemd/system/awg31-panel.service <<EOF
-[Unit]
-Description=Local-only AmneziaWG 3.1 admin panel
-After=network-online.target awg-quick@awg0.service
-Wants=network-online.target
-
-[Service]
-Type=simple
-User=awgpanel
-Group=awgpanel
-WorkingDirectory=/opt/awg31-panel
-Environment=AWG31_COOKIE_SECURE=1
-ExecStart=/opt/awg31-panel/.venv/bin/uvicorn web:app --host 127.0.0.1 --port $PANEL_PORT --no-access-log
-Restart=on-failure
-RestartSec=5
-UMask=0077
-PrivateTmp=true
-ProtectHome=true
-RestrictAddressFamilies=AF_INET AF_UNIX AF_NETLINK
-
-[Install]
-WantedBy=multi-user.target
+  bash <(curl -Ls $RAW)              install the latest release
+  bash <(curl -Ls $RAW) v0.9.6       install a specific release
+  bash <(curl -Ls $RAW) dev-latest   install the rolling build from main
+  ... --upgrade [VERSION]            update panel and controller, VPN untouched
+  ... --doctor                       read-only diagnostics
 EOF
-systemctl daemon-reload
-systemctl enable --now awg31-panel.service
-systemctl is-active --quiet awg31-panel.service || die 'Панель не запустилась; systemctl status awg31-panel'
-curl --noproxy '*' -4fsS --max-time 5 "http://127.0.0.1:$PANEL_PORT/health" >/dev/null || die 'HTTP /health не отвечает'
+}
 
-# Keep optional Nginx wizard installed even if user skips it initially.
-install -d -o root -g root -m 755 /usr/local/libexec/awg31/scripts
-install -o root -g root -m 755 "$DIR/scripts/setup-nginx.sh" /usr/local/libexec/awg31/scripts/setup-nginx.sh
-install -o root -g root -m 644 "$DIR/scripts/os-support.sh" /usr/local/libexec/awg31/scripts/os-support.sh
-install -o root -g root -m 755 "$DIR/scripts/awg31-menu" /usr/local/bin/awg31
-
-# Periodic usage enforcement, historical metrics and kernel health checks.
-# Limit growth of root-owned audit log without exposing credentials.
-if command -v logrotate >/dev/null 2>&1; then
-    install -o root -g root -m 644 "$DIR/scripts/awg31-audit.logrotate" /etc/logrotate.d/awg31-panel
-fi
-install -o root -g root -m 755 "$DIR/scripts/kernel-check.sh" /usr/local/libexec/awg31/scripts/kernel-check.sh
-for unit in awg31-sampler.service awg31-sampler.timer awg31-kernel-check.service awg31-kernel-check.timer awg31-backup.service; do
-    install -o root -g root -m 644 "$DIR/scripts/$unit" "/etc/systemd/system/$unit"
+MODE=install
+TARGET="${AWG31_VERSION:-}"
+for arg in "$@"; do
+    case "$arg" in
+        --install) MODE=install ;;
+        --upgrade|--update) MODE=upgrade ;;
+        --doctor) MODE=doctor ;;
+        -h|--help) usage; exit 0 ;;
+        dev-latest) TARGET=dev-latest ;;
+        v[0-9]*) TARGET="$arg" ;;
+        *) usage >&2; die "Unknown argument: $arg" ;;
+    esac
 done
-systemctl daemon-reload
-systemctl enable --now awg31-sampler.timer awg31-kernel-check.timer
+if [[ -n "$TARGET" && "$TARGET" != dev-latest && ! "$TARGET" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    die "Invalid version '$TARGET': use a release tag such as v0.9.6, or dev-latest"
+fi
 
-# Nginx is optional, installed last and never changes VPN or panel bindings.
-# A proxy failure leaves the functional AWG server intact and can be retried
-# separately using `sudo bash scripts/setup-nginx.sh --interactive`.
-NGINX_RESULT=skipped
-if [[ "$NGINX_MODE" != none ]]; then
-    say 'Устанавливаем/настраиваем Nginx с HTTPS для веб-панели'
-    if AWG31_PROXY_MODE="$NGINX_MODE" \
-       AWG31_PROXY_HOST="$NGINX_HOST" \
-       AWG31_PROXY_HTTPS_PORT="$NGINX_HTTPS_PORT" \
-       AWG31_PANEL_PORT="$PANEL_PORT" \
-       AWG31_PROXY_CERT="$NGINX_CERT" \
-       AWG31_PROXY_KEY="$NGINX_KEY" \
-       AWG31_PROXY_SELINUX_ACK="${NGINX_SELINUX_ACK:-no}" \
-       bash "$DIR/scripts/setup-nginx.sh"; then
-        NGINX_RESULT=ready
-    else
-        NGINX_RESULT=failed
-        echo '[AWG31 WARNING] VPN + панель работают, но настройка Nginx не завершена.' >&2
-        echo "[AWG31 WARNING] Повтор: sudo bash $DIR/scripts/setup-nginx.sh --interactive" >&2
-    fi
+if [[ ${EUID} -ne 0 ]]; then
+    cat >&2 <<EOF
+[AWG31 ERROR] Root is required. Become root first, then repeat the command:
+
+  sudo -i
+  bash <(curl -Ls $RAW)${*:+ $*}
+
+or, without a root shell:
+
+  curl -Ls $RAW | sudo bash${*:+ -s -- $*}
+EOF
+    exit 1
 fi
-say 'Установка VPN и панели завершена. Проверьте sudo awg show awg0 и systemctl status awg31-panel.'
-echo "Web UI: http://127.0.0.1:$PANEL_PORT (только localhost; для входа нужна HTTPS-прокси)"
-case "$NGINX_RESULT" in
-    ready) echo "Nginx: https://$NGINX_HOST:$NGINX_HTTPS_PORT (HTTPS)" ;;
-    failed) echo 'Nginx: НАСТРОЙКА НЕ УДАЛАСЬ; VPN и веб-панель сохранены.' ;;
-    skipped) echo 'Nginx: пропущен (можно настроить позднее).' ;;
+[[ -r /etc/os-release ]] || die 'Cannot read /etc/os-release'
+# os-release defines NAME, VERSION, ID...: keep our own variables distinct (TARGET).
+. /etc/os-release
+case "${ID:-}:${VERSION_ID:-}" in
+    ubuntu:24.04|ubuntu:26.04|rocky:9|rocky:9.*|rocky:10|rocky:10.*) ;;
+    *) die 'Supported: Ubuntu 24.04/26.04, Rocky Linux 9/10' ;;
 esac
-echo "VPN: UDP $PORT, сервер VPN ${SUBNET}, порт нужно разрешить в firewall провайдера/сервера."
-if [[ "$MODE" == 'full' ]]; then
-    echo 'Маршрут клиента: 0.0.0.0/0 (весь IPv4 через VPN); NAT и forwarding включены.'
-    echo 'Важное замечание: IPv6-трафик на самих клиентах не туннелируется и требует отдельных мер против утечек.'
-else
-    echo 'Режим split: через VPN проходит только внутренняя VPN-подсеть.'
+[[ "$MODE" == doctor || -t 0 || -r /dev/tty ]] || die 'An interactive terminal is required'
+
+# `bash <(curl ...)` and `curl ... | bash` have no project directory: BASH_SOURCE
+# is /dev/fd/N or empty. Never treat the caller's working directory as ours.
+SCRIPT_DIR=''
+if [[ -n "${BASH_SOURCE[0]:-}" && -f "${BASH_SOURCE[0]}" ]]; then
+    SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 fi
-echo 'Никакие дополнительные сервисы, кроме выбранного Nginx, не устанавливаются.'
+valid_project(){
+    [[ -f "$1/scripts/setup-wizard.sh" && -f "$1/src/awg31ctl" && -f "$1/src/web.py" &&
+       -f "$1/scripts/prepare-awg31.sh" && -f "$1/scripts/upgrade-core.sh" && -f "$1/VERSION" ]]
+}
+
+WORK=''
+cleanup(){ [[ -z "$WORK" ]] || rm -rf -- "$WORK"; }
+trap cleanup EXIT
+
+fetch(){  # url output max-seconds
+    curl --fail --location --silent --show-error --retry 2 --connect-timeout 8 --max-time "$3" "$1" -o "$2"
+}
+
+latest_release(){
+    # Prints the newest release tag, or nothing when none is published.
+    local body tag=''
+    body="$(curl --fail --silent --location --connect-timeout 8 --max-time 20 \
+              -H 'Accept: application/vnd.github+json' \
+              "https://api.github.com/repos/$REPO/releases/latest" 2>/dev/null || :)"
+    tag="$(printf '%s\n' "$body" | sed -nE 's/^[[:space:]]*"tag_name"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/p' | head -n1)"
+    if [[ -z "$tag" ]]; then
+        # API rate limit or outage: the web redirect names the tag as well.
+        tag="$(curl --silent --head --connect-timeout 8 --max-time 20 -o /dev/null -w '%{redirect_url}' \
+                 "https://github.com/$REPO/releases/latest" 2>/dev/null | sed -nE 's#.*/releases/tag/([^/?]+).*#\1#p' || :)"
+    fi
+    if [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then printf '%s\n' "$tag"; fi
+}
+
+download_project(){
+    local tag="$1" asset url
+    for tool in curl tar sha256sum; do
+        command -v "$tool" >/dev/null 2>&1 || die "$tool is required"
+    done
+    WORK="$(mktemp -d /tmp/awg31-install.XXXXXXXX)"
+    mkdir "$WORK/project"
+    if [[ "$tag" == dev-latest ]]; then
+        say "Downloading the rolling build from main (not a release, no checksum pinning)"
+        fetch "https://github.com/$REPO/archive/refs/heads/main.tar.gz" "$WORK/main.tar.gz" 180 ||
+            die 'Cannot download the main branch from GitHub'
+        tar -xzf "$WORK/main.tar.gz" -C "$WORK/project" --strip-components=1 --no-same-owner --no-same-permissions
+    else
+        asset="awg31-console-$tag.tar.gz"
+        url="https://github.com/$REPO/releases/download/$tag"
+        say "Downloading release $tag and its SHA256 sum"
+        fetch "$url/$asset" "$WORK/$asset" 180 || die "Release $tag not found"
+        fetch "$url/$asset.sha256" "$WORK/$asset.sha256" 30 || die "SHA256 file for $tag is missing; refusing to install"
+        [[ "$(wc -l < "$WORK/$asset.sha256")" -le 1 ]] || die 'Malformed checksum file'
+        grep -Eq "^[0-9a-f]{64}  ${asset//./\\.}\$" "$WORK/$asset.sha256" || die 'Unexpected checksum format'
+        (cd "$WORK" && sha256sum --check --status "$asset.sha256") || die 'SHA256 mismatch: the archive is damaged or was replaced. Nothing was installed.'
+        say "SHA256 verified: $(cut -c1-16 "$WORK/$asset.sha256")…"
+        tar -xzf "$WORK/$asset" -C "$WORK/project" --strip-components=1 --no-same-owner --no-same-permissions
+    fi
+    PROJECT="$WORK/project"
+    valid_project "$PROJECT" || die 'Downloaded archive has an unexpected layout'
+}
+
+if [[ -z "$TARGET" && -n "$SCRIPT_DIR" ]] && valid_project "$SCRIPT_DIR"; then
+    PROJECT="$SCRIPT_DIR"
+    say "Using the local project directory ($(cat "$PROJECT/VERSION"))"
+else
+    if [[ -z "$TARGET" ]]; then
+        TARGET="$(latest_release)"
+        if [[ -z "$TARGET" ]]; then
+            say 'No published release found; falling back to the rolling build (dev-latest)'
+            TARGET=dev-latest
+        fi
+    fi
+    download_project "$TARGET"
+    say "Version to install: $(cat "$PROJECT/VERSION")${TARGET:+ ($TARGET)}"
+fi
+
+install_menu(){
+    if [[ -f "$PROJECT/scripts/awg31-menu" ]]; then
+        install -o root -g root -m 755 "$PROJECT/scripts/awg31-menu" /usr/local/bin/awg31
+    fi
+}
+
+if [[ "$MODE" == doctor ]]; then
+    bash "$PROJECT/scripts/doctor.sh"
+    exit 0
+fi
+
+panel_installed=0
+if [[ -f /opt/awg31-panel/web.py && -f /usr/local/sbin/awg31ctl ]]; then panel_installed=1; fi
+
+if [[ "$MODE" == install && $panel_installed -eq 1 ]]; then
+    say 'AmneziaWG 3.1 Console is already installed here: switching to update mode'
+    MODE=upgrade
+fi
+
+if [[ "$MODE" == upgrade ]]; then
+    [[ $panel_installed -eq 1 ]] || die 'Nothing to update: the console is not installed. Run the installer without --upgrade.'
+    say 'Updating panel and controller; VPN interfaces, keys and clients are not touched'
+    bash "$PROJECT/scripts/upgrade-core.sh"
+    install_menu
+    say "Update finished: $(cat "$PROJECT/VERSION"). Menu: sudo awg31"
+    exit 0
+fi
+
+# A VPN without a panel means an earlier run stopped half-way. Do not overwrite it.
+if [[ -f /var/lib/awg31-panel/state.sqlite3 || -e /etc/amnezia/amneziawg/awg0.conf || -d /var/lib/awg31-panel/servers ]]; then
+    die 'Found an AmneziaWG server without a working panel (an interrupted installation). Nothing was overwritten. See "Interrupted installation" in the README.'
+fi
+say 'Preparing the AmneziaWG 3.1 kernel module and tools (no PPA, no Docker)'
+bash "$PROJECT/scripts/prepare-awg31.sh" </dev/tty ||
+    die 'Prerequisites are not ready. If Secure Boot asked for MOK enrolment, enrol the key and run the same command again.'
+say 'Starting the interactive VPN and web panel setup'
+bash "$PROJECT/scripts/setup-wizard.sh" </dev/tty
+install_menu

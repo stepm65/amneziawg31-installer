@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Single source of truth for the panel's sudo allowlist.
-# Sourced by install.sh, scripts/upgrade-core.sh and scripts/resume-panel.sh so
+# Sourced by scripts/setup-wizard.sh, scripts/upgrade-core.sh and scripts/resume-panel.sh so
 # the three installers can never drift apart again. Sourcing has no side effects.
 #
 # Every entry is one exact `awg31mgr <command>` pair: no wildcards, no arguments.

@@ -31,32 +31,44 @@ Version **0.9.6** · MIT licence · not affiliated with the AmneziaVPN developer
 
 The installer needs kernel headers that match the running kernel. Secure Boot may stay enabled: the wizard asks you to enrol the DKMS key (MOK) from the server console after a reboot.
 
-## Install
+## Quick Start
+
+Run as root (`sudo -i` first if you are not):
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/stepm65/amneziawg31-installer/main/bootstrap.sh | sudo bash
+bash <(curl -Ls https://raw.githubusercontent.com/stepm65/amneziawg31-installer/main/install.sh)
 ```
 
-Prefer to read the code first? Clone and run it locally, which is equivalent:
+To install a specific version, append its tag (e.g. `v0.9.6`):
 
 ```bash
-git clone https://github.com/stepm65/amneziawg31-installer.git
-cd amneziawg31-installer
-sudo bash bootstrap.sh
+bash <(curl -Ls https://raw.githubusercontent.com/stepm65/amneziawg31-installer/main/install.sh) v0.9.6
 ```
 
-Take a snapshot of the VPS before installing on a machine that already does something useful, and keep console access at hand.
+To install the rolling build (the current `main` branch, not a release), pass `dev-latest`:
 
-The wizard asks for:
+```bash
+bash <(curl -Ls https://raw.githubusercontent.com/stepm65/amneziawg31-installer/main/install.sh) dev-latest
+```
+
+Without a root shell the same installer runs as `curl -Ls https://raw.githubusercontent.com/stepm65/amneziawg31-installer/main/install.sh | sudo bash` (add `-s -- v0.9.6` for a version).
+
+The installer builds the kernel module and tools, then starts a short wizard. Every question has a default, so Enter is enough:
 
 1. VPN subnet (`/24`…`/29`, default `10.77.10.0/24`), UDP port, MTU.
 2. Public IPv4 or DNS name of the server, DNS for clients.
 3. Traffic mode: **full** (all client IPv4 through the VPN, NAT on the server) or **split** (VPN subnet only).
 4. Local TCP port of the panel and the name of the first client.
 5. Reverse proxy: none, Nginx with a self-signed certificate, or Nginx with your certificate.
-6. The administrator password (typed twice, at least 12 characters).
+6. Administrator password: type your own (twice, at least 12 characters) or press Enter and a random one is generated and shown once at the end.
 
-Then open the UDP port in your provider's firewall. If you skipped Nginx, reach the panel through an SSH tunnel:
+After installation, run `sudo awg31` to see the management commands: status, update, backups, password reset, Nginx setup and more.
+
+Every release is published with a `.sha256` sum next to the archive. Both `install.sh` and `awg31 update` verify the archive against that sum and abort on a mismatch, before anything is unpacked. The sum protects against a damaged or truncated download; it comes from the same release page as the archive. `dev-latest` is not a release and is not checksum-pinned.
+
+Take a snapshot of the VPS before installing on a machine that already does something useful, and keep console access at hand. Then open the UDP port in your provider's firewall.
+
+If you skipped Nginx, reach the panel through an SSH tunnel:
 
 ```bash
 ssh -L 8080:127.0.0.1:8080 root@your-server
@@ -64,6 +76,8 @@ ssh -L 8080:127.0.0.1:8080 root@your-server
 ```
 
 If the sign-in page keeps coming back, your browser refuses the secure session cookie over plain HTTP: use Chrome or Firefox for the tunnel, or set up Nginx (`sudo awg31 nginx`).
+
+Prefer to read the code first? Clone the repository and run `sudo bash install.sh` inside it: the result is the same.
 
 ## The panel
 
@@ -96,6 +110,8 @@ Templates only set the shape of the first packets. Whether they help against a p
 
 ```text
 sudo awg31 status           panel and VPN instances
+sudo awg31 update [VER]     update to the latest release, vX.Y.Z or dev-latest
+sudo awg31 version          installed version
 sudo awg31 servers          configured interfaces
 sudo awg31 doctor           kernel, DKMS and interface checks
 sudo awg31 backup           create a full backup
@@ -111,12 +127,25 @@ sudo awg31 logs             panel logs
 ## Update
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/stepm65/amneziawg31-installer/main/bootstrap.sh | sudo bash -s -- --upgrade
+sudo awg31 update            # latest release
+sudo awg31 update v0.9.6     # a specific release
+sudo awg31 update dev-latest # rolling build from main
 ```
 
-The update replaces the panel, the controller, fonts and the `sudo` allowlist. Interfaces, keys, clients and firewall rules are left as they are. A copy of the replaced files and databases is kept in `/var/backups/awg31-upgrade.*`.
+Running the Quick Start command again on a server that already has the console does the same thing. The update replaces the panel, the controller, fonts and the `sudo` allowlist. Interfaces, keys, clients and firewall rules are left as they are. A copy of the replaced files and databases is kept in `/var/backups/awg31-upgrade.*`.
+
+If your installed `awg31` has no `update` command yet, run `bash <(curl -Ls https://raw.githubusercontent.com/stepm65/amneziawg31-installer/main/install.sh) --upgrade` once.
 
 If a server shows a warning that `H1–H4` are `1, 2, 3, 4`, press **Generate parameters** in its settings, save, and hand out the client configurations again.
+
+### Interrupted installation
+
+If the installer stopped after the VPN was created but before the panel started, it will not overwrite the existing server. If the stop happened after the administrator password step, finish the setup from a clone of the repository (otherwise restore the VPS snapshot and start again):
+
+```bash
+git clone https://github.com/stepm65/amneziawg31-installer.git
+sudo bash amneziawg31-installer/scripts/resume-panel.sh
+```
 
 ## Where things live
 
@@ -155,5 +184,7 @@ Also not yet confirmed on a live server: restoring a backup, running several ser
 python -m pip install -r src/requirements.txt pytest httpx
 python -m pytest -q
 ```
+
+Releases are built by GitHub Actions: set the number in `VERSION`, push a tag `vX.Y.Z`, and the workflow runs the tests, builds `awg31-console-vX.Y.Z.tar.gz` with its `.sha256` and publishes the release.
 
 Third-party components and font licences are listed in [THIRD_PARTY.md](THIRD_PARTY.md).

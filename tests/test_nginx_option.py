@@ -7,7 +7,7 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 PROXY = ROOT / 'scripts' / 'setup-nginx.sh'
-INSTALL = (ROOT / 'install.sh').read_text()
+INSTALL = (ROOT / 'scripts/setup-wizard.sh').read_text()
 
 
 def shell(command):

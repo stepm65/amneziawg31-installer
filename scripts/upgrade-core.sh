@@ -78,6 +78,7 @@ install -o root -g root -m 644 "$DIR/src/web.py" "$APP/web.py"
 install -o root -g root -m 644 "$DIR/src/panel.css" "$APP/panel.css"
 install -o root -g root -m 644 "$DIR/src/md3.css" "$APP/md3.css"
 install -o root -g root -m 644 "$DIR/src/panel.js" "$APP/panel.js"
+if [[ -f "$DIR/VERSION" ]]; then install -o root -g root -m 644 "$DIR/VERSION" "$APP/VERSION"; fi
 # Self-hosted UI fonts (no CDN); older installations do not have them yet.
 install -d -o root -g root -m 755 "$APP/fonts"
 install -o root -g root -m 644 "$DIR"/src/fonts/* "$APP/fonts/"

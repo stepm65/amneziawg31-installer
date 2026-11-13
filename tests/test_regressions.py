@@ -60,7 +60,7 @@ def test_sudoers_never_exposes_root_only_operations():
 
 
 def test_installers_share_the_allowlist_instead_of_copies():
-    for name in ('install.sh', 'scripts/upgrade-core.sh', 'scripts/resume-panel.sh'):
+    for name in ('scripts/setup-wizard.sh', 'scripts/upgrade-core.sh', 'scripts/resume-panel.sh'):
         script = (ROOT / name).read_text()
         assert 'awg31_install_sudoers' in script, name
         assert 'awgpanel ALL=' not in script, name
@@ -69,7 +69,7 @@ def test_installers_share_the_allowlist_instead_of_copies():
 # --- 1. primary server obfuscation -------------------------------------------
 
 def test_installer_requests_random_obfuscation_for_awg0():
-    script = (ROOT / 'install.sh').read_text()
+    script = (ROOT / 'scripts/setup-wizard.sh').read_text()
     assert 'AWG31_GENERATE_PARAMS=1 /usr/local/sbin/awg31ctl init' in script
 
 
@@ -113,7 +113,7 @@ def test_ports_and_mtu_accept_plain_values():
 @pytest.mark.parametrize('value,ok', [('8080', True), ('8_080', False), ('+8080', False),
                                       ('８０８０', False), ('0', False), ('70000', False)])
 def test_installer_number_check(value, ok):
-    script = (ROOT / 'install.sh').read_text()
+    script = (ROOT / 'scripts/setup-wizard.sh').read_text()
     function = re.search(r'need_number\(\) \{.*?\n\}', script, flags=re.S).group(0)
     run = subprocess.run(['bash', '-c', 'die(){ exit 9; }\n' + function + '\nneed_number port "$1" 1 65535', '_', value],
                          capture_output=True, text=True)
@@ -123,7 +123,7 @@ def test_installer_number_check(value, ok):
 # --- 8. password confirmation and console reset ------------------------------
 
 def test_installer_asks_for_the_password_twice():
-    script = (ROOT / 'install.sh').read_text()
+    script = (ROOT / 'scripts/setup-wizard.sh').read_text()
     assert 'Повторите пароль' in script and 'Пароли не совпадают' in script
     assert 'reset-password' in script
 
@@ -351,7 +351,7 @@ def test_fonts_ship_with_their_licence_and_are_installed():
     assert {path.name for path in fonts.glob('*.woff2')} == set(FONT_FILES)
     for licence in ('OFL-Exo2.txt', 'OFL-JetBrainsMono.txt'):
         assert 'SIL Open Font License' in (fonts / licence).read_text()
-    for name in ('install.sh', 'scripts/upgrade-core.sh', 'scripts/upgrade-ui.sh'):
+    for name in ('scripts/setup-wizard.sh', 'scripts/upgrade-core.sh', 'scripts/upgrade-ui.sh'):
         assert '/src/fonts/*' in (ROOT / name).read_text(), name
 
 

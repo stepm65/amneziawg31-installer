@@ -4,12 +4,12 @@ ROOT = Path(__file__).parents[1]
 
 
 def test_no_unsupported_sudo_requiretty_in_installer_or_repair():
-    for name in ('install.sh', 'scripts/resume-panel.sh'):
+    for name in ('scripts/setup-wizard.sh', 'scripts/resume-panel.sh'):
         content = (ROOT / name).read_text()
         assert 'Defaults:awgpanel !requiretty' not in content
         assert 'awg31_install_sudoers' in content and 'scripts/sudoers.sh' in content or 'sudoers.sh"' in content
     assert 'visudo -cf' in (ROOT / 'scripts/sudoers.sh').read_text()
-    for name in ('install.sh', 'scripts/resume-panel.sh'):
+    for name in ('scripts/setup-wizard.sh', 'scripts/resume-panel.sh'):
         content = (ROOT / name).read_text()
         assert '127.0.0.1' in content
 

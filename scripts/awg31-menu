@@ -31,6 +31,21 @@ case "${1:-menu}" in
     read -r -p 'Type RESTORE to proceed: ' answer
     [[ "$answer" == RESTORE ]] || { echo 'Canceled'; exit 1; }
     python3 /usr/local/libexec/awg31/scripts/restore-backup.py --apply "$2" ;;
+  version)
+    cat /opt/awg31-panel/VERSION 2>/dev/null || echo 'unknown: installed before version tracking'
+    ;;
+  update)
+    # The same one-command installer in upgrade mode. Optional argument: a
+    # release tag (v1.2.3) or dev-latest. Release archives are SHA256-verified.
+    shift || true
+    [[ $# -le 1 ]] || { echo 'Usage: awg31 update [vX.Y.Z|dev-latest]' >&2; exit 2; }
+    installer="$(mktemp /tmp/awg31-install.XXXXXXXX)"
+    trap 'rm -f -- "$installer"' EXIT
+    curl -fsSL --retry 2 --connect-timeout 8 --max-time 60 \
+      https://raw.githubusercontent.com/stepm65/amneziawg31-installer/main/install.sh -o "$installer" \
+      || { echo 'Cannot download the installer from GitHub' >&2; exit 1; }
+    bash "$installer" --upgrade "$@"
+    ;;
   reset-password)
     # Console-only recovery: the web panel cannot call this (not in sudoers).
     [[ -t 0 ]] || { echo 'Run interactively from the server console or SSH' >&2; exit 1; }
@@ -57,6 +72,8 @@ AmneziaWG 3.1 local management
   sudo awg31 restore-check NAME  Verify checksums and SQLite of a backup
   sudo awg31 restore NAME    Restore after confirmation (VPN downtime)
   sudo awg31 doctor          Check kernel/DKMS and interface
+  sudo awg31 update [VER]    Update panel and controller (latest release, vX.Y.Z or dev-latest)
+  sudo awg31 version         Show the installed version
   sudo awg31 reset-password  Set a new panel password (forgotten password)
   sudo awg31 restart-panel   Restart web panel only
   sudo awg31 logs            View panel logs
