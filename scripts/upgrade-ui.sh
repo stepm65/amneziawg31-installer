@@ -42,9 +42,8 @@ if compgen -G "$ROOT/src/fonts/*" >/dev/null; then
 fi
 say 'Restarting web panel (VPN interfaces remain untouched)'
 systemctl restart awg31-panel.service
-sleep 2
-systemctl is-active --quiet awg31-panel.service || die 'Panel failed to start'
-curl --noproxy '*' -4fsS --max-time 8 "http://127.0.0.1:$port/health" >/dev/null || die 'Panel health check failed'
+source "$ROOT/scripts/os-support.sh"
+awg31_wait_panel "$port" || die 'Panel failed to start after the update'
 finished=1
 trap - EXIT
 say "Success. UI backup: $backup"

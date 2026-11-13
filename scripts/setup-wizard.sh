@@ -264,8 +264,8 @@ WantedBy=multi-user.target
 EOF
 systemctl daemon-reload
 systemctl enable --now awg31-panel.service
-systemctl is-active --quiet awg31-panel.service || die 'Панель не запустилась; systemctl status awg31-panel'
-curl --noproxy '*' -4fsS --max-time 5 "http://127.0.0.1:$PANEL_PORT/health" >/dev/null || die 'HTTP /health не отвечает'
+say 'Ждём запуска веб-панели'
+awg31_wait_panel "$PANEL_PORT" || die 'Панель не ответила на /health. VPN awg0 создан и работает; повторный запуск команды установки завершит настройку.'
 
 # Keep optional Nginx wizard installed even if user skips it initially.
 install -d -o root -g root -m 755 /usr/local/libexec/awg31/scripts

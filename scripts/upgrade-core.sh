@@ -86,9 +86,8 @@ install -o root -g root -m 644 "$DIR"/src/fonts/* "$APP/fonts/"
 port="$(systemctl cat awg31-panel.service | sed -nE 's/.*--port ([0-9]+).*/\1/p' | tail -n1)"
 [[ "$port" =~ ^[0-9]+$ ]] || die 'Cannot detect localhost panel port'
 systemctl restart awg31-panel.service
-sleep 2
-systemctl is-active --quiet awg31-panel.service || die 'Panel failed to start'
-curl --noproxy '*' -4fsS --max-time 8 "http://127.0.0.1:$port/health" >/dev/null || die 'Health check failed'
+source "$DIR/scripts/os-support.sh"
+awg31_wait_panel "$port" || die 'Panel failed to start after the update'
 runuser -u awgpanel -- sudo -n "$MGR" servers </dev/null >/dev/null || die 'Panel sudo permission failed'
 completed=1
 trap - EXIT

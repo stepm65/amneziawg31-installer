@@ -53,3 +53,22 @@ awg31_install_packages() {
   [[ -d "/lib/modules/$(uname -r)/build" ]] || awg31_die "Missing build tree for running kernel $(uname -r). Reboot after installing the matching kernel-devel package."
   python3 -c 'import venv, ensurepip' || awg31_die 'Python venv/ensurepip unavailable on this OS image'
 }
+
+# Wait until the panel answers on localhost. `systemctl start` returns as soon
+# as the process is spawned, while uvicorn needs a moment to import the
+# application and bind the port; an immediate request is refused.
+# Usage: awg31_wait_panel PORT [SECONDS]; returns 1 on timeout or a failed unit.
+awg31_wait_panel() {
+  local port="$1" deadline=$((SECONDS + ${2:-45}))
+  while ((SECONDS < deadline)); do
+    if curl --noproxy '*' -4fsS --connect-timeout 2 --max-time 5 "http://127.0.0.1:$port/health" >/dev/null 2>&1; then
+      return 0
+    fi
+    # A crashed unit will not recover by waiting: stop early and show why.
+    if systemctl is-failed --quiet awg31-panel.service 2>/dev/null; then break; fi
+    sleep 1
+  done
+  printf '[AWG31 ERROR] Panel does not answer on 127.0.0.1:%s. Last service log lines:\n' "$port" >&2
+  journalctl -u awg31-panel.service -n 25 --no-pager >&2 2>/dev/null || :
+  return 1
+}

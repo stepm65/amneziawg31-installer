@@ -70,14 +70,8 @@ EOF
 chmod 644 /etc/systemd/system/awg31-panel.service
 systemctl daemon-reload
 systemctl enable --now awg31-panel.service
-if ! systemctl is-active --quiet awg31-panel.service; then
-  journalctl -u awg31-panel.service -n 40 --no-pager || true
-  die 'Панель не запустилась'
-fi
-if ! curl --noproxy '*' -4fsS --max-time 5 "http://127.0.0.1:$PANEL_PORT/health"; then
-  journalctl -u awg31-panel.service -n 40 --no-pager || true
-  die 'Панель не ответила на /health'
-fi
+source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/os-support.sh"
+awg31_wait_panel "$PANEL_PORT" || die 'Панель не ответила на /health'
 printf '\n'
 say "Готово. Панель: 127.0.0.1:$PANEL_PORT (используйте Nginx HTTPS)"
 say 'Конфигурация awg0, ключи и клиенты не изменялись'

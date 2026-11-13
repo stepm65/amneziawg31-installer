@@ -502,3 +502,73 @@ def test_oversized_qr_is_a_clean_422_and_the_page_explains_it(ui):
 def test_every_installer_ships_the_quic_module():
     for name in ('scripts/setup-wizard.sh', 'scripts/upgrade-core.sh', 'scripts/upgrade-ui.sh'):
         assert 'quicinitial.py' in (ROOT / name).read_text(), name
+
+
+# --- panel start-up: wait for the port instead of probing once ----------------
+
+WAIT_STUBS = '''#!/bin/sh
+case "$0" in
+  */systemctl) [ "$1" = "is-failed" ] && [ -f "$STUB_DIR/failed" ] && exit 0; exit 1 ;;
+  */journalctl) echo "stub journal: boom"; exit 0 ;;
+esac
+'''
+
+
+def run_wait(tmp_path, port, seconds, *, failed=False):
+    for name in ('systemctl', 'journalctl'):
+        stub = tmp_path / name
+        stub.write_text(WAIT_STUBS)
+        stub.chmod(0o755)
+    if failed:
+        (tmp_path / 'failed').write_text('')
+    env = {**os.environ, 'PATH': f'{tmp_path}:{os.environ["PATH"]}', 'STUB_DIR': str(tmp_path)}
+    started = time.monotonic()
+    result = subprocess.run(['bash', '-c', f'source "{ROOT}/scripts/os-support.sh"; awg31_wait_panel {port} {seconds}'],
+                            capture_output=True, text=True, env=env, timeout=60)
+    return result, time.monotonic() - started
+
+
+def free_port():
+    import socket
+    with socket.socket() as probe:
+        probe.bind(('127.0.0.1', 0))
+        return probe.getsockname()[1]
+
+
+def test_wait_panel_succeeds_when_the_port_opens_a_few_seconds_late(tmp_path):
+    import sys
+    port = free_port()
+    late = subprocess.Popen([sys.executable, '-c', f'''
+import time, http.server
+time.sleep(3)
+class H(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200); self.end_headers(); self.wfile.write(b'{{"ok": true}}')
+    def log_message(self, *a): pass
+http.server.HTTPServer(("127.0.0.1", {port}), H).serve_forever()
+'''])
+    try:
+        result, elapsed = run_wait(tmp_path, port, 30)
+        assert result.returncode == 0, result.stderr
+        assert 2.5 < elapsed < 15                      # it waited, and did not wait for the full timeout
+    finally:
+        late.kill()
+
+
+def test_wait_panel_times_out_with_the_service_log(tmp_path):
+    result, elapsed = run_wait(tmp_path, free_port(), 3)
+    assert result.returncode == 1 and 'stub journal: boom' in result.stderr
+    assert 2.5 < elapsed < 10
+
+
+def test_wait_panel_stops_early_when_the_unit_failed(tmp_path):
+    result, elapsed = run_wait(tmp_path, free_port(), 30, failed=True)
+    assert result.returncode == 1 and elapsed < 5
+
+
+def test_no_script_probes_health_once_right_after_a_start():
+    for name in ('scripts/setup-wizard.sh', 'scripts/upgrade-core.sh', 'scripts/upgrade-ui.sh', 'scripts/resume-panel.sh'):
+        script = (ROOT / name).read_text()
+        assert 'awg31_wait_panel' in script, name
+        assert not re.search(r'^sleep 2$', script, flags=re.M), name
+        assert '/health" >/dev/null || die' not in script, name
