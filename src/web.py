@@ -1335,7 +1335,9 @@ def server_content(request: Request, section: str = 'overview'):
           <section class="card server-home-card"><div class="server-home-top">
             <div><h2>{h('Состояние' if lang=='ru' else 'Status')}</h2>
               <span class="pill pill-{state_pill}"><span class="dot"></span>{h(t('vpn_running' if running else 'vpn_stopped'))}</span></div>
-            <a class="btn btn-secondary btn-small" href="/servers/{h(state['interface'])}/monitoring">{h(t('server_monitor'))}</a></div>
+            <div class="server-state-actions"><a class="btn btn-secondary btn-small" href="/servers/{h(state['interface'])}/monitoring">{h(t('server_monitor'))}</a>
+             <form method="post" action="/server/{h(state['interface'])}/{'stop' if running else 'start'}" {'data-confirm="'+h(t('confirm_restart'))+'"' if running else ''}>{csrf(request)}
+             <button class="btn {'btn-danger' if running else 'btn-primary'} btn-small" type="submit">{h(t('server_stop' if running else 'server_start'))}</button></form></div></div>
             <div class="server-home-numbers"><div><strong>{len(clients_all)}</strong><span>{h(t('total_clients'))}</span></div>
               <div><strong>{connected_count}</strong><span>{h(t('connected'))}</span></div>
               <div><strong>{h(friendly_size(total_rx+total_tx))}</strong><span>{h(t('total_transfer'))}</span></div></div>
