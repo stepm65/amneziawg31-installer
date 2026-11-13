@@ -547,7 +547,10 @@ def selected_server(request):
         if not SERVER_RE.fullmatch(explicit): raise HTTPException(404)
         return explicit
     value = request.cookies.get('awg31_server','awg0')
-    return value if SERVER_RE.fullmatch(value) else 'awg0'
+    # awg0 can be deleted; a stale cookie must never hide remaining servers.
+    available = [item['interface'] for item in server_list()
+                 if SERVER_RE.fullmatch(item.get('interface',''))]
+    return value if SERVER_RE.fullmatch(value) and value in available else (available[0] if available else 'awg0')
 
 
 def scoped_prefix(request):
@@ -1113,7 +1116,13 @@ def server_content(request: Request, section: str = 'overview'):
     try:
         state = control(request,'list')
     except RuntimeError as exc:
-        return error_page(request, t('error'), exc)
+        if section != 'servers' or server_list():
+            return error_page(request, t('error'), exc)
+        # The last server was deleted: keep the creation page usable.
+        state = {'interface':'awg0','subnet':'10.77.10.0/24','port':51820,
+                 'running':False,'clients':[],'mtu':1280,'dns':'1.1.1.1',
+                 'endpoint':'vpn.example.com','mode':'full','uplink':'ens3',
+                 'obfuscation':{}}
 
     try:
         instances=server_list()
