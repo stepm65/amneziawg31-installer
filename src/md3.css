@@ -714,3 +714,52 @@ body {background:var(--ui-bg);font-size:14px;line-height:1.48;}
   .server-tabs {justify-content:space-between;gap:0}
   .server-tab {font-size:12px;padding:10px 10px}
 }
+
+
+/* v0.9.1: the maintenance area uses tabs, not a second sidebar. */
+.maint-workspace {display:flex!important;flex-direction:column!important;gap:17px;min-width:0;grid-template-columns:none!important}
+.maint-tabs {display:flex;align-items:center;gap:4px;min-width:0;width:100%;
+  overflow-x:auto;scrollbar-width:thin;border-bottom:1px solid #32383f;padding:0 0 1px;
+  background:transparent;border-radius:0;box-shadow:none}
+.maint-tabs .maint-nav-link {display:inline-flex;gap:8px;flex:none;width:auto;min-width:max-content;min-height:43px;
+  padding:10px 13px;border:0;border-bottom:2px solid transparent;border-radius:0;
+  white-space:nowrap;color:#9eabb8;background:transparent;font-size:12px;font-weight:590}
+.maint-tabs .maint-nav-link .icon {width:16px;height:16px;flex:none}
+.maint-tabs .maint-nav-link:hover {background:#1f2329;color:#f5f6f8}
+.maint-tabs .maint-nav-link.is-active {color:#ffbc58;border-bottom-color:#ffb43f;background:transparent}
+.maint-panel {width:100%;min-width:0;padding:24px 27px}
+.maint-panel-heading {padding-bottom:16px;margin-bottom:19px}
+.maint-panel-heading h2 {font-size:20px}
+.obf-generate-controls {display:flex;flex-wrap:wrap;align-items:center;gap:14px;margin:12px 0}
+.obf-timing-switch {display:flex;gap:8px;align-items:center;color:#cdd5df;font-size:12px;cursor:pointer}
+.obf-timing-switch input {width:17px;height:17px;accent-color:var(--amber)}
+.obf-help {font-size:11px;color:#8f9aa6;line-height:1.5;margin:5px 0 18px}
+.cps-fields {display:grid;grid-template-columns:minmax(0,1fr);gap:12px;min-width:0}
+.cps-field {min-width:0!important}
+.cps-field textarea {display:block;box-sizing:border-box;width:100%;max-width:100%;min-height:74px;
+  padding:12px;resize:vertical;overflow:auto;white-space:pre;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;
+  font-size:12px;line-height:1.45;word-break:normal;border:1px solid #37414b;border-radius:10px;background:#11161c;color:#e8edf2}
+.cps-warning {font-size:12px;color:#e0bc81;margin:12px 0;max-width:750px;line-height:1.55}
+.qr-too-large {max-width:360px;text-align:center;padding:45px 18px;color:#364454;font-size:14px;line-height:1.55}
+.fleet-telemetry {display:grid;grid-template-columns:minmax(0,1.3fr) minmax(320px,1fr);gap:22px;
+  background:#171a1e;border:1px solid #30363e;border-radius:13px;padding:18px 22px;margin:0 0 20px}
+.fleet-telemetry-network {min-width:0}
+.fleet-telemetry-title {display:flex;gap:9px;align-items:center}
+.fleet-telemetry-title strong {font-size:13px;color:#ecf0f3;font-weight:650}
+.fleet-telemetry-title small {font-size:11px;color:#808d9a;margin-left:auto}
+.fleet-telemetry-led {width:7px;height:7px;border-radius:50%;background:#65cf96;flex:none}
+.fleet-traffic-values {display:flex;gap:22px;align-items:center;margin:15px 0 1px;flex-wrap:wrap}
+.fleet-traffic-values span {display:inline-flex;gap:6px;align-items:center;font-size:12px;color:#9daebf}
+.fleet-traffic-values b {font-variant-numeric:tabular-nums;color:#e2e8ec;font-size:15px;font-weight:660}
+.fleet-rx-dot,.fleet-tx-dot {height:6px;width:6px;border-radius:2px;background:#e3a142}
+.fleet-tx-dot {background:#8fa8ca}
+.fleet-sparkline {width:100%;height:59px;display:block;margin:2px 0 -3px}
+.fleet-health-stats {display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px 24px;
+  padding-left:19px;border-left:1px solid #343941}
+.fleet-health-stats > div {min-width:0;display:flex;flex-direction:column;gap:6px}
+.fleet-health-stats span {font-size:11px;color:#8997a5}
+.fleet-health-stats strong {font-size:16px;font-weight:670;color:#e5e9ed;font-variant-numeric:tabular-nums}
+.fleet-meter {height:4px;max-width:150px;background:#303741;border-radius:4px;overflow:hidden}
+.fleet-meter i {display:block;height:100%;width:0%;background:#f8b444;border-radius:4px;transition:width .3s}
+@media(max-width:1070px){.fleet-telemetry {grid-template-columns:minmax(0,1fr)}.fleet-health-stats {border-left:0;border-top:1px solid #343941;padding:16px 0 0}}
+@media(max-width:650px){.maint-tabs .maint-nav-link {padding:10px 12px}.maint-panel {padding:18px 14px}.fleet-telemetry {padding:16px}.fleet-health-stats {gap:16px 12px}}

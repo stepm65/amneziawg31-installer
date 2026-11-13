@@ -726,9 +726,9 @@ def page(title, content, request):
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="color-scheme" content="dark">
     <title>{h(title)} — AmneziaWG 3.1</title>
-    <link rel="stylesheet" href="/assets/panel.css?v=0.9.0">
-    <link rel="stylesheet" href="/assets/md3.css?v=0.9.0">
-    <script defer src="/assets/panel.js?v=0.9.0"></script>
+    <link rel="stylesheet" href="/assets/panel.css?v=0.9.1">
+    <link rel="stylesheet" href="/assets/md3.css?v=0.9.1">
+    <script defer src="/assets/panel.js?v=0.9.1"></script>
     </head><body data-server-scope="{h(scoped)}">
     <header class="topbar"><div class="topbar-left">{nav_toggle}<a href="/" class="brand"><span class="brand-emblem">{icon('shield',18)}</span><span>AmneziaWG <b>3.1</b></span></a></div>
     <div class="topbar-right">{language_picker(request)}{refresh_button}{status_link}</div></header>
@@ -784,9 +784,51 @@ def traffic(request: Request, interface: str = ''):
                     media_type='application/json', headers={'Cache-Control': 'no-store'})
 
 
+def _proc_telemetry():
+    result = {'cpu_total':None, 'cpu_idle':None, 'mem_total':None, 'mem_available':None, 'uptime':None}
+    try:
+        cpu = Path('/proc/stat').read_text().splitlines()[0].split()
+        counters = [int(v) for v in cpu[1:]]
+        result['cpu_total'] = sum(counters)
+        result['cpu_idle'] = counters[3] + counters[4]
+    except (OSError, ValueError, IndexError): pass
+    try:
+        memory = {}
+        for line in Path('/proc/meminfo').read_text().splitlines():
+            key, _, raw = line.partition(':')
+            if key in ('MemTotal', 'MemAvailable'):
+                memory[key] = int(raw.strip().split()[0])*1024
+        result['mem_total'] = memory.get('MemTotal')
+        result['mem_available'] = memory.get('MemAvailable')
+    except (OSError, ValueError, IndexError): pass
+    try: result['uptime'] = int(float(Path('/proc/uptime').read_text().split()[0]))
+    except (OSError, ValueError, IndexError): pass
+    return result
+
+
+@app.get('/api/overview/telemetry')
+def fleet_telemetry(request: Request):
+    require_auth(request)
+    rx=tx=connected=0
+    try:
+        for server in server_list():
+            if not SERVER_RE.fullmatch(server.get('interface','')): continue
+            data=ctl('list', {'interface':server['interface']})
+            for client in data.get('clients', []):
+                stats=client.get('stats') or {}
+                rx+=max(0,int(stats.get('received') or 0))
+                tx+=max(0,int(stats.get('sent') or 0))
+                connected+=int(bool(client.get('enabled') and
+                     int(stats.get('handshake') or 0)>time.time()-180))
+    except (RuntimeError, ValueError, KeyError, TypeError):
+        raise HTTPException(503,detail='Monitoring unavailable') from None
+    return Response(json.dumps({'rx':rx,'tx':tx,'connected':connected,**_proc_telemetry()}),
+                    media_type='application/json',headers={'Cache-Control':'no-store'})
+
+
 @app.get('/api/obfuscation/generate')
 @app.get('/servers/{interface}/api/obfuscation/generate')
-def obfuscation_generate(request: Request, interface: str = ''):
+def obfuscation_generate(request: Request, interface: str = '', timing_ranges: bool = False):
     require_auth(request)
     nums = secrets.SystemRandom().sample(range(10000, 2500000),4)
     sizes = [secrets.randbelow(50)+12 for _ in range(4)]
@@ -796,6 +838,10 @@ def obfuscation_generate(request: Request, interface: str = ''):
               **{f'H{i+1}':str(n) for i,n in enumerate(nums)},
               'HeaderProtectionKey':base64.b64encode(secrets.token_bytes(32)).decode(),
               'ContentPaddingAddition':'0-16','RandomTrailers':'on','DisableCookies':'on'}
+    if timing_ranges:
+        params.update({'RekeyAfterTime':'112-118', 'RekeyTimeout':'4-6',
+                       'RejectAfterTime':'176-184', 'KeepaliveTimeout':'9-11',
+                       'MaxHandshakeAttempts':'8-12'})
     return Response(json.dumps(params),media_type='application/json',
                     headers={'Cache-Control':'no-store'})
 
@@ -1139,7 +1185,9 @@ def server_content(request: Request, section: str = 'overview'):
              for key in ('RandomTrailers','DisableCookies'))
     advanced=f'''<details class="advanced-box" id="obfuscation"><summary>{icon('settings',16)}{h(t('advanced'))}</summary>
           <p class="info-line">{h(t('advanced_hint'))}</p>
-          <button class="btn btn-secondary" id="generate-obf" type="button">{icon('restart',16)}{h(t('generate'))}</button>
+          <div class="obf-generate-controls"><button class="btn btn-secondary" id="generate-obf" type="button">{icon('restart',16)}{h(t('generate'))}</button>
+          <label class="obf-timing-switch"><input type="checkbox" id="generate-timings"><span>{'Генерировать тайминги AWG 3.1' if lang=='ru' else 'Generate AWG 3.1 timing ranges'}</span></label></div>
+          <p class="obf-help">{'По умолчанию тайминги остаются пустыми; включайте только при необходимости. Изменения применятся после сохранения сервера.' if lang=='ru' else 'Timings remain unset by default. Enable only when needed; save the server to apply changes.'}</p>
           <div class="fields-grid" id="obfuscation-fields">{obf_inputs}</div></details>'''
     settings = f'''<section class="card settings-card" id="settings">
         <form method="post" action="/settings" data-confirm="{h(t('confirm_restart'))}">{csrf(request)}
@@ -1243,7 +1291,22 @@ def infrastructure_overview(request: Request):
                           f'<span>{h(labels[0 if lang=="ru" else 1])}</span><strong>{h(short)}</strong></div>')
     overview_counts = (f'Серверов: {len(servers)}  ·  Работают: {online}  ·  Клиентов: {total_clients}' if lang=='ru'
                        else f'Servers: {len(servers)}  ·  Running: {online}  ·  Clients: {total_clients}')
-    content=f'''<div class="fleet-headerline"><p>{h(overview_counts)}</p>
+    fleet_widget=f'''<section class="fleet-telemetry" aria-label="{'Мониторинг системы' if lang=='ru' else 'System monitoring'}">
+      <div class="fleet-telemetry-network"><div class="fleet-telemetry-title"><span class="fleet-telemetry-led"></span>
+        <strong>{'Трафик VPN' if lang=='ru' else 'VPN traffic'}</strong>
+        <small>{'Все экземпляры' if lang=='ru' else 'All instances'}</small></div>
+        <div class="fleet-traffic-values"><span><i class="fleet-rx-dot"></i>↓ <b id="fleet-rx-rate">—</b></span>
+        <span><i class="fleet-tx-dot"></i>↑ <b id="fleet-tx-rate">—</b></span></div>
+        <svg class="fleet-sparkline" viewBox="0 0 520 66" role="img" aria-label="{'График сетевого трафика' if lang=='ru' else 'Network traffic chart'}">
+          <path id="fleet-traffic-rx" d="" fill="none" stroke="#e3a142" stroke-width="2.4" stroke-linejoin="round"/>
+          <path id="fleet-traffic-tx" d="" fill="none" stroke="#8fa8ca" stroke-width="2.4" stroke-linejoin="round"/></svg></div>
+      <div class="fleet-health-stats">
+        <div><span>CPU</span><strong id="fleet-cpu">—</strong><div class="fleet-meter"><i id="fleet-cpu-meter"></i></div></div>
+        <div><span>RAM</span><strong id="fleet-memory">—</strong><div class="fleet-meter"><i id="fleet-memory-meter"></i></div></div>
+        <div><span>{'Время работы' if lang=='ru' else 'Uptime'}</span><strong id="fleet-uptime">—</strong></div>
+        <div><span>{'Подключены' if lang=='ru' else 'Connected'}</span><strong id="fleet-connected">—</strong></div>
+      </div></section>'''
+    content=fleet_widget+f'''<div class="fleet-headerline"><p>{h(overview_counts)}</p>
       <a href="/servers" class="quiet-link">{h(t('all_servers'))}{icon('chevron-right',16)}</a></div>
     <section class="fleet-list-panel" aria-label="{h(t('all_servers'))}">
       <div class="fleet-table-scroll"><table class="fleet-table"><thead><tr>
@@ -1326,8 +1389,12 @@ def detail(request: Request, name: str, interface: str = ''):
         return error_page(request, tr(lang, 'not_available'), exc)
     name_url = quote(name, safe='')
     t = lambda key: tr(lang,key)
-    i_fields = ''.join(form_field(f'i{x}', obj.get(f'i{x}',''), f'I{x}', required=False,
-                                   field_id=f'detail-i{x}') for x in range(1,6))
+    i_fields = ''.join(
+        f'<label class="field cps-field" for="detail-i{x}"><span>I{x}</span>'
+        f'<textarea id="detail-i{x}" name="i{x}" rows="{4 if x==1 else 2}" maxlength="16384" '
+        f'spellcheck="false" autocapitalize="off" autocomplete="off" '
+        f'placeholder="&lt;r 48&gt;">{h(obj.get(f"i{x}",""))}</textarea></label>'
+        for x in range(1,6))
     checked = ' checked' if obj.get('i_enabled') else ''
     try:
         share_uri = build_client_link(obj, name)
@@ -1337,11 +1404,13 @@ def detail(request: Request, name: str, interface: str = ''):
     config = obj['config']
     qr_conf = f'/client/{name_url}/qr?mode=conf'
     qr_vpn = f'/client/{name_url}/qr?mode=vpn'
+    qr_conf_available = len(config.encode('utf-8')) <= 2400
+    qr_vpn_available = bool(share_uri and len(share_uri.encode('utf-8')) <= 2400)
     # The tab is deliberately disabled rather than inventing a URI for old
     # controllers that do not return a client's public key.
     link_contents = (f'''<div class="share-grid"><figure class="qr-frame">
-          <img alt="{h(t('share_link_tab'))} QR" loading="lazy" src="{qr_vpn}">
-          <figcaption><a class="btn btn-secondary btn-small" href="{qr_vpn}&amp;download=1">{h(t('save_qr'))}</a></figcaption>
+          {f'<img alt="{h(t("share_link_tab"))} QR" loading="lazy" src="{qr_vpn}">' if qr_vpn_available else f'<p class="qr-too-large">{h(t("qr_overflow"))}</p>'}
+          {f'<figcaption><a class="btn btn-secondary btn-small" href="{qr_vpn}&amp;download=1">{h(t("save_qr"))}</a></figcaption>' if qr_vpn_available else ''}
           </figure><div class="share-text-col"><p class="info-line">{h(t('vpn_link_note'))}</p>
           <label class="sr-only" for="share-vpn-text">{h(t('share_link_tab'))}</label>
           <textarea id="share-vpn-text" class="share-text" readonly spellcheck="false">{h(share_uri)}</textarea>
@@ -1349,6 +1418,10 @@ def detail(request: Request, name: str, interface: str = ''):
           <a class="btn btn-primary" href="/client/{name_url}/vpn-link?download=1">{h(t('save_vpn'))}</a></div></div></div>'''
           if share_uri else f'<p role="status" class="info-line">{h(t("link_unavailable"))}</p>')
     link_disabled = '' if share_uri else ' disabled aria-disabled="true"'
+    qr_conf_display = (f'<img alt="{h(t("share_conf_tab"))} QR" loading="lazy" src="{qr_conf}">' if qr_conf_available
+                       else f'<p class="qr-too-large">{h(t("qr_overflow"))}</p>')
+    qr_conf_download = (f'<figcaption><a class="btn btn-secondary btn-small" href="{qr_conf}&amp;download=1">{h(t("save_qr"))}</a></figcaption>'
+                       if qr_conf_available else '')
     contents = f'''<section class="card detail-card share-dialog" aria-label="{h(t('share_config'))}">
         <div class="section-title share-heading"><div><span class="section-overline">PEER / EXPORT</span>
         <h2>{icon('file',21)}{h(t('share_config'))}: <span class="mono">{safe_name}</span></h2></div>
@@ -1360,8 +1433,7 @@ def detail(request: Request, name: str, interface: str = ''):
         </div>
         <section class="share-tab-panel" role="tabpanel" id="share-panel-conf" aria-labelledby="share-tab-conf">
           <div class="share-grid"><figure class="qr-frame">
-            <img alt="{h(t('share_conf_tab'))} QR" loading="lazy" src="{qr_conf}">
-            <figcaption><a class="btn btn-secondary btn-small" href="{qr_conf}&amp;download=1">{h(t('save_qr'))}</a></figcaption></figure>
+            {qr_conf_display}{qr_conf_download}</figure>
             <div class="share-text-col"><p class="info-line">{h(t('conf_qr_note'))}</p>
             <label class="sr-only" for="share-conf-text">{h(t('share_conf_tab'))}</label>
             <textarea id="share-conf-text" class="share-text" readonly spellcheck="false">{h(config)}</textarea>
@@ -1381,7 +1453,9 @@ def detail(request: Request, name: str, interface: str = ''):
           <small>{h(t('peer_routes_hint'))}</small></label>
           <details class="cps-box"><summary>{h(t('cps_label'))}</summary>
           <label class="check-field"><input type="checkbox" name="i_enabled" value="1"{checked}><span>{h(t('cps_enabled'))}</span></label>
-          <p class="info-line">{h(t('cps_hint'))}</p><div class="fields-grid">{i_fields}</div></details>
+          <p class="info-line">{h(t('cps_hint'))}</p>
+          <p class="cps-warning">{'Длинная сигнатура I1 может превышать размер QR или MTU. В таком случае используйте .conf или AmneziaVPN Link как текст и проверьте UDP-фрагментацию.' if lang=='ru' else 'Long I1 signatures may exceed QR capacity or UDP MTU. Use the .conf or a text link, and check UDP fragmentation.'}</p>
+          <div class="cps-fields">{i_fields}</div></details>
           <p class="info-line">{h(t('client_network_changed'))}</p>
           <button type="submit" class="btn btn-primary">{icon('check',16)}{h(t('save_client_network'))}</button>
         </form></details></section>'''
@@ -1567,8 +1641,8 @@ def maintenance(request: Request, tab: str = 'diagnostics'):
         'profiles':'maint_profile_hint','security':'maint_security_hint','audit':'maint_audit_hint',
         'system':'maint_system_hint'}
     section_title=next(t(label) for key,label,_ in MAINTENANCE_TABS if key==tab)
-    body=f'''<div class="maint-workspace"><nav class="maint-nav" aria-label="{h(t('maint_choose'))}">
-      <div class="maint-nav-heading">{h(t('maint_choose'))}</div>{nav}</nav>
+    body=f'''<div class="maint-workspace"><nav class="maint-tabs" aria-label="{h(t('maint_choose'))}">
+      {nav}</nav>
       <div class="maint-panel" id="maintenance-panel"><div class="maint-panel-heading">
       <div><h2>{h(section_title)}</h2><p>{h(t(info_key[tab]))}</p></div>
       </div>'''

@@ -58,7 +58,8 @@
     const button = byId('generate-obf');
     button.disabled = true;
     try {
-      const reply = await fetch(`${serverScope}/api/obfuscation/generate`, {
+      const timingRanges = Boolean(byId('generate-timings')?.checked);
+      const reply = await fetch(`${serverScope}/api/obfuscation/generate?timing_ranges=${timingRanges ? 'true' : 'false'}`, {
         credentials:'same-origin', cache:'no-store'
       });
       if (!reply.ok) throw new Error(`HTTP ${reply.status}`);
@@ -207,4 +208,66 @@
   }
   selector.addEventListener('change',load);
   load();
+})();
+
+
+// Compact overview widget. Rates/CPU are computed from real consecutive samples.
+(() => {
+  'use strict';
+  const chart = document.getElementById('fleet-traffic-rx');
+  if (!chart) return;
+  const el = id => document.getElementById(id);
+  let prev = null, prevAt = null, busy = false;
+  const rxPoints = [], txPoints = [];
+  const rate = bytes => {
+    if (!Number.isFinite(bytes)) return '—';
+    const units=['B/s','KiB/s','MiB/s','GiB/s'];
+    let num=bytes,i=0;
+    while(num>=1024 && i<units.length-1){num/=1024;i++;}
+    return num.toFixed(i===0?0:1)+' '+units[i];
+  };
+  function draw() {
+    const max=Math.max(1,...rxPoints,...txPoints);
+    for (const [id,points] of [['fleet-traffic-rx',rxPoints],['fleet-traffic-tx',txPoints]]) {
+      const d=points.map((n,i)=>(i?'L':'M')+(i/Math.max(1,points.length-1)*520).toFixed(1)+','+(62-Math.min(1,n/max)*55).toFixed(1)).join(' ');
+      el(id)?.setAttribute('d',d);
+    }
+  }
+  async function poll() {
+    if(busy||document.hidden)return;
+    busy=true;
+    try {
+      const response=await fetch('/api/overview/telemetry',{cache:'no-store',credentials:'same-origin'});
+      if(!response.ok)throw Error('telemetry');
+      const value=await response.json(),now=performance.now();
+      const meter=(id,v)=>{const node=el(id);if(node)node.style.width=Math.max(0,Math.min(100,v))+'%';};
+      if(value.mem_total>0 && value.mem_available>=0) {
+        const percent=100*(1-value.mem_available/value.mem_total);
+        el('fleet-memory').textContent=percent.toFixed(1)+'%';meter('fleet-memory-meter',percent);
+      }
+      if(Number.isFinite(value.uptime)){
+        const d=Math.floor(value.uptime/86400),h=Math.floor(value.uptime%86400/3600),m=Math.floor(value.uptime%3600/60);
+        el('fleet-uptime').textContent=d?d+'d '+h+'h':h+'h '+m+'m';
+      }
+      el('fleet-connected').textContent=String(value.connected);
+      if(prev) {
+        const seconds=Math.max(.001,(now-prevAt)/1000);
+        const deltaCPU=value.cpu_total-prev.cpu_total;
+        const deltaIdle=value.cpu_idle-prev.cpu_idle;
+        if(Number.isFinite(deltaCPU)&&Number.isFinite(deltaIdle)&&deltaCPU>0&&deltaIdle>=0){
+          const percent=100*(1-deltaIdle/deltaCPU);
+          el('fleet-cpu').textContent=percent.toFixed(1)+'%';meter('fleet-cpu-meter',percent);
+        }
+        const rx=Math.max(0,value.rx-prev.rx)/seconds,tx=Math.max(0,value.tx-prev.tx)/seconds;
+        rxPoints.push(rx);txPoints.push(tx);
+        if(rxPoints.length>40)rxPoints.shift();
+        if(txPoints.length>40)txPoints.shift();
+        el('fleet-rx-rate').textContent=rate(rx);
+        el('fleet-tx-rate').textContent=rate(tx);
+        draw();
+      }
+      prev=value;prevAt=now;
+    } catch(_) {} finally{busy=false;}
+  }
+  poll();window.setInterval(poll,5000);
 })();

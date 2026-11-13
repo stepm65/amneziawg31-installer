@@ -54,8 +54,8 @@ def test_app_sidebar_sections_are_grouped_no_top_kernel(ui):
     assert 'data-nav-key="maintenance"' in html
     assert 'aria-controls="app-sidebar"' in html
     assert 'class="server-tabs"' not in html
-    assert '/assets/panel.js?v=0.9.0' in html
-    assert '/assets/md3.css?v=0.9.0' in html
+    assert '/assets/panel.js?v=0.9.1' in html
+    assert '/assets/md3.css?v=0.9.1' in html
     js=client.get('/assets/panel.js').text
     assert 'mobile-nav-toggle' in js and 'server-picker' not in js
     assert 'nav-open' in js and 'nav-collapsed' in js
@@ -88,7 +88,7 @@ def test_maintenance_independent_subpages_and_404(ui):
     for tab in ('diagnostics','backups','restore','profiles','security','audit','system'):
         r=client.get('/maintenance?tab='+tab)
         assert r.status_code==200,tab
-        assert 'class="maint-nav"' in r.text
+        assert 'class="maint-tabs"' in r.text
         assert r.text.count('class="maint-nav-link is-active"')==1
         assert 'href="/maintenance?tab='+tab+'"' in r.text
     b=client.get('/maintenance?tab=backups')

@@ -263,7 +263,7 @@ def validate_i_fields(payload, previous=None):
     expanded_size = 0
     for key in I_KEYS:
         value = str(payload.get(key, previous.get(key, ''))).strip()
-        if len(value) > 1024 or '\n' in value or '\r' in value:
+        if len(value) > 16384 or '\n' in value or '\r' in value:
             raise ValueError(f'{key}: value is too long')
         if value:
             tokens = list(I_TAG.finditer(value))
@@ -280,14 +280,14 @@ def validate_i_fields(payload, previous=None):
                     expanded_size += len(digits)//2
                 else:
                     count = int(token.split()[-1])
-                    if not 1 <= count <= 512:
-                        raise ValueError(f'{key}: random bytes must be 1..512')
+                    if not 1 <= count <= 1000:
+                        raise ValueError(f'{key}: random bytes must be 1..1000')
                     expanded_size += count
         result[key] = value
     if is_on and not result['i1']:
         raise ValueError('I1 must be set when CPS is enabled')
-    if expanded_size > 768:
-        raise ValueError('I1–I5 total payload exceeds 768 bytes (QR compatibility)')
+    if expanded_size > 8192:
+        raise ValueError('I1–I5 total CPS payload exceeds 8192 bytes; limit needed to avoid oversized UDP payloads')
     return result
 
 

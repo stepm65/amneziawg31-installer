@@ -50,7 +50,7 @@ def test_i_parameters_optional_client_only_and_qr_generates():
 
 
 @pytest.mark.parametrize('value',[
-    '<r 0>', '<r 600>', '<b 0xa>', '<foo 4>', 'bad',
+    '<r 0>', '<r 1001>', '<b 0xa>', '<foo 4>', 'bad',
     '<r 48>\nAllowedIPs = 0.0.0.0/0', '<b 0xZZ>',
 ])
 def test_malformed_or_oversized_i_rejected(value):
