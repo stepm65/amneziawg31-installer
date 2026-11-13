@@ -21,7 +21,7 @@ BASE = Path(os.environ.get('AWG31_ROOT', '/var/lib/awg31-panel'))
 CONFIG_DIR = Path(os.environ.get('AWG31_CONFIG_DIR', '/etc/amnezia/amneziawg'))
 CTL = os.environ.get('AWG31_CTL_PATH', '/usr/local/sbin/awg31ctl')
 VALID = re.compile(r'^awg(?:0|[1-9][0-9]?)$')
-OPS = {'status', 'list', 'add', 'download', 'enable', 'disable', 'delete', 'settings', 'client-network', 'client-policy', 'history'}
+OPS = {'status', 'list', 'add', 'download', 'enable', 'disable', 'delete', 'delete-batch', 'settings', 'client-network', 'client-policy', 'history'}
 ADMIN = {'servers', 'server-create', 'server-start', 'server-stop', 'server-restart', 'server-delete',
          'sample-all','host-history','backup-create','backup-list','backup-export','backup-check','backup-restore','profile-export',
          'profile-import','audit','audit-list','password-change','diagnostics',
@@ -64,7 +64,6 @@ def info(iface):
 
 
 def check_new(iface, data):
-    if iface == 'awg0': raise ValueError('Existing primary server awg0 is protected')
     if exists(iface) or db_path(iface).exists() or conf_path(iface).exists():
         raise ValueError('Interface or database already exists')
     # Restrict quantities until tested operationally on the target VPS.
@@ -137,7 +136,7 @@ def main():
     # Terminal invocations without JSON must not wait forever for EOF.
     # The web API still sends structured JSON through a non-TTY pipe.
     no_payload = {'servers', 'sample-all', 'backup-create', 'backup-list', 'backup-policy', 'backup-run', 'audit-list'}
-    raw = '' if op in no_payload or sys.stdin.isatty() else sys.stdin.read(16384)
+    raw = '' if op in no_payload or sys.stdin.isatty() else sys.stdin.read(32768)
     data=json.loads(raw) if raw.strip() else {}
     if not isinstance(data,dict): raise ValueError('Expected JSON object')
     admin=SourceFileLoader('awg31admin',str(Path(__file__).with_name('awg31admin.py'))).load_module()
@@ -229,10 +228,9 @@ def main():
         run('systemctl','stop',f'awg-quick@{iface}.service')
         return {'ok':True,'interface':iface}
     if op=='server-delete':
-        if iface=='awg0': raise ValueError('Primary awg0 cannot be deleted from panel')
         if payload.get('confirm')!=iface: raise ValueError('Confirmation must match the interface')
-        state=info(iface)
-        if state['clients']: raise ValueError('Delete all clients before deleting the server')
+        # The archived SQLite database includes all clients, including their keys.
+        # Explicit interface confirmation is mandatory even for awg0.
         run('systemctl','disable','--now',f'awg-quick@{iface}.service')
         archive=Path('/var/backups/awg31-panel')/datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')/iface
         archive.mkdir(parents=True,mode=0o700,exist_ok=False)
