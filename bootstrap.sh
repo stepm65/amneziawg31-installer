@@ -73,7 +73,7 @@ if [[ "$MODE" == --doctor ]]; then
     exit 0
 fi
 if [[ "$MODE" == --upgrade ]]; then
-    [[ -f /var/lib/awg31-panel/state.sqlite3 ]] || die 'No existing AWG31 installation for upgrade'
+    [[ -f /opt/awg31-panel/web.py && -f /usr/local/sbin/awg31ctl ]] || die 'No existing AWG31 panel/controller for upgrade'
     say 'Upgrading panel + controller only; VPN configurations are preserved'
     bash "$PROJECT/scripts/upgrade-core.sh"
     if [[ -f "$PROJECT/scripts/awg31-menu" ]]; then
@@ -82,7 +82,7 @@ if [[ "$MODE" == --upgrade ]]; then
     exit 0
 fi
 
-if [[ -f /var/lib/awg31-panel/state.sqlite3 || -e /etc/amnezia/amneziawg/awg0.conf ]]; then
+if [[ -f /opt/awg31-panel/web.py || -f /var/lib/awg31-panel/state.sqlite3 || -e /etc/amnezia/amneziawg/awg0.conf || -d /var/lib/awg31-panel/servers ]]; then
     die 'An AWG31 server already exists. Use --upgrade instead. Nothing was overwritten.'
 fi
 say 'Preparing AmneziaWG 3.1 kernel module and tools (no PPA, no Docker)'
