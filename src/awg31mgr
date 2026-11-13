@@ -1,0 +1,253 @@
+#!/usr/bin/env python3
+"""Root-only multi-interface dispatcher; never accepts paths, shell fragments or raw commands.
+
+The existing awg0 database is preserved in place. Further instances are stored
+as /var/lib/awg31-panel/servers/awgN.sqlite3, each with its own .conf and peers.
+"""
+import ipaddress
+import fcntl
+import json
+import os
+from pathlib import Path
+import re
+import shutil
+import sqlite3
+import subprocess
+import sys
+from importlib.machinery import SourceFileLoader
+from datetime import datetime, timezone
+
+BASE = Path(os.environ.get('AWG31_ROOT', '/var/lib/awg31-panel'))
+CONFIG_DIR = Path(os.environ.get('AWG31_CONFIG_DIR', '/etc/amnezia/amneziawg'))
+CTL = os.environ.get('AWG31_CTL_PATH', '/usr/local/sbin/awg31ctl')
+VALID = re.compile(r'^awg(?:0|[1-9][0-9]?)$')
+OPS = {'status', 'list', 'add', 'download', 'enable', 'disable', 'delete', 'delete-batch', 'settings', 'client-network', 'client-policy', 'history'}
+ADMIN = {'servers', 'server-create', 'server-start', 'server-stop', 'server-restart', 'server-delete',
+         'sample-all','host-history','backup-create','backup-list','backup-export','backup-check','backup-restore','profile-export',
+         'profile-import','audit','audit-list','password-change','diagnostics',
+         'backup-delete','backup-policy','backup-policy-set','backup-run','password-reset'}
+
+
+def run(*args, input=None):
+    cp = subprocess.run(args, input=input, text=True, capture_output=True, timeout=60, check=False)
+    if cp.returncode:
+        raise RuntimeError((cp.stderr or cp.stdout or 'command failed').strip()[:900])
+    return cp.stdout
+
+
+def db_path(iface):
+    return BASE/'state.sqlite3' if iface == 'awg0' else BASE/'servers'/f'{iface}.sqlite3'
+
+
+def conf_path(iface):
+    return CONFIG_DIR/f'{iface}.conf'
+
+
+def exists(iface):
+    return db_path(iface).exists() and conf_path(iface).exists()
+
+
+def interfaces():
+    found = []
+    for name in ('awg0', *(f'awg{i}' for i in range(1,100))):
+        if exists(name): found.append(name)
+    return found
+
+
+def info(iface):
+    with sqlite3.connect(db_path(iface)) as con:
+        config = dict(con.execute('SELECT key,value FROM config').fetchall())
+        count = con.execute('SELECT count(*) FROM clients').fetchone()[0]
+    active = subprocess.run(['ip','link','show',iface], capture_output=True).returncode == 0
+    return {'interface':iface,'subnet':config['subnet'],'port':int(config['port']),
+            'mtu':int(config['mtu']),'mode':config['mode'],'running':active,'clients':count}
+
+
+def check_new(iface, data):
+    if exists(iface) or db_path(iface).exists() or conf_path(iface).exists():
+        raise ValueError('Interface or database already exists')
+    # Restrict quantities until tested operationally on the target VPS.
+    if len(interfaces()) >= 8: raise ValueError('Maximum 8 servers per VPS')
+    from importlib.machinery import SourceFileLoader
+    ctl = SourceFileLoader('awg31_validator', CTL).load_module()
+    valid = ctl.validate_settings(data, initial=True)
+    subnet = ipaddress.ip_network(valid['subnet'])
+    for other in interfaces():
+        old = info(other)
+        if subnet.overlaps(ipaddress.ip_network(old['subnet'])):
+            raise ValueError(f'VPN subnet overlaps {other}')
+        if valid['port'] == old['port']:
+            raise ValueError(f'UDP port already used by {other}')
+        # A stopped interface may still reserve client LAN routes in SQLite.
+        with sqlite3.connect(db_path(other)) as con:
+            cols = {row[1] for row in con.execute('PRAGMA table_info(clients)')}
+            if 'routed_subnets' in cols:
+                for (networks,) in con.execute('SELECT routed_subnets FROM clients'):
+                    for text_net in str(networks or '').split(','):
+                        if text_net.strip() and subnet.overlaps(ipaddress.ip_network(text_net.strip())):
+                            raise ValueError(f'New VPN subnet overlaps routed peer LAN of {other}')
+    # Reject overlaps with real OS routes (including the VPS LAN), not the default route.
+    cp = subprocess.run(['ip','-j','-4','route','show','table','main'],capture_output=True,text=True,check=True)
+    for route in json.loads(cp.stdout):
+        dst = route.get('dst')
+        if not dst or dst == 'default': continue
+        try:
+            r = ipaddress.ip_network(dst, strict=False)
+            if subnet.overlaps(r):
+                raise ValueError(f'VPN subnet overlaps host route {dst}')
+        except (TypeError, ipaddress.AddressValueError, ipaddress.NetmaskValueError):
+            continue
+    if subprocess.run(['ip','link','show',iface],capture_output=True).returncode == 0:
+        raise ValueError('Interface already exists in the kernel')
+    # This is a pre-flight check, not a reservation: collision is also caught
+    # by the kernel when awg-quick starts.
+    ss = subprocess.run(['ss','-H','-lun'],capture_output=True,text=True,check=True).stdout
+    if re.search(rf'(?<![0-9]):{valid["port"]}(?![0-9])',ss):
+        raise ValueError('UDP port is already listening')
+    return valid
+
+
+def child(iface, command, payload):
+    env = {**os.environ,
+           'AWG31_INTERFACE':iface,
+           'AWG31_DB':str(db_path(iface)),
+           'AWG31_CONF':str(conf_path(iface)),
+           'AWG31_LOCK':str(BASE/'control.lock')}
+    env.pop('AWG31_GENERATE_PARAMS',None)
+    if command == 'init': env['AWG31_GENERATE_PARAMS']='1'
+    return json.loads(child_exec(env,command,payload))
+
+
+def child_exec(env, command, payload):
+    proc = subprocess.run([sys.executable, CTL, command], input=json.dumps(payload),
+                          text=True,capture_output=True,timeout=75,env=env)
+    if proc.returncode:
+        try: msg=json.loads(proc.stderr).get('error',proc.stderr)
+        except ValueError: msg=proc.stderr
+        raise RuntimeError(str(msg)[:700])
+    return proc.stdout
+
+
+def main():
+    if os.geteuid()!=0: raise PermissionError('Root required')
+    if len(sys.argv)!=2 or sys.argv[1] not in OPS|ADMIN:
+        raise ValueError('Unsupported operation')
+    op=sys.argv[1]
+    # Terminal invocations without JSON must not wait forever for EOF.
+    # The web API still sends structured JSON through a non-TTY pipe.
+    no_payload = {'servers', 'sample-all', 'backup-create', 'backup-list', 'backup-policy', 'backup-run', 'audit-list'}
+    raw = '' if op in no_payload or sys.stdin.isatty() else sys.stdin.read(32768)
+    data=json.loads(raw) if raw.strip() else {}
+    if not isinstance(data,dict): raise ValueError('Expected JSON object')
+    admin=SourceFileLoader('awg31admin',str(Path(__file__).with_name('awg31admin.py'))).load_module()
+    if op=='servers': return {'servers':[info(x) for x in interfaces()]}
+    if op=='audit': return admin.audit(data)
+    if op=='audit-list': return admin.audit_recent()
+    if op=='password-change': return admin.password_change(data)
+    # Root console only: this command is intentionally missing from sudoers.
+    if op=='password-reset': return admin.password_reset(data)
+    if op=='backup-create': return admin.create_backup(sys.modules[__name__])
+    if op=='backup-run': return admin.scheduled_backup(sys.modules[__name__])
+    if op=='backup-policy': return {'policy': admin.backup_policy()}
+    if op=='backup-policy-set': return admin.save_backup_policy(data)
+    if op=='backup-delete': return admin.delete_backup(data)
+    if op=='backup-list': return admin.list_backups()
+    if op=='backup-export': return admin.export_backup(data)
+    if op in ('backup-check','backup-restore'):
+        name=str(data.get('name',''))
+        import sys as _sys
+        script='/usr/local/libexec/awg31/scripts/restore-backup.py'
+        verify=run(_sys.executable,script,'--check',name)
+        result=json.loads(verify)
+        if op=='backup-check':return result
+        # Restore runs independently of this HTTP request. It will restart the panel.
+        import secrets as _secrets
+        unit='awg31-restore-'+_secrets.token_hex(5)
+        run('systemd-run','--quiet','--collect','--on-active=5s','--unit',unit,
+            '--description','Restore AWG31 backup',_sys.executable,script,'--apply',name)
+        return {'ok':True,'scheduled':unit,'name':name}
+    if op=='host-history':return admin.host_metrics_history(data)
+    if op=='sample-all':
+        results={}
+        for name in interfaces():
+            results[name]=child(name,'sample',{})
+            for client_name in results[name].get('disabled',[]):
+                admin.audit({'event':'client_disabled','target':f'{name}/{client_name} (auto)'})
+        try: host=admin.sample_host_metrics()
+        except (OSError,ValueError,sqlite3.Error) as exc: host={'ok':False,'error':str(exc)[:150]}
+        return {'ok':True,'servers':results,'host':host}
+
+    iface=data.get('interface','awg0')
+    if not isinstance(iface,str) or not VALID.fullmatch(iface):
+        raise ValueError('Invalid interface')
+    payload={k:v for k,v in data.items() if k!='interface'}
+    if op=='server-create':
+        check_new(iface,payload)
+        # An additional full tunnel also needs IPv4 forwarding.
+        if payload.get('mode','full')=='full':
+            run('sysctl','-w','net.ipv4.ip_forward=1')
+            Path('/etc/sysctl.d/96-awg31-ipv4.conf').write_text('net.ipv4.ip_forward = 1\n')
+        return child(iface,'init',payload)
+    if not exists(iface): raise ValueError('Server not found')
+    if op=='diagnostics': return admin.diagnose(sys.modules[__name__],iface)
+    if op=='profile-export':
+        status=child(iface,'status',{})
+        editable={k:status[k] for k in ('endpoint','port','mtu','dns')}
+        editable.update(status['obfuscation'])
+        return {'format':'awg31-profile-v1','interface':iface,'settings':editable}
+    if op=='profile-import':
+        profile=payload.get('profile')
+        if not isinstance(profile,dict) or profile.get('format')!='awg31-profile-v1' or profile.get('interface')!=iface:
+            raise ValueError('Profile format or interface mismatch')
+        settings=profile.get('settings')
+        allowed={'endpoint','port','mtu','dns','Jc','Jmin','Jmax','S1','S2','S3','S4',
+                 'H1','H2','H3','H4','HeaderProtectionKey','ContentPaddingAddition',
+                 'RandomTrailers','DisableCookies','RekeyAfterTime','RekeyTimeout',
+                 'RejectAfterTime','KeepaliveTimeout','MaxHandshakeAttempts'}
+        if not isinstance(settings,dict) or set(settings)!=allowed:
+            raise ValueError('Incomplete profile or unexpected fields')
+        return child(iface,'settings',settings)
+    if op in OPS:
+        if op=='settings' and 'port' in payload:
+            proposed = int(payload['port'])
+            if not 1 <= proposed <= 65535: raise ValueError('Invalid port')
+            current = info(iface)['port']
+            if proposed != current:
+                for other in interfaces():
+                    if other != iface and proposed == info(other)['port']:
+                        raise ValueError(f'UDP port already used by {other}')
+                ss = subprocess.run(['ss','-H','-lun'],capture_output=True,text=True,check=True).stdout
+                if re.search(rf'(?<![0-9]):{proposed}(?![0-9])',ss):
+                    raise ValueError('UDP port is already listening')
+        return child(iface,op,payload)
+    if op=='server-start':
+        run('systemctl','enable','--now',f'awg-quick@{iface}.service')
+        return {'ok':True,'interface':iface}
+    if op=='server-restart':
+        run('systemctl','restart',f'awg-quick@{iface}.service')
+        return {'ok':True,'interface':iface}
+    if op=='server-stop':
+        run('systemctl','stop',f'awg-quick@{iface}.service')
+        return {'ok':True,'interface':iface}
+    if op=='server-delete':
+        if payload.get('confirm')!=iface: raise ValueError('Confirmation must match the interface')
+        # The archived SQLite database includes all clients, including their keys.
+        # Explicit interface confirmation is mandatory even for awg0.
+        run('systemctl','disable','--now',f'awg-quick@{iface}.service')
+        archive=Path('/var/backups/awg31-panel')/datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')/iface
+        archive.mkdir(parents=True,mode=0o700,exist_ok=False)
+        shutil.move(str(conf_path(iface)),str(archive/'config.conf'))
+        shutil.move(str(db_path(iface)),str(archive/'state.sqlite3'))
+        return {'ok':True,'backup':str(archive)}
+    raise ValueError('Unsupported operation')
+
+
+if __name__=='__main__':
+    try:
+        BASE.mkdir(parents=True,exist_ok=True)
+        with open(BASE/'manager.lock','a+') as lock:
+            fcntl.flock(lock.fileno(),fcntl.LOCK_EX)
+            print(json.dumps(main(),ensure_ascii=False))
+    except (OSError,RuntimeError,ValueError,sqlite3.Error,subprocess.TimeoutExpired,subprocess.CalledProcessError) as exc:
+        print(json.dumps({'error':str(exc)},ensure_ascii=False),file=sys.stderr)
+        sys.exit(1)

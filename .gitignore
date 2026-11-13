@@ -1,0 +1,14 @@
+__pycache__/
+.pytest_cache/
+.venv/
+*.py[cod]
+*.conf
+*.key
+*.pem
+*.sqlite3
+*.db
+.env
+*.log
+*.bak
+secrets/
+backups/

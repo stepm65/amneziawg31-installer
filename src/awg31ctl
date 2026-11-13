@@ -1,0 +1,887 @@
+#!/usr/bin/env python3
+"""Privileged, deliberately narrow controller for one selected AmneziaWG 3.1 interface.
+
+No general-purpose shell, file path, command, or interface arguments are accepted.
+All server private material stays root-owned. Web frontend invokes via sudo.
+"""
+import fcntl
+import base64
+import secrets
+import ipaddress
+import json
+import os
+from pathlib import Path
+import re
+import shutil
+import sqlite3
+import subprocess
+import sys
+import tempfile
+from datetime import datetime, timezone, timedelta
+
+DB = Path(os.environ.get('AWG31_DB', '/var/lib/awg31-panel/state.sqlite3'))
+CONF = Path(os.environ.get('AWG31_CONF', '/etc/amnezia/amneziawg/awg0.conf'))
+LOCK = Path(os.environ.get('AWG31_LOCK', '/run/lock/awg31-panel.lock'))
+IFACE = os.environ.get('AWG31_INTERFACE', 'awg0')
+if not re.fullmatch(r'awg(?:0|[1-9][0-9]?)', IFACE):
+    raise ValueError('Invalid interface name')
+NAME_RE = re.compile(r'^[a-zA-Z0-9][a-zA-Z0-9_-]{0,31}$')
+HOST_RE = re.compile(r'^[a-zA-Z0-9][a-zA-Z0-9.-]{0,251}[a-zA-Z0-9]$')
+UPLINK_RE = re.compile(r'^[a-zA-Z0-9_.:-]{1,15}$')
+
+
+def run(*argv, stdin=None):
+    cp = subprocess.run(argv, input=stdin, text=True, capture_output=True, timeout=30, check=False)
+    if cp.returncode:
+        raise RuntimeError(f"{argv[0]}: {cp.stderr.strip()[:600] or cp.stdout.strip()[:600]}")
+    return cp.stdout.strip()
+
+
+def keygen():
+    return run('awg', 'genkey')
+
+
+def pubkey(private):
+    return run('awg', 'pubkey', stdin=private+'\n')
+
+
+def pskgen():
+    return run('awg', 'genpsk')
+
+
+def parse_network(raw):
+    net = ipaddress.ip_network(str(raw), strict=True)
+    if not isinstance(net, ipaddress.IPv4Network) or not (24 <= net.prefixlen <= 29):
+        raise ValueError('Поддерживаются IPv4-сети с маской /24…/29')
+    if net.is_multicast or net.is_loopback or net.is_link_local or net.is_unspecified:
+        raise ValueError('Недопустимая VPN-сеть')
+    return net
+
+
+def valid_endpoint(raw):
+    value = str(raw).strip()
+    try:
+        ip = ipaddress.ip_address(value)
+        if ip.version != 4: raise ValueError('IPv6 endpoint не поддерживается')
+        return value
+    except ValueError:
+        if ':' in value or '/' in value or '\\' in value or not HOST_RE.fullmatch(value):
+            raise ValueError('Нужен IPv4 или DNS-имя (без порта)')
+        return value
+
+
+def valid_dns(raw):
+    val = str(raw).strip()
+    ip = ipaddress.ip_address(val)
+    if ip.version != 4: raise ValueError('DNS должен быть IPv4')
+    return val
+
+
+def strict_int(raw, label):
+    # int() also accepts '8_080', '+80', ' 80 ' and non-ASCII digits; none of
+    # those are valid in systemd units, awg-quick configs or shell commands.
+    text = str(raw).strip() if not isinstance(raw, bool) else ''
+    if not re.fullmatch(r'[0-9]{1,5}', text, flags=re.ASCII):
+        raise ValueError(f'{label}: нужно целое число из цифр 0-9')
+    return int(text)
+
+
+def valid_port(raw):
+    val = strict_int(raw, 'Порт')
+    if not 1 <= val <= 65535: raise ValueError('Порт 1…65535')
+    return val
+
+
+def valid_mtu(raw):
+    val = strict_int(raw, 'MTU')
+    if not 576 <= val <= 1420: raise ValueError('MTU должен быть 576…1420')
+    return val
+
+
+def validate_settings(payload, initial=False, old=None):
+    old = old or {}
+    net = parse_network(payload.get('subnet', old.get('subnet'))) if initial else parse_network(old['subnet'])
+    mode = str(payload.get('mode', old.get('mode', 'full')))
+    if mode not in ('split', 'full'): raise ValueError('mode: split или full')
+    uplink = str(payload.get('uplink', old.get('uplink', '')))
+    if mode == 'full' and not UPLINK_RE.fullmatch(uplink):
+        raise ValueError('Не указан корректный исходящий интерфейс')
+    return {
+        'subnet': str(net), 'server_ip': str(next(net.hosts())),
+        'port': valid_port(payload.get('port', old.get('port', 51820))),
+        'mtu': valid_mtu(payload.get('mtu', old.get('mtu', 1280))),
+        'endpoint': valid_endpoint(payload.get('endpoint', old.get('endpoint'))),
+        'dns': valid_dns(payload.get('dns', old.get('dns', '1.1.1.1'))),
+        'mode': mode, 'uplink': uplink,
+    }
+
+
+def get_conn(create=False):
+    if not create and not DB.exists(): raise RuntimeError('Сервер не инициализирован')
+    con = sqlite3.connect(str(DB), timeout=15)
+    con.row_factory = sqlite3.Row
+    if create:
+        con.execute('CREATE TABLE IF NOT EXISTS config (key TEXT PRIMARY KEY, value TEXT NOT NULL)')
+        con.execute('''CREATE TABLE IF NOT EXISTS clients (
+            name TEXT PRIMARY KEY, ip TEXT UNIQUE NOT NULL,
+            private_key TEXT NOT NULL, public_key TEXT UNIQUE NOT NULL,
+            psk TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 1,
+            created_at TEXT NOT NULL)''')
+    # In-place migration; never re-create the existing awg0 database or keys.
+    columns = {r[1] for r in con.execute('PRAGMA table_info(clients)').fetchall()}
+    if columns:
+        new_columns = {'routed_subnets': "TEXT NOT NULL DEFAULT ''",
+                       'i_enabled': 'INTEGER NOT NULL DEFAULT 0',
+                       **{f'i{x}': "TEXT NOT NULL DEFAULT ''" for x in range(1, 6)},
+                       'comment': "TEXT NOT NULL DEFAULT ''",
+                       'expires_at': "TEXT NOT NULL DEFAULT ''",
+                       'traffic_limit_bytes': 'INTEGER NOT NULL DEFAULT 0',
+                       'used_bytes': 'INTEGER NOT NULL DEFAULT 0',
+                       'last_rx': 'INTEGER NOT NULL DEFAULT 0',
+                       'last_tx': 'INTEGER NOT NULL DEFAULT 0',
+                       'disabled_reason': "TEXT NOT NULL DEFAULT ''",
+                       'last_handshake': 'INTEGER NOT NULL DEFAULT 0'}
+        for name, definition in new_columns.items():
+            if name not in columns:
+                con.execute(f'ALTER TABLE clients ADD COLUMN {name} {definition}')
+        con.execute('''CREATE TABLE IF NOT EXISTS traffic_samples (
+           measured_at INTEGER NOT NULL, rx_delta INTEGER NOT NULL, tx_delta INTEGER NOT NULL)''')
+        con.execute('CREATE INDEX IF NOT EXISTS idx_traffic_time ON traffic_samples(measured_at)')
+        con.commit()
+    return con
+
+
+def get_settings(con):
+    data = {r['key']: r['value'] for r in con.execute('SELECT key, value FROM config')}
+    if not data: raise RuntimeError('Сервер не инициализирован')
+    for k in ('port', 'mtu', 'Jc', 'Jmin', 'Jmax', 'S1', 'S2', 'S3', 'S4'):
+        data[k] = int(data[k])
+    # Backward-compatible defaults for profiles created before advanced settings existed.
+    data.setdefault('H1', '1'); data.setdefault('H2', '2')
+    data.setdefault('H3', '3'); data.setdefault('H4', '4')
+    data.setdefault('ContentPaddingAddition', '0-16')
+    data.setdefault('RandomTrailers', 'on'); data.setdefault('DisableCookies', 'on')
+    for key in TIMING_KEYS:
+        data.setdefault(key, '')
+    return data
+
+
+def put_settings(con, data):
+    for k,v in data.items():
+        con.execute('INSERT OR REPLACE INTO config (key,value) VALUES (?,?)', (k, str(v)))
+
+
+def peer_rows(con):
+    return [dict(r) for r in con.execute('SELECT * FROM clients ORDER BY created_at, name')]
+
+
+TIMING_KEYS = ('RekeyAfterTime', 'RekeyTimeout', 'RejectAfterTime',
+               'KeepaliveTimeout', 'MaxHandshakeAttempts')
+S_KEYS = ('S1','S2','S3','S4')
+H_KEYS = ('H1','H2','H3','H4')
+
+
+def numeric_range(value, *, minimum=0, maximum=65535):
+    v = str(value).strip()
+    if not re.fullmatch(r'[0-9]+(?:-[0-9]+)?', v):
+        raise ValueError('Expected an integer or integer range')
+    low, *rest = [int(x) for x in v.split('-')]
+    high = rest[0] if rest else low
+    if not (minimum <= low <= high <= maximum):
+        raise ValueError(f'Range must be {minimum}–{maximum}')
+    return v, low, high
+
+
+def validate_obfuscation(payload, old):
+    current = {**old}
+    for field in ('Jc','Jmin','Jmax',*S_KEYS):
+        current[field] = int(payload.get(field, current.get(field, 12)))
+    if not 1 <= current['Jc'] <= 128 or not 1 <= current['Jmin'] <= current['Jmax'] <= 1280:
+        raise ValueError('Invalid junk packet values')
+    mtu = int(payload.get('mtu', current.get('mtu', 1280)))
+    for key in S_KEYS:
+        if not 12 <= current[key] <= max(12, mtu-148):
+            raise ValueError(f'{key} must be >=12 and fit within the MTU')
+    if current['S1'] + 56 == current['S2']:
+        raise ValueError('S1 + 56 must not equal S2')
+    # Header ranges must not overlap; each header must fit in uint32.
+    intervals = []
+    for key in H_KEYS:
+        value, start, end = numeric_range(payload.get(key, current.get(key, str(H_KEYS.index(key)+1))),
+                                          maximum=4294967295)
+        intervals.append((start,end,key))
+        current[key] = value
+    for i,(start,end,key) in enumerate(intervals):
+        for st2,en2,key2 in intervals[i+1:]:
+            if start <= en2 and st2 <= end:
+                raise ValueError(f'{key} overlaps {key2}')
+    val = str(payload.get('HeaderProtectionKey', current.get('header_key',''))).strip()
+    try:
+        if len(base64.b64decode(val, validate=True)) != 32:
+            raise ValueError()
+    except (ValueError, base64.binascii.Error):
+        raise ValueError('HeaderProtectionKey must be 32 bytes encoded as base64')
+    current['header_key'] = val
+    current['ContentPaddingAddition'],_,_ = numeric_range(
+        payload.get('ContentPaddingAddition', current.get('ContentPaddingAddition','0-16')))
+    for k in ('RandomTrailers','DisableCookies'):
+        value = str(payload.get(k, current.get(k, 'on'))).lower()
+        if value not in ('on','off'):
+            raise ValueError(f'{k}: expected on or off')
+        current[k] = value
+    for k in TIMING_KEYS:
+        value = str(payload.get(k, current.get(k, ''))).strip()
+        if value:
+            value,_,_ = numeric_range(value)
+        current[k] = value
+    return {k:current[k] for k in ('Jc','Jmin','Jmax',*S_KEYS,*H_KEYS,'header_key',
+                                  'ContentPaddingAddition','RandomTrailers','DisableCookies',*TIMING_KEYS)}
+
+
+def fresh_obfuscation():
+    # Conservative profile for the 3.1 kernel/tools; distinct headers and random HPK.
+    sizes = [secrets.randbelow(45) + 12 for _ in range(4)]
+    while sizes[0]+56 == sizes[1]:
+        sizes[1] = secrets.randbelow(45)+12
+    headers = secrets.SystemRandom().sample(range(10_000,2_000_000), 4)
+    result = dict(Jc=secrets.randbelow(5)+4, Jmin=10, Jmax=50,
+                  **dict(zip(S_KEYS, sizes)),
+                  **dict(zip(H_KEYS,map(str,headers))),
+                  header_key=base64.b64encode(secrets.token_bytes(32)).decode(),
+                  ContentPaddingAddition='0-16', RandomTrailers='on', DisableCookies='on')
+    for k in TIMING_KEYS:
+        result[k]=''
+    return result
+
+
+# Client-originated CPS packets: these belong only to client [Interface] sections.
+# Keep the accepted syntax deliberately conservative across kernel and awg-go.
+I_KEYS = tuple(f'i{n}' for n in range(1, 6))
+I_TAG = re.compile(r'<(?:r [0-9]+|rc [0-9]+|rd [0-9]+|t|b 0x[0-9a-fA-F]+)>')
+ROUTE_BLOCKLIST = tuple(ipaddress.ip_network(x) for x in
+    ('0.0.0.0/8', '127.0.0.0/8', '169.254.0.0/16', '224.0.0.0/4', '240.0.0.0/4'))
+
+
+def default_cps():
+    """A neutral I1: one packet of 40-119 random bytes (no protocol claim)."""
+    return f'<r {secrets.randbelow(80) + 40}>'
+
+
+def validate_i_fields(payload, previous=None):
+    previous = previous or {}
+    enabled = str(payload.get('i_enabled', previous.get('i_enabled', '0'))).lower()
+    if enabled not in ('0', '1', 'true', 'false', 'on', 'off'):
+        raise ValueError('I1–I5: expected on/off')
+    is_on = int(enabled in ('1', 'true', 'on'))
+    result = {'i_enabled': is_on}
+    expanded_size = 0
+    for key in I_KEYS:
+        value = str(payload.get(key, previous.get(key, ''))).strip()
+        if len(value) > 16384 or '\n' in value or '\r' in value:
+            raise ValueError(f'{key}: value is too long')
+        if value:
+            tokens = list(I_TAG.finditer(value))
+            if not tokens or ''.join(m.group() for m in tokens) != re.sub(r'\s+(?=<)', '', value):
+                raise ValueError(f'{key}: unsupported CPS expression')
+            for m in tokens:
+                token = m.group()[1:-1]
+                if token == 't':
+                    expanded_size += 4
+                elif token.startswith('b 0x'):
+                    digits = token[4:]
+                    if len(digits) % 2:
+                        raise ValueError(f'{key}: hex bytes must have even length')
+                    expanded_size += len(digits)//2
+                else:
+                    count = int(token.split()[-1])
+                    if not 1 <= count <= 1000:
+                        raise ValueError(f'{key}: random bytes must be 1..1000')
+                    expanded_size += count
+        result[key] = value
+    if is_on and not result['i1']:
+        # Ticking the checkbox with empty fields is a normal request, not an
+        # error: start with a random-length junk packet the admin can edit later.
+        result['i1'] = default_cps()
+        expanded_size += int(result['i1'][3:-1])
+    if expanded_size > 8192:
+        raise ValueError('I1–I5 total CPS payload exceeds 8192 bytes; limit needed to avoid oversized UDP payloads')
+    return result
+
+
+def parse_routes(raw, cfg, con, *, owner=None):
+    value = str(raw or '')
+    if len(value) > 2048:
+        raise ValueError('Too many routed subnets')
+    parts = [x.strip() for x in re.split(r'[,\n;]+', value) if x.strip()]
+    if len(parts) > 16:
+        raise ValueError('Maximum 16 routed IPv4 networks per client')
+    tunnel = ipaddress.ip_network(cfg['subnet'])
+    networks = []
+    for part in parts:
+        try:
+            net = ipaddress.ip_network(part + '/32' if '/' not in part else part, strict=True)
+        except ValueError:
+            raise ValueError(f'Invalid IPv4 CIDR: {part[:64]}') from None
+        if not isinstance(net, ipaddress.IPv4Network) or net.prefixlen < 8:
+            raise ValueError('Only IPv4 CIDRs /8.. /32, excluding default route')
+        if net.overlaps(tunnel) or any(net.overlaps(b) for b in ROUTE_BLOCKLIST):
+            raise ValueError(f'Route conflicts with VPN/reserved address space: {net}')
+        if any(net.overlaps(other) for other in networks):
+            raise ValueError(f'Overlapping routed networks: {net}')
+        networks.append(net)
+    for row in peer_rows(con):
+        if row['name'] == owner: continue
+        if not row['enabled']: continue
+        for other in string_routes(row.get('routed_subnets', '')):
+            if any(net.overlaps(other) for net in networks):
+                raise ValueError(f'Route overlaps client {row["name"]}: {other}')
+    if networks:
+        base = DB.parent.parent if DB.parent.name == 'servers' else DB.parent
+        sibling_files = [base/'state.sqlite3', *(base/'servers').glob('awg[0-9]*.sqlite3')]
+        for sibling in sibling_files:
+            if not sibling.exists() or sibling.resolve() == DB.resolve(): continue
+            with sqlite3.connect(f'file:{sibling}?mode=ro', uri=True) as peer_db:
+                try:
+                    record = peer_db.execute("SELECT value FROM config WHERE key='subnet'").fetchone()
+                    if record:
+                        other = ipaddress.ip_network(record[0])
+                        if any(net.overlaps(other) for net in networks):
+                            raise ValueError(f'Route conflicts with other AWG interface: {other}')
+                    peer_columns = {x[1] for x in peer_db.execute('PRAGMA table_info(clients)')}
+                    if 'routed_subnets' in peer_columns:
+                        for (raw,) in peer_db.execute('SELECT routed_subnets FROM clients'):
+                            for other in string_routes(raw):
+                                if any(net.overlaps(other) for net in networks):
+                                    raise ValueError(f'Route reserved by another AWG server: {other}')
+                except sqlite3.OperationalError:
+                    continue
+        # A routed LAN must not shadow an existing LAN, connected subnet or another AWG interface.
+        proc = subprocess.run(['ip', '-j', '-4', 'route', 'show', 'table', 'main'],
+                              capture_output=True, text=True, check=False, timeout=10)
+        if proc.returncode:
+            raise RuntimeError('Unable to verify existing IPv4 routes')
+        try:
+            routes = json.loads(proc.stdout)
+        except ValueError:
+            raise RuntimeError('Unable to parse existing IPv4 routes') from None
+        for record in routes:
+            dst = record.get('dst')
+            if not dst or dst == 'default': continue
+            try: existing = ipaddress.ip_network(dst, strict=False)
+            except ValueError: continue
+            if record.get('dev') == IFACE:
+                # Already installed on this peer: may be retained; other peers were checked above.
+                if owner is not None:
+                    own = next((row for row in peer_rows(con) if row['name'] == owner), None)
+                    if own and any(existing == old for old in string_routes(own.get('routed_subnets',''))):
+                        continue
+                # Current peer /32 routes are managed by awg-quick, not editable as extra LANs.
+                if existing.subnet_of(tunnel): continue
+            if any(net.overlaps(existing) for net in networks):
+                raise ValueError(f'Route conflicts with existing host route {existing}')
+    return ', '.join(str(net) for net in networks)
+
+
+def string_routes(value):
+    return [ipaddress.ip_network(x.strip(), strict=True) for x in str(value or '').split(',') if x.strip()]
+
+
+def routed_from_rows(rows):
+    return {str(net) for row in rows if row['enabled']
+            for net in string_routes(row.get('routed_subnets', ''))}
+
+
+def committed_routed():
+    if not DB.exists(): return set()
+    with sqlite3.connect(DB) as con:
+        columns = {x[1] for x in con.execute('PRAGMA table_info(clients)')}
+        if 'routed_subnets' not in columns: return set()
+        return {str(net) for enabled, raw in con.execute('SELECT enabled, routed_subnets FROM clients')
+                if enabled for net in string_routes(raw)}
+
+
+def route_present(network):
+    result = subprocess.run(['ip', '-j', '-4', 'route', 'show', network],
+                            capture_output=True, text=True, check=False, timeout=10)
+    if result.returncode: raise RuntimeError('Cannot inspect IPv4 route')
+    for r in json.loads(result.stdout):
+        if r.get('dst'):
+            try:
+                same = ipaddress.ip_network(r['dst'], strict=False) == ipaddress.ip_network(network)
+            except ValueError: same = False
+            if same: return r.get('dev')
+    return None
+
+
+def routing_firewall(network):
+    # Scoped to the selected routed prefix, not a blanket awg0 -> awg0 allow.
+    return (f'-i {IFACE} -o {IFACE} -d {network} -j ACCEPT',
+            f'-i {IFACE} -o {IFACE} -s {network} -j ACCEPT')
+
+
+def reconcile_routed(old, new):
+    for prefix in sorted(old - new):
+        if route_present(prefix) == IFACE:
+            run('ip', '-4', 'route', 'del', prefix, 'dev', IFACE)
+        for rule in routing_firewall(prefix):
+            try: run('iptables', '-w', '-D', 'FORWARD', *rule.split())
+            except RuntimeError: pass  # Absent rule, e.g. after reboot.
+    for prefix in sorted(new - old):
+        owner = route_present(prefix)
+        if owner is None:
+            run('ip', '-4', 'route', 'add', prefix, 'dev', IFACE)
+        elif owner != IFACE:
+            raise RuntimeError(f'Cannot steal existing route: {prefix}')
+        for rule in routing_firewall(prefix):
+            check = subprocess.run(['iptables','-w','-C','FORWARD',*rule.split()],
+                                   capture_output=True, check=False, timeout=10)
+            if check.returncode: run('iptables','-w','-I','FORWARD','1',*rule.split())
+
+
+def i_lines(peer):
+    if not peer.get('i_enabled'):
+        return []
+    return [f'{key.upper()} = {peer[key]}' for key in I_KEYS if peer.get(key)]
+
+
+def awg_lines(cfg, for_client=False):
+    lines = [f'{key} = {cfg[key]}' for key in ('Jc','Jmin','Jmax',*S_KEYS)]
+    lines += [f'{key} = {cfg.get(key,str(i))}' for i,key in enumerate(H_KEYS,1)]
+    lines += [f'HeaderProtectionKey = {cfg["header_key"]}']
+    if cfg.get('ContentPaddingAddition','0-16'):
+        lines.append(f'ContentPaddingAddition = {cfg.get("ContentPaddingAddition","0-16")}')
+    for k in ('RandomTrailers','DisableCookies'):
+        if cfg.get(k,'on') == 'on': lines.append(f'{k} = on')
+    for k in TIMING_KEYS:
+        if cfg.get(k): lines.append(f'{k} = {cfg[k]}')
+    return lines
+
+
+def server_config(cfg, peers):
+    net = parse_network(cfg['subnet'])
+    lines = [
+        '[Interface]', f'Address = {cfg["server_ip"]}/{net.prefixlen}',
+        f'ListenPort = {cfg["port"]}', f'PrivateKey = {cfg["private_key"]}',
+        f'MTU = {cfg["mtu"]}', *awg_lines(cfg)
+    ]
+    if cfg['mode'] == 'full':
+        # IPv4 full tunnel: forwarding, stateful return traffic, and source NAT.
+        # Keep the rules scoped to the VPN subnet and selected uplink.
+        # -C/|| avoids duplicate rules after an interrupted service restart.
+        iface = cfg['uplink']
+        forward_out = f'-i {IFACE} -o {iface} -s {net} -j ACCEPT'
+        forward_back = (f'-i {iface} -o {IFACE} -d {net} '
+                        '-m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT')
+        nat = f'-s {net} -o {iface} -j MASQUERADE'
+        lines.extend([
+            f'PostUp = iptables -w -C FORWARD {forward_out} || iptables -w -I FORWARD 1 {forward_out}',
+            f'PostUp = iptables -w -C FORWARD {forward_back} || iptables -w -I FORWARD 1 {forward_back}',
+            f'PostUp = iptables -w -t nat -C POSTROUTING {nat} || iptables -w -t nat -A POSTROUTING {nat}',
+            f'PostDown = iptables -w -t nat -D POSTROUTING {nat} || true',
+            f'PostDown = iptables -w -D FORWARD {forward_back} || true',
+            f'PostDown = iptables -w -D FORWARD {forward_out} || true',
+        ])
+    for network in sorted(routed_from_rows(peers)):
+        for rule in routing_firewall(network):
+            lines.append(f'PostUp = iptables -w -C FORWARD {rule} || iptables -w -I FORWARD 1 {rule}')
+            lines.append(f'PostDown = iptables -w -D FORWARD {rule} || true')
+    for p in peers:
+        if p['enabled']:
+            lines += ['', f'# Client: {p["name"]}', '[Peer]',
+                      f'PublicKey = {p["public_key"]}',
+                      f'PresharedKey = {p["psk"]}',
+                      f'AllowedIPs = {p["ip"]}/32' + (', ' + p['routed_subnets'] if p.get('routed_subnets') else '')]
+    return '\n'.join(lines) + '\n'
+
+
+def client_config(cfg, p):
+    allowed = '0.0.0.0/0' if cfg['mode'] == 'full' else cfg['subnet']
+    return '\n'.join([
+        '[Interface]', f'PrivateKey = {p["private_key"]}',
+        f'Address = {p["ip"]}/32', f'DNS = {cfg["dns"]}',
+        f'MTU = {cfg["mtu"]}', *awg_lines(cfg, True), *i_lines(p),
+        '', '[Peer]', f'PublicKey = {cfg["public_key"]}',
+        f'PresharedKey = {p["psk"]}',
+        f'Endpoint = {cfg["endpoint"]}:{cfg["port"]}',
+        f'AllowedIPs = {allowed}', 'PersistentKeepalive = 25', ''
+    ])
+
+
+def atomic_write(path, content):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile(dir=path.parent, prefix='.awg31-', mode='w', delete=False) as tf:
+        tf.write(content)
+        os.fchmod(tf.fileno(), 0o600)
+        tf.flush(); os.fsync(tf.fileno()); tmp = tf.name
+    os.replace(tmp, path)
+
+
+def apply(cfg, con, initial=False, restart=False):
+    new_content = server_config(cfg, peer_rows(con))
+    former = CONF.read_text() if CONF.exists() else None
+    previous_routes = committed_routed() if not initial else set()
+    desired_routes = routed_from_rows(peer_rows(con))
+    was_running = subprocess.run(['ip','link','show',IFACE],capture_output=True).returncode == 0
+    try:
+        atomic_write(CONF, new_content)
+        if initial:
+            run('systemctl', 'enable', '--now', f'awg-quick@{IFACE}')
+        elif restart:
+            # A deliberately stopped interface should stay stopped after editing.
+            running = subprocess.run(['ip','link','show',IFACE],capture_output=True).returncode == 0
+            if running:
+                run('systemctl', 'restart', f'awg-quick@{IFACE}')
+        elif subprocess.run(['ip','link','show',IFACE],capture_output=True).returncode != 0:
+            # Store peer changes for the next start; do not force-start a stopped server.
+            pass
+        else:
+            # syncconf applies peer changes without resetting sessions.
+            stripped = run('awg-quick', 'strip', str(CONF)) + '\n'
+            with tempfile.NamedTemporaryFile(dir=CONF.parent, mode='w', delete=False) as tf:
+                tf.write(stripped)
+                os.fchmod(tf.fileno(), 0o600); tmp = tf.name
+            try: run('awg', 'syncconf', IFACE, tmp)
+            finally: os.unlink(tmp)
+            reconcile_routed(previous_routes, desired_routes)
+    except Exception:
+        if former is None: CONF.unlink(missing_ok=True)
+        else: atomic_write(CONF, former)
+        if not initial:
+            try:
+                if was_running and not restart:
+                    reconcile_routed(desired_routes, previous_routes)
+                if restart: run('systemctl', 'restart', f'awg-quick@{IFACE}')
+                else:
+                    prior = run('awg-quick', 'strip', str(CONF)) + '\n'
+                    with tempfile.NamedTemporaryFile(dir=CONF.parent, mode='w', delete=False) as f:
+                        f.write(prior); os.fchmod(f.fileno(),0o600); oldtemp=f.name
+                    try: run('awg', 'syncconf', IFACE, oldtemp)
+                    finally: os.unlink(oldtemp)
+            except Exception: pass
+        raise
+
+
+def read_json():
+    raw = sys.stdin.read(32768)
+    if not raw.strip(): raise ValueError('Пустой JSON запрос')
+    data = json.loads(raw)
+    if not isinstance(data, dict): raise ValueError('Нужен JSON объект')
+    return data
+
+
+def init():
+    if DB.exists() or CONF.exists(): raise RuntimeError('Сервер уже настроен; повторная инициализация запрещена')
+    data = validate_settings(read_json(), initial=True)
+    data.update({'private_key': keygen(), 'header_key': keygen()})
+    data['public_key'] = pubkey(data['private_key'])
+    data.update({'Jc': 4, 'Jmin': 10, 'Jmax': 50, 'S1': 12, 'S2': 12, 'S3': 12, 'S4': 12})
+    # Random per-server obfuscation is the default. The static profile below
+    # (H1-H4 = 1..4, S = 12) looks like plain WireGuard and is identical on every
+    # host, so it must be requested explicitly with AWG31_GENERATE_PARAMS=0.
+    if str(os.environ.get('AWG31_GENERATE_PARAMS','1')) != '0':
+        data.update(fresh_obfuscation())
+    else:
+        data.update(validate_obfuscation({}, data))
+    DB.parent.mkdir(parents=True,exist_ok=True)
+    con = get_conn(True)
+    try:
+        os.chmod(DB, 0o600)
+        put_settings(con, data)
+        apply(data, con, initial=True)
+        con.commit()
+    except Exception:
+        con.rollback(); con.close(); DB.unlink(missing_ok=True)
+        raise
+    con.close()
+    return {'ok': True, 'interface': IFACE, 'subnet': data['subnet'], 'port': data['port']}
+
+
+def validate_policy(data, old=None):
+    '''Client quota is lifetime received+sent bytes, 0 means unlimited.'''
+    old = old or {}
+    comment = str(data.get('comment', old.get('comment', ''))).strip()
+    if len(comment) > 200 or any(ord(c) < 32 and c not in '\n\t' for c in comment):
+        raise ValueError('Комментарий: не более 200 символов, без управляющих символов')
+    expiry = str(data.get('expires_at', old.get('expires_at', ''))).strip()
+    if expiry:
+        try:
+            if re.fullmatch(r'[0-9]{2}\.[0-9]{2}\.[0-9]{4}', expiry):
+                d = datetime.strptime(expiry, '%d.%m.%Y').replace(hour=23, minute=59, second=59)
+            else:
+                d = datetime.fromisoformat(expiry.replace('Z', '+00:00'))
+                if re.fullmatch(r'[0-9]{4}-[0-9]{2}-[0-9]{2}', expiry):
+                    d = d.replace(hour=23, minute=59, second=59)
+            if d.tzinfo is None: d = d.replace(tzinfo=timezone.utc)
+            expiry = d.astimezone(timezone.utc).isoformat()
+        except (ValueError, OverflowError):
+            raise ValueError('Дата отключения: введите корректную дату в формате ДД.ММ.ГГГГ или ISO 8601') from None
+    try: limit = int(data.get('traffic_limit_bytes', old.get('traffic_limit_bytes',0)))
+    except (TypeError,ValueError): raise ValueError('Лимит трафика должен быть числом байт') from None
+    if not 0 <= limit <= 10**15: raise ValueError('Недопустимый лимит трафика')
+    return {'comment':comment,'expires_at':expiry,'traffic_limit_bytes':limit}
+
+
+def sample_usage(con, now=None):
+    '''Persist deltas and enforce expiry/quota without needing an open browser.
+
+    Receive/sent counters are kernel session counters, so a reset adds the new
+    counter as the first observation of the restarted device.
+    '''
+    now = datetime.now(timezone.utc) if now is None else now
+    instant = int(now.timestamp())
+    stats = live_stats()
+    rows = peer_rows(con)
+    rx_delta = tx_delta = 0
+    changed = []
+    for row in rows:
+        live = stats.get(row['public_key'])
+        delta_r = delta_t = 0
+        if live and row['enabled']:
+            observed_r = max(0,int(live['received']))
+            observed_t = max(0,int(live['sent']))
+            delta_r = observed_r - int(row['last_rx']) if observed_r >= int(row['last_rx']) else observed_r
+            delta_t = observed_t - int(row['last_tx']) if observed_t >= int(row['last_tx']) else observed_t
+            con.execute('UPDATE clients SET last_rx=?, last_tx=?, used_bytes=used_bytes+?, last_handshake=? WHERE name=?',
+                        (observed_r,observed_t,delta_r+delta_t,max(int(row['last_handshake']),int(live.get('handshake') or 0)),row['name']))
+        used = int(row['used_bytes']) + delta_r + delta_t
+        rx_delta += delta_r; tx_delta += delta_t
+        expiry = row.get('expires_at','')
+        expired = bool(expiry and datetime.fromisoformat(expiry).timestamp() <= instant)
+        over_quota = bool(row.get('traffic_limit_bytes') and used >= int(row['traffic_limit_bytes']))
+        if row['enabled'] and (expired or over_quota):
+            con.execute('UPDATE clients SET enabled=0, disabled_reason=? WHERE name=?',
+                        ('expired' if expired else 'quota',row['name']))
+            changed.append(row['name'])
+    if changed: apply(get_settings(con),con)
+    con.execute('INSERT INTO traffic_samples(measured_at,rx_delta,tx_delta) VALUES(?,?,?)',
+                (instant,rx_delta,tx_delta))
+    con.execute('DELETE FROM traffic_samples WHERE measured_at<?',(instant-32*86400,))
+    con.commit()
+    return {'ok':True,'rx_delta':rx_delta,'tx_delta':tx_delta,'disabled':changed}
+
+
+def traffic_history(con, request):
+    window = str(request.get('window','24h'))
+    duration = {'5m':300,'15m':900,'1h':3600,'24h':86400,'7d':604800,'30d':2592000}.get(window)
+    if not duration: raise ValueError('Неверный диапазон истории')
+    size = max(60, duration//180)  # at most ~180 data bins
+    cutoff = int(datetime.now(timezone.utc).timestamp()) - duration
+    rows = con.execute('''SELECT CAST(measured_at / ? AS INTEGER)*? AS time_bin,
+       SUM(rx_delta),SUM(tx_delta) FROM traffic_samples
+       WHERE measured_at>=? GROUP BY time_bin ORDER BY time_bin''',
+       (size,size,cutoff)).fetchall()
+    return {'window':window, 'points':[{'ts':int(r[0]),'rx':int(r[1]),'tx':int(r[2])} for r in rows]}
+
+
+def client_policy_update(con):
+    data = read_json()
+    name = str(data.get('name',''))
+    if not NAME_RE.fullmatch(name): raise ValueError('Неверное имя клиента')
+    row = con.execute('SELECT * FROM clients WHERE name=?',(name,)).fetchone()
+    if not row: raise ValueError('Клиент не найден')
+    policy = validate_policy(data,dict(row))
+    con.execute('UPDATE clients SET comment=?,expires_at=?,traffic_limit_bytes=? WHERE name=?',
+                (policy['comment'],policy['expires_at'],policy['traffic_limit_bytes'],name))
+    con.commit()
+    return {'ok':True,'name':name,**policy}
+
+
+def clients_add(con):
+    data = read_json()
+    name = str(data.get('name', '')).strip()
+    if not NAME_RE.fullmatch(name): raise ValueError('Имя: латиница, цифры, -, _; до 32 символов')
+    cfg = get_settings(con)
+    used = {x['ip'] for x in peer_rows(con)}
+    net = parse_network(cfg['subnet'])
+    address = next((str(h) for h in list(net.hosts())[1:] if str(h) not in used), None)
+    if address is None: raise ValueError('Свободных адресов нет')
+    private = keygen(); public = pubkey(private); psk = pskgen()
+    routes = parse_routes(data.get('routed_subnets', ''), cfg, con)
+    cps = validate_i_fields(data)
+    policy = validate_policy(data)
+    con.execute('''INSERT INTO clients
+        (name, ip, private_key, public_key, psk, enabled, created_at,
+         routed_subnets, i_enabled, i1, i2, i3, i4, i5, comment, expires_at, traffic_limit_bytes)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
+        (name,address,private,public,psk,1,datetime.now(timezone.utc).isoformat(),
+         routes,cps['i_enabled'], *(cps[k] for k in I_KEYS),
+         policy['comment'],policy['expires_at'],policy['traffic_limit_bytes']))
+    apply(cfg, con)
+    con.commit()
+    return {'name':name,'ip':address,'config':client_config(cfg,{
+        'private_key':private,'ip':address,'psk':psk,**cps})}
+
+
+def clients_action(con, which):
+    name = str(read_json().get('name',''))
+    if not NAME_RE.fullmatch(name): raise ValueError('Неверное имя клиента')
+    row = con.execute('SELECT * FROM clients WHERE name=?',(name,)).fetchone()
+    if not row: raise ValueError('Клиент не найден')
+    cfg = get_settings(con)
+    if which == 'download':
+        # Disabled peers remain editable/exportable to the authenticated admin.
+        return {'name':name,'ip':row['ip'],'config':client_config(cfg,dict(row)),
+                'routed_subnets':row['routed_subnets'],
+                'server_ip':cfg['server_ip'], 'subnet':cfg['subnet'],
+                'client_public_key':row['public_key'],
+                'i_enabled':bool(row['i_enabled']),
+                'comment':row['comment'], 'expires_at':row['expires_at'],
+                'traffic_limit_bytes':row['traffic_limit_bytes'], 'used_bytes':row['used_bytes'],
+                'disabled_reason':row['disabled_reason'],
+                **{key:row[key] for key in I_KEYS}}
+    if which == 'enable':
+        if row['expires_at'] and datetime.fromisoformat(row['expires_at']) <= datetime.now(timezone.utc):
+            raise ValueError('Срок действия клиента истёк')
+        if row['traffic_limit_bytes'] and row['used_bytes'] >= row['traffic_limit_bytes']:
+            raise ValueError('Достигнут лимит трафика; увеличьте лимит')
+        # A disabled peer can reserve a route while another peer is using it;
+        # re-validate before enabling to prevent AllowedIPs collisions.
+        parse_routes(row['routed_subnets'], cfg, con, owner=name)
+    if which == 'delete': con.execute('DELETE FROM clients WHERE name=?',(name,))
+    else: con.execute('UPDATE clients SET enabled=?, disabled_reason=? WHERE name=?',
+                      (1 if which=='enable' else 0, '' if which=='enable' else 'manual', name))
+    apply(cfg, con); con.commit()
+    return {'ok':True,'name':name}
+
+
+
+
+def clients_delete_batch(con):
+    """Delete a validated selection in one transaction and one peer sync."""
+    payload = read_json()
+    names = payload.get('names')
+    if (not isinstance(names, list) or not 1 <= len(names) <= 256
+            or any(not isinstance(name, str) or not NAME_RE.fullmatch(name) for name in names)
+            or len(set(names)) != len(names)):
+        raise ValueError('Invalid client selection')
+    found = {row[0] for row in con.execute(
+        'SELECT name FROM clients WHERE name IN (' + ','.join('?' for _ in names) + ')', names)}
+    if found != set(names):
+        raise ValueError('One or more clients no longer exist')
+    cfg = get_settings(con)
+    con.executemany('DELETE FROM clients WHERE name=?', ((name,) for name in names))
+    apply(cfg, con)
+    con.commit()
+    return {'ok': True, 'deleted': names}
+
+
+def client_network_update(con):
+    data = read_json()
+    name = str(data.get('name', ''))
+    if not NAME_RE.fullmatch(name): raise ValueError('Invalid client name')
+    row = con.execute('SELECT * FROM clients WHERE name=?', (name,)).fetchone()
+    if not row: raise ValueError('Client not found')
+    cfg = get_settings(con)
+    routes = parse_routes(data.get('routed_subnets',''),cfg,con,owner=name)
+    cps = validate_i_fields(data,dict(row))
+    if row['routed_subnets'] != routes or any(row[key] != cps[key] for key in I_KEYS) or int(row['i_enabled']) != cps['i_enabled']:
+        backup_dir = Path(os.environ.get('AWG31_PEER_BACKUPS', '/var/backups/awg31-panel/peers'))
+        backup = backup_dir / (datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S') + '-' + IFACE + '-' + name + '-' + secrets.token_hex(3))
+        backup.mkdir(parents=True, mode=0o700, exist_ok=False)
+        os.chmod(backup, 0o700)
+        if CONF.exists():
+            shutil.copy2(CONF, backup/'server.conf')
+            os.chmod(backup/'server.conf', 0o600)
+        with sqlite3.connect(backup/'state.sqlite3') as target:
+            con.backup(target)
+        os.chmod(backup/'state.sqlite3', 0o600)
+    con.execute('''UPDATE clients SET routed_subnets=?, i_enabled=?,
+                   i1=?,i2=?,i3=?,i4=?,i5=? WHERE name=?''',
+                (routes,cps['i_enabled'],*(cps[key] for key in I_KEYS),name))
+    if row['routed_subnets'] != routes:
+        apply(cfg,con)  # sync peer AllowedIPs + reconcile IPv4 routes, no forced restart
+    con.commit()
+    return {'ok':True,'name':name,'routed_subnets':routes,'reimport_client':True}
+
+
+def settings_update(con):
+    old = get_settings(con)
+    request = read_json()
+    new = validate_settings(request, old=old)
+    obf = validate_obfuscation(request, {**old,**new})
+    old_mode = old['mode']
+    # A changed route mode changes all exported configs; clients must reimport.
+    cfg = {**old, **new, **obf}
+    stored = {**new, **obf}
+    stored['header_key'] = obf['header_key']
+    # Refuse mode change to avoid PostDown from the old mode being skipped at restart.
+    if new['mode'] != old_mode or new['uplink'] != old['uplink']:
+        raise ValueError('Смена режима маршрутизации/интерфейса после установки пока запрещена')
+    # Save durable recovery copies before replacing any live config.
+    backup = Path('/var/backups/awg31-panel/settings') / (
+        datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')+'-'+IFACE+'-'+secrets.token_hex(3))
+    backup.mkdir(parents=True,mode=0o700,exist_ok=False)
+    os.chmod(backup,0o700)
+    if CONF.exists():
+        shutil.copy2(CONF,backup/'server.conf')
+        os.chmod(backup/'server.conf',0o600)
+    with sqlite3.connect(backup/'state.sqlite3') as destination:
+        con.backup(destination)
+    os.chmod(backup/'state.sqlite3',0o600)
+    put_settings(con, stored)
+    apply(cfg, con, restart=True)
+    con.commit()
+    return {'ok':True,'reimport_clients':True,'backup':str(backup)}
+
+
+def live_stats():
+    try: output = run('awg', 'show', IFACE, 'dump')
+    except Exception: return {}
+    stats = {}
+    for line in output.splitlines()[1:]:
+        parts = line.split('\t')
+        if len(parts) >= 8:
+            stats[parts[0]] = {'handshake':int(parts[4]) if parts[4].isdigit() else 0,
+                               'received':int(parts[5]) if parts[5].isdigit() else 0,
+                               'sent':int(parts[6]) if parts[6].isdigit() else 0}
+    return stats
+
+
+def get_status(con, with_clients=False):
+    cfg = get_settings(con)
+    result = {k:cfg[k] for k in ('subnet','server_ip','port','mtu','dns','endpoint','mode','uplink','public_key')}
+    # Only authenticated dashboard receives this, never the public traffic API.
+    result['obfuscation'] = {k:cfg.get(k) for k in ('Jc','Jmin','Jmax',*S_KEYS,*H_KEYS,
+                  'ContentPaddingAddition','RandomTrailers','DisableCookies',*TIMING_KEYS)}
+    result['obfuscation']['HeaderProtectionKey'] = cfg['header_key']
+    result['interface'] = IFACE
+    result['running'] = subprocess.run(['ip','link','show',IFACE],capture_output=True).returncode==0
+    if with_clients:
+        stats = live_stats()
+        result['clients'] = [
+            {k:p[k] for k in ('name','ip','public_key','enabled','created_at','routed_subnets','i_enabled','comment','expires_at','traffic_limit_bytes','used_bytes','disabled_reason','last_handshake')} | {'stats': (stats.get(p['public_key']) or {'handshake':p['last_handshake'],'received':p['last_rx'],'sent':p['last_tx']})}
+            for p in peer_rows(con)]
+    return result
+
+
+def main():
+    if os.geteuid() != 0: raise PermissionError('Контроллер требует root')
+    if len(sys.argv) != 2 or sys.argv[1] not in ('init','status','list','add','download','enable','disable','delete','delete-batch','client-network','client-policy','settings','sample','history'):
+        raise ValueError('Неподдерживаемая команда')
+    LOCK.parent.mkdir(parents=True, exist_ok=True)
+    with open(LOCK,'a+') as lock:
+        fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+        op = sys.argv[1]
+        if op == 'init': result = init()
+        else:
+            con = get_conn()
+            try:
+                if op == 'status': result = get_status(con)
+                elif op == 'list': result = get_status(con, True)
+                elif op == 'add': result = clients_add(con)
+                elif op == 'client-network': result = client_network_update(con)
+                elif op == 'client-policy': result = client_policy_update(con)
+                elif op == 'sample': result = sample_usage(con)
+                elif op == 'history': result = traffic_history(con,read_json())
+                elif op == 'settings': result = settings_update(con)
+                elif op == 'delete-batch': result = clients_delete_batch(con)
+                else: result = clients_action(con, op)
+            finally: con.close()
+        print(json.dumps(result,ensure_ascii=False))
+
+
+if __name__=='__main__':
+    try: main()
+    except (ValueError,RuntimeError,sqlite3.Error,OSError,subprocess.TimeoutExpired,PermissionError) as exc:
+        print(json.dumps({'error':str(exc)},ensure_ascii=False),file=sys.stderr)
+        sys.exit(1)
