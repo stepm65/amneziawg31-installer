@@ -10,7 +10,8 @@ APP=/opt/awg31-panel
 CTR=/usr/local/sbin/awg31ctl
 MGR=/usr/local/sbin/awg31mgr
 SUD=/etc/sudoers.d/awg31-panel
-[[ -e /var/lib/awg31-panel/state.sqlite3 && -e /etc/amnezia/amneziawg/awg0.conf ]] || die 'No existing awg0 config; initial install required'
+# Do not require awg0: it may have been deleted while other servers remain.
+# The installed application and controller are checked below.
 [[ -f "$APP/web.py" && -x "$APP/.venv/bin/python3" && -f "$CTR" ]] || die 'Existing panel/controller missing'
 id awgpanel >/dev/null 2>&1 || die 'awgpanel user not found'
 for f in web.py amnezialink.py panel.css md3.css panel.js awg31ctl awg31mgr awg31admin.py; do
@@ -68,7 +69,7 @@ say 'Checking existing server inventory'
 say 'Installing narrowly scoped sudo permission'
 tmp="$(mktemp /etc/sudoers.d/.awg31-panel.XXXXXX)"
 cat >"$tmp" <<'EOF'
-awgpanel ALL=(root) NOPASSWD: /usr/local/sbin/awg31mgr servers, /usr/local/sbin/awg31mgr server-create, /usr/local/sbin/awg31mgr server-start, /usr/local/sbin/awg31mgr server-stop, /usr/local/sbin/awg31mgr server-restart, /usr/local/sbin/awg31mgr server-delete, /usr/local/sbin/awg31mgr status, /usr/local/sbin/awg31mgr list, /usr/local/sbin/awg31mgr add, /usr/local/sbin/awg31mgr download, /usr/local/sbin/awg31mgr enable, /usr/local/sbin/awg31mgr disable, /usr/local/sbin/awg31mgr delete, /usr/local/sbin/awg31mgr settings, /usr/local/sbin/awg31mgr client-network, /usr/local/sbin/awg31mgr client-policy, /usr/local/sbin/awg31mgr history, /usr/local/sbin/awg31mgr host-history, /usr/local/sbin/awg31mgr diagnostics, /usr/local/sbin/awg31mgr profile-export, /usr/local/sbin/awg31mgr profile-import, /usr/local/sbin/awg31mgr backup-create, /usr/local/sbin/awg31mgr backup-list, /usr/local/sbin/awg31mgr backup-export, /usr/local/sbin/awg31mgr backup-delete, /usr/local/sbin/awg31mgr backup-policy, /usr/local/sbin/awg31mgr backup-policy-set, /usr/local/sbin/awg31mgr backup-check, /usr/local/sbin/awg31mgr backup-restore, /usr/local/sbin/awg31mgr audit, /usr/local/sbin/awg31mgr audit-list, /usr/local/sbin/awg31mgr password-change
+awgpanel ALL=(root) NOPASSWD: /usr/local/sbin/awg31mgr servers, /usr/local/sbin/awg31mgr server-create, /usr/local/sbin/awg31mgr server-start, /usr/local/sbin/awg31mgr server-stop, /usr/local/sbin/awg31mgr server-restart, /usr/local/sbin/awg31mgr server-delete, /usr/local/sbin/awg31mgr status, /usr/local/sbin/awg31mgr list, /usr/local/sbin/awg31mgr add, /usr/local/sbin/awg31mgr download, /usr/local/sbin/awg31mgr enable, /usr/local/sbin/awg31mgr disable, /usr/local/sbin/awg31mgr delete, /usr/local/sbin/awg31mgr delete-batch, /usr/local/sbin/awg31mgr settings, /usr/local/sbin/awg31mgr client-network, /usr/local/sbin/awg31mgr client-policy, /usr/local/sbin/awg31mgr history, /usr/local/sbin/awg31mgr host-history, /usr/local/sbin/awg31mgr diagnostics, /usr/local/sbin/awg31mgr profile-export, /usr/local/sbin/awg31mgr profile-import, /usr/local/sbin/awg31mgr backup-create, /usr/local/sbin/awg31mgr backup-list, /usr/local/sbin/awg31mgr backup-export, /usr/local/sbin/awg31mgr backup-delete, /usr/local/sbin/awg31mgr backup-policy, /usr/local/sbin/awg31mgr backup-policy-set, /usr/local/sbin/awg31mgr backup-check, /usr/local/sbin/awg31mgr backup-restore, /usr/local/sbin/awg31mgr audit, /usr/local/sbin/awg31mgr audit-list, /usr/local/sbin/awg31mgr password-change
 EOF
 chmod 440 "$tmp"
 visudo -cf "$tmp" >/dev/null
