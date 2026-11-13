@@ -545,7 +545,7 @@ def apply(cfg, con, initial=False, restart=False):
 
 
 def read_json():
-    raw = sys.stdin.read(8192)
+    raw = sys.stdin.read(32768)
     if not raw.strip(): raise ValueError('Пустой JSON запрос')
     data = json.loads(raw)
     if not isinstance(data, dict): raise ValueError('Нужен JSON объект')
@@ -722,6 +722,25 @@ def clients_action(con, which):
 
 
 
+def clients_delete_batch(con):
+    """Delete a validated selection in one transaction and one peer sync."""
+    payload = read_json()
+    names = payload.get('names')
+    if (not isinstance(names, list) or not 1 <= len(names) <= 256
+            or any(not isinstance(name, str) or not NAME_RE.fullmatch(name) for name in names)
+            or len(set(names)) != len(names)):
+        raise ValueError('Invalid client selection')
+    found = {row[0] for row in con.execute(
+        'SELECT name FROM clients WHERE name IN (' + ','.join('?' for _ in names) + ')', names)}
+    if found != set(names):
+        raise ValueError('One or more clients no longer exist')
+    cfg = get_settings(con)
+    con.executemany('DELETE FROM clients WHERE name=?', ((name,) for name in names))
+    apply(cfg, con)
+    con.commit()
+    return {'ok': True, 'deleted': names}
+
+
 def client_network_update(con):
     data = read_json()
     name = str(data.get('name', ''))
@@ -813,7 +832,7 @@ def get_status(con, with_clients=False):
 
 def main():
     if os.geteuid() != 0: raise PermissionError('Контроллер требует root')
-    if len(sys.argv) != 2 or sys.argv[1] not in ('init','status','list','add','download','enable','disable','delete','client-network','client-policy','settings','sample','history'):
+    if len(sys.argv) != 2 or sys.argv[1] not in ('init','status','list','add','download','enable','disable','delete','delete-batch','client-network','client-policy','settings','sample','history'):
         raise ValueError('Неподдерживаемая команда')
     LOCK.parent.mkdir(parents=True, exist_ok=True)
     with open(LOCK,'a+') as lock:
@@ -831,6 +850,7 @@ def main():
                 elif op == 'sample': result = sample_usage(con)
                 elif op == 'history': result = traffic_history(con,read_json())
                 elif op == 'settings': result = settings_update(con)
+                elif op == 'delete-batch': result = clients_delete_batch(con)
                 else: result = clients_action(con, op)
             finally: con.close()
         print(json.dumps(result,ensure_ascii=False))
