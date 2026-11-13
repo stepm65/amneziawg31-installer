@@ -42,6 +42,15 @@ awg31_install_packages() {
       git curl ca-certificates build-essential make gcc dkms mokutil \
       "linux-headers-$(uname -r)" python3 python3-venv python3-pip \
       iproute2 iptables sudo
+    # The line above covers only the running kernel. The meta package of the same
+    # flavour (generic, virtual, aws, azure...) brings headers for every future
+    # kernel, so DKMS can rebuild the module after an update. Best effort.
+    local flavour
+    flavour="$(uname -r)"; flavour="${flavour##*-}"
+    if apt-cache show "linux-headers-$flavour" >/dev/null 2>&1; then
+      DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::ForceIPv4=true install -y --no-install-recommends \
+        "linux-headers-$flavour" || echo "[AWG31 WARNING] linux-headers-$flavour not installed: after a kernel update install matching headers yourself" >&2
+    fi
   else
     awg31_rocky_repos
     # Exact running-kernel package is essential: upgrading kernel-devel alone can

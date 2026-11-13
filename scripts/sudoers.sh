@@ -13,7 +13,7 @@ AWG31_SUDO_COMMANDS=(
   profile-export profile-import
   backup-create backup-list backup-export backup-delete backup-policy
   backup-policy-set backup-check backup-restore
-  audit audit-list password-change
+  audit audit-list password-change session-revoke obfuscation-generate
 )
 
 awg31_render_sudoers() {

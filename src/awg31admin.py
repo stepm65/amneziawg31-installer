@@ -17,7 +17,7 @@ from datetime import datetime, timezone, timedelta
 VALID_BACKUP = re.compile(r'^awg31-[0-9]{8}T[0-9]{6}Z-[0-9a-f]{10}\.tar\.gz$')
 VALID_AUDIT = {'login_success', 'login_failed', 'password_changed', 'client_added',
                'client_modified', 'client_deleted', 'client_enabled', 'client_disabled',
-               'server_created', 'server_started', 'server_stopped', 'server_restarted', 'server_deleted',
+               'server_created', 'server_started', 'server_stopped', 'server_restarted', 'server_deleted', 'logout',
                'server_settings_changed', 'profile_imported', 'backup_created',
                'backup_downloaded', 'backup_deleted', 'backup_policy_changed', 'backup_pruned'}
 
@@ -339,11 +339,27 @@ def audit_recent():
     return {'entries':items}
 
 
+def session_revoke():
+    """Sign out everywhere: cookies issued before this moment stop working.
+
+    The panel is stateless (signed cookies), so logging out has to change the
+    version every cookie is checked against.
+    """
+    file=auth_file(); auth=json.loads(file.read_text())
+    _save_auth(auth,file)
+    audit({'event':'logout'})
+    return {'ok':True}
+
+
 def _store_password(auth, new, file):
     """Write a new scrypt hash atomically and expire every issued session."""
     salt=secrets.token_bytes(16)
     auth['salt']=salt.hex()
     auth['password_hash']=hashlib.scrypt(new.encode(),salt=salt,n=2**14,r=8,p=1,dklen=32).hex()
+    _save_auth(auth,file)
+
+
+def _save_auth(auth, file):
     # Keep middleware signing key, but expire all previously issued sessions.
     auth['auth_version']=secrets.token_hex(16)
     fd,path=tempfile.mkstemp(prefix='.awg31-auth-',dir=file.parent)

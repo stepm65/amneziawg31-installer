@@ -589,39 +589,171 @@ def p2p_peer(name, ip, routed='', enabled=1):
             'enabled': enabled, 'routed_subnets': routed}
 
 
-BETWEEN = '-i awg0 -o awg0 -s 10.10.54.0/24 -d 10.10.54.0/24 -j'
+NET = '10.10.54.0/24'
+BETWEEN = f'-i awg0 -o awg0 -s {NET} -d {NET} -j ACCEPT'
+ISOLATE = (f'-i awg0 -o awg+ -s {NET} -j DROP', f'-i awg+ -o awg0 -d {NET} -j DROP')
+METADATA = f'-i awg0 -s {NET} -d 169.254.0.0/16 -j DROP'
 
 
-def test_client_to_client_is_an_explicit_firewall_rule_in_both_states():
-    allowed = ctl.server_config(p2p_config(client_to_client='on'), [])
-    assert f'PostUp = iptables -w -C FORWARD {BETWEEN} ACCEPT || iptables -w -I FORWARD 1 {BETWEEN} ACCEPT' in allowed
-    assert f'PostUp = iptables -w -D FORWARD {BETWEEN} DROP 2>/dev/null || true' in allowed       # clears the other state
-    isolated = ctl.server_config(p2p_config(client_to_client='off'), [])
-    assert f'PostUp = iptables -w -C FORWARD {BETWEEN} DROP || iptables -w -I FORWARD 1 {BETWEEN} DROP' in isolated
-    assert f'PostUp = iptables -w -D FORWARD {BETWEEN} ACCEPT 2>/dev/null || true' in isolated
-    for conf in (allowed, isolated):                                                          # nothing is left behind
-        assert f'PostDown = iptables -w -D FORWARD {BETWEEN} ACCEPT 2>/dev/null || true' in conf
-        assert f'PostDown = iptables -w -D FORWARD {BETWEEN} DROP 2>/dev/null || true' in conf
+class Chain:
+    """Replays the generated PostUp/PostDown lines against an in-memory FORWARD chain."""
+
+    def __init__(self):
+        self.rules = []
+        self.sysctl = False
+
+    def run(self, config, hook):
+        for line in config.splitlines():
+            if not line.startswith(hook + ' = '):
+                continue
+            command = line.split(' = ', 1)[1]
+            if command.startswith('sysctl'):
+                self.sysctl = True
+                continue
+            for part in command.split(' || '):                       # "check || insert", "delete || true"
+                words = part.replace(' 2>/dev/null', '').split()
+                if words == ['true']:
+                    break
+                assert words[:2] == ['iptables', '-w'], part
+                words = words[2:]
+                table = 'filter'
+                if words[0] == '-t':
+                    table, words = words[1], words[2:]
+                action, chain, rest = words[0], words[1], words[2:]
+                if action == '-I' and rest[0].isdigit():
+                    rest = rest[1:]
+                rule = (table, chain, ' '.join(rest))
+                if action == '-C':
+                    if rule in self.rules: break
+                    continue
+                if action == '-I': self.rules.insert(0, rule); break
+                if action == '-A': self.rules.append(rule); break
+                if action == '-D':
+                    if rule in self.rules: self.rules.remove(rule); break
+                    continue
+
+    def forward(self):
+        return [rule for table, chain, rule in self.rules if table == 'filter' and chain == 'FORWARD']
+
+    def verdict(self, iface_in, iface_out, source, destination):
+        """First matching rule wins, like the kernel; None means the chain policy decides."""
+        import ipaddress
+        for rule in self.forward():
+            words = rule.split()
+            options = dict(zip(words[0::2], words[1::2]))
+            def interface(pattern, name):
+                return name.startswith(pattern[:-1]) if pattern.endswith('+') else pattern == name
+            if '-i' in options and not interface(options['-i'], iface_in): continue
+            if '-o' in options and not interface(options['-o'], iface_out): continue
+            if '-s' in options and ipaddress.ip_address(source) not in ipaddress.ip_network(options['-s']): continue
+            if '-d' in options and ipaddress.ip_address(destination) not in ipaddress.ip_network(options['-d']): continue
+            if '-m' in options: continue                              # conntrack return traffic: not modelled
+            return options['-j']
+        return None
+
+
+def test_client_to_client_allowed_is_an_explicit_rule():
+    chain = Chain()
+    chain.run(ctl.server_config(p2p_config(client_to_client='on'), []), 'PostUp')
+    assert BETWEEN in chain.forward() and not set(ISOLATE) & set(chain.forward())
+    assert chain.verdict('awg0', 'awg0', '10.10.54.2', '10.10.54.3') == 'ACCEPT'
+
+
+def test_isolation_covers_this_server_and_the_other_servers():
+    chain = Chain()
+    chain.run(ctl.server_config(p2p_config(client_to_client='off'), []), 'PostUp')
+    assert chain.verdict('awg0', 'awg0', '10.10.54.2', '10.10.54.3') == 'DROP'      # same server
+    assert chain.verdict('awg0', 'awg1', '10.10.54.2', '10.77.20.2') == 'DROP'      # to another server's client
+    assert chain.verdict('awg1', 'awg0', '10.77.20.2', '10.10.54.2') == 'DROP'      # from another server's client
+    assert chain.verdict('awg0', 'ens3', '10.10.54.2', '93.184.216.34') == 'ACCEPT'  # internet still works
+    assert chain.verdict('ens3', 'awg0', '93.184.216.34', '10.10.54.2') is None      # only the stateful rule applies
 
 
 def test_existing_servers_keep_their_behaviour_without_the_setting():
-    assert f'{BETWEEN} ACCEPT ||' in ctl.server_config(p2p_config(mode='full'), [])
-    assert f'{BETWEEN} DROP ||' in ctl.server_config(p2p_config(mode='split'), [])
+    full, split = Chain(), Chain()
+    full.run(ctl.server_config(p2p_config(mode='full'), []), 'PostUp')
+    split.run(ctl.server_config(p2p_config(mode='split'), []), 'PostUp')
+    assert full.verdict('awg0', 'awg0', '10.10.54.2', '10.10.54.3') == 'ACCEPT'
+    assert split.verdict('awg0', 'awg0', '10.10.54.2', '10.10.54.3') == 'DROP'
+
+
+def test_switching_states_and_stopping_leaves_no_rules_behind():
+    chain = Chain()
+    on = ctl.server_config(p2p_config(client_to_client='on'), [])
+    off = ctl.server_config(p2p_config(client_to_client='off', private_access='off'), [])
+    legacy = f'-i awg0 -o awg0 -s {NET} -d {NET} -j DROP'             # left by the previous release
+    chain.rules.append(('filter', 'FORWARD', legacy))
+    chain.run(on, 'PostUp')
+    assert legacy not in chain.forward()
+    chain.run(off, 'PostUp')                                          # worst case: the old PostDown never ran
+    assert BETWEEN not in chain.forward() and set(ISOLATE) <= set(chain.forward())
+    chain.run(on, 'PostUp')
+    assert not set(ISOLATE) & set(chain.forward()) and not any('10.0.0.0/8' in r for r in chain.forward())
+    chain.run(on, 'PostUp')                                           # running twice does not duplicate rules
+    assert len(chain.forward()) == len(set(chain.forward()))
+    chain.run(on, 'PostDown')
+    assert chain.rules == []
+
+
+def test_metadata_service_is_always_closed_to_clients():
+    for overrides in ({}, {'client_to_client': 'off'}, {'mode': 'split'}, {'private_access': 'on'}):
+        chain = Chain()
+        chain.run(ctl.server_config(p2p_config(**overrides), []), 'PostUp')
+        assert METADATA in chain.forward(), overrides
+        assert chain.verdict('awg0', 'ens3', '10.10.54.2', '169.254.169.254') == 'DROP', overrides
+
+
+def test_private_networks_behind_the_server_are_closed_only_on_request():
+    opened, closed = Chain(), Chain()
+    opened.run(ctl.server_config(p2p_config(), []), 'PostUp')
+    closed.run(ctl.server_config(p2p_config(private_access='off'), []), 'PostUp')
+    for destination in ('10.0.0.5', '172.16.4.4', '192.168.1.1'):
+        assert opened.verdict('awg0', 'ens3', '10.10.54.2', destination) == 'ACCEPT'
+        assert closed.verdict('awg0', 'ens3', '10.10.54.2', destination) == 'DROP'
+    assert closed.verdict('awg0', 'ens3', '10.10.54.2', '93.184.216.34') == 'ACCEPT'
+    assert '10.0.0.0/8' not in ctl.server_config(p2p_config(mode='split', private_access='off'), [])   # no uplink in split
+
+
+def test_networks_behind_a_client_work_in_every_state():
+    router = p2p_peer('router', '10.10.54.2', '10.10.11.0/24')
+    for overrides in ({}, {'client_to_client': 'off'}, {'client_to_client': 'off', 'private_access': 'off'}):
+        chain = Chain()
+        # Rules added earlier at run time must not end up below the isolation rules.
+        chain.rules.append(('filter', 'FORWARD', '-i awg0 -o awg0 -d 10.10.11.0/24 -j ACCEPT'))
+        chain.run(ctl.server_config(p2p_config(**overrides), [router]), 'PostUp')
+        assert chain.verdict('awg0', 'awg0', '10.10.54.3', '10.10.11.7') == 'ACCEPT', overrides
+        assert chain.verdict('awg0', 'awg0', '10.10.11.7', '10.10.54.3') == 'ACCEPT', overrides
+        chain.run(ctl.server_config(p2p_config(**overrides), [router]), 'PostDown')
+        assert chain.rules == [], overrides
 
 
 def test_split_mode_turns_forwarding_on_only_when_it_is_needed():
-    assert 'sysctl' not in ctl.server_config(p2p_config(mode='split', client_to_client='off'), [])
-    assert 'PostUp = sysctl -q -w net.ipv4.ip_forward=1' in ctl.server_config(p2p_config(mode='split', client_to_client='on'), [])
+    def forwarding(config):
+        chain = Chain(); chain.run(config, 'PostUp'); return chain.sysctl
+    assert not forwarding(ctl.server_config(p2p_config(mode='split', client_to_client='off'), []))
+    assert forwarding(ctl.server_config(p2p_config(mode='split', client_to_client='on'), []))
     router = p2p_peer('router', '10.10.54.2', '10.10.11.0/24')
-    assert 'PostUp = sysctl -q -w net.ipv4.ip_forward=1' in ctl.server_config(p2p_config(mode='split', client_to_client='off'), [router])
+    assert forwarding(ctl.server_config(p2p_config(mode='split', client_to_client='off'), [router]))
 
 
-def test_routed_lan_rules_sit_above_the_isolation_rule():
-    router = p2p_peer('router', '10.10.54.2', '10.10.11.0/24')
-    lines = ctl.server_config(p2p_config(client_to_client='off'), [router]).splitlines()
-    drop = next(i for i, line in enumerate(lines) if f'-I FORWARD 1 {BETWEEN} DROP' in line)
-    lan = next(i for i, line in enumerate(lines) if '-I FORWARD 1 -i awg0 -o awg0 -d 10.10.11.0/24 -j ACCEPT' in line)
-    assert lan > drop        # inserted later at position 1 = evaluated first
+def test_ipv6_block_adds_the_default_route_only_when_enabled():
+    laptop = p2p_peer('laptop', '10.10.54.3')
+    assert 'AllowedIPs = 0.0.0.0/0\n' in ctl.client_config(p2p_config(), laptop)
+    assert 'AllowedIPs = 0.0.0.0/0, ::/0\n' in ctl.client_config(p2p_config(ipv6_block='on'), laptop)
+    assert '::/0' not in ctl.client_config(p2p_config(mode='split', ipv6_block='on'), laptop)
+    assert '::/0' not in ctl.server_config(p2p_config(ipv6_block='on'), [laptop])
+
+
+def test_obfuscation_headers_use_the_whole_range_above_wireguard_types():
+    seen = set()
+    for _ in range(200):
+        profile = ctl.fresh_obfuscation()
+        headers = [int(profile[key]) for key in ctl.H_KEYS]
+        assert len(set(headers)) == 4 and all(5 <= value < 2**31 for value in headers)
+        seen.update(headers)
+    assert max(seen) > 2_500_000                                     # no longer squeezed into a narrow band
+    assert "ctl('obfuscation-generate'" in (ROOT / 'src/web.py').read_text()
+    assert 'range(10000, 2500000)' not in (ROOT / 'src/web.py').read_text()
 
 
 def test_client_networks_live_on_the_server_and_in_other_split_clients():
@@ -650,3 +782,196 @@ def test_settings_form_offers_the_client_to_client_switch(ui):
                                                 'mtu': '1380', 'dns': '1.1.1.1', 'client_to_client': 'off'})
     sent = [data for op, data in calls if op == 'settings'][-1]
     assert sent['client_to_client'] == 'off' and sent['interface'] == 'awg0'
+
+
+# --- second audit round: sessions, stale configurations, profiles, installer --
+
+def test_logout_revokes_every_issued_cookie(tmp_path, monkeypatch):
+    admin = load_admin('admin_logout')
+    auth = tmp_path / 'auth.json'
+    auth.write_text(json.dumps({'salt': '00' * 16, 'password_hash': 'x', 'session_key': 'S' * 48, 'auth_version': 'v1'}))
+    monkeypatch.setenv('AWG31_AUTH', str(auth))
+    monkeypatch.setenv('AWG31_AUDIT', str(tmp_path / 'audit.jsonl'))
+    assert admin.session_revoke() == {'ok': True}
+    stored = json.loads(auth.read_text())
+    assert stored['auth_version'] != 'v1' and stored['password_hash'] == 'x' and stored['session_key'] == 'S' * 48
+    assert '"logout"' in (tmp_path / 'audit.jsonl').read_text()
+
+
+def test_panel_logout_calls_the_revocation_and_old_cookie_stops_working(ui):
+    module, client, calls = ui
+    from fastapi.testclient import TestClient
+    stolen = TestClient(module.app, follow_redirects=False)
+    stolen.cookies.update(dict(client.cookies))
+    assert stolen.get('/servers').status_code == 200
+    original = module.ctl
+
+    def revoking(op, data=None):
+        if op == 'session-revoke':                       # what the root helper does on the real system
+            current = json.loads(module.AUTH_FILE.read_text())
+            current['auth_version'] = 'after-logout'
+            module.AUTH_FILE.write_text(json.dumps(current))
+        return original(op, data)
+    module.ctl = revoking
+    client.get('/logout')
+    assert ('session-revoke', {}) in calls
+    assert stolen.get('/servers').status_code == 303     # the copied cookie is dead
+    calls.clear()
+    TestClient(module.app, follow_redirects=False).get('/logout')
+    assert ('session-revoke', {}) not in calls            # an anonymous request cannot sign the admin out
+
+
+def test_login_rate_limit_table_evicts_idle_entries_not_everyone(ui):
+    module, client, _ = ui
+    import time as clock
+    now = clock.monotonic()
+    module.login_attempts.clear()
+    module.login_attempts['203.0.113.9'] = [now] * 5                       # an address being limited right now
+    for index in range(5000):
+        module.login_attempts[f'198.51.{index // 250}.{index % 250}'] = [now - 900]   # long idle
+    reply = client.post('/login', data={'password': 'wrong-password'})
+    assert reply.status_code == 200
+    assert len(module.login_attempts['203.0.113.9']) == 5 and len(module.login_attempts) <= 4097
+    module.login_attempts.clear()
+
+
+def test_stale_configuration_is_tracked_from_the_moment_of_export(tmp_path, monkeypatch):
+    monkeypatch.setattr(ctl, 'DB', tmp_path / 'state.sqlite3')
+    monkeypatch.setattr(ctl, 'CONF', tmp_path / 'awg0.conf')
+    monkeypatch.setattr(ctl, 'live_stats', lambda: {})
+    monkeypatch.setattr(ctl.subprocess, 'run', lambda *a, **k: type('P', (), {'returncode': 1, 'stdout': '', 'stderr': ''})())
+    import sys
+    from io import StringIO
+    con = ctl.get_conn(True)
+    ctl.put_settings(con, {**p2p_config(mode='split'), **ctl.fresh_obfuscation()})
+    for name, ip in (('laptop', '10.10.54.3'), ('router', '10.10.54.2')):
+        con.execute('INSERT INTO clients (name,ip,private_key,public_key,psk,enabled,created_at) VALUES (?,?,?,?,?,?,?)',
+                    (name, ip, 'x' * 44, name[0] * 43 + '=', 'z' * 44, 1, 'now'))
+    con.commit()
+
+    def stale():
+        return {c['name']: c['config_stale'] for c in ctl.get_status(con, True)['clients']}
+
+    def download(name, mark):
+        monkeypatch.setattr(sys, 'stdin', StringIO(json.dumps({'name': name, 'mark': mark})))
+        return ctl.clients_action(con, 'download')['config']
+    assert stale() == {'laptop': False, 'router': False}          # never handed out: nothing to be stale
+    download('laptop', False)                                     # opening the page is not an export
+    assert con.execute("SELECT exported_hash FROM clients WHERE name='laptop'").fetchone()[0] == ''
+    first = download('laptop', True)
+    assert stale()['laptop'] is False
+    con.execute("UPDATE clients SET routed_subnets='10.10.11.0/24' WHERE name='router'")   # a LAN appears behind the router
+    con.commit()
+    assert stale() == {'laptop': True, 'router': False}           # only the laptop's AllowedIPs changed
+    assert download('laptop', True) != first and stale()['laptop'] is False
+    con.close()
+
+
+def test_clients_table_shows_the_stale_badge_and_exports_are_marked(ui):
+    module, client, calls = ui
+    original = module.ctl
+
+    def with_stale(op, data=None):
+        result = original(op, data)
+        if op == 'list':
+            result['clients'][0]['config_stale'] = True
+        return result
+    module.ctl = with_stale
+    assert 'class="config-stale"' in client.get('/servers/awg0/clients').text
+    module.ctl = original
+    assert 'class="config-stale"' not in client.get('/servers/awg0/clients').text
+    calls.clear()
+    client.get('/servers/awg0/clients/alpha')                                  # viewing
+    assert [d.get('mark') for op, d in calls if op == 'download'] == [None]
+    calls.clear()
+    client.get('/servers/awg0/clients/alpha/download')                         # taking the file
+    assert [d.get('mark') for op, d in calls if op == 'download'] == [True]
+
+
+def test_settings_show_the_right_switches_for_each_mode(ui):
+    module, client, calls = ui
+    full = client.get('/servers/awg0/settings').text
+    for name in ('client_to_client', 'private_access', 'ipv6_block'):
+        assert f'name="{name}"' in full
+    original = module.ctl
+
+    def split(op, data=None):
+        result = original(op, data)
+        if op == 'list': result['mode'] = 'split'
+        return result
+    module.ctl = split
+    page = client.get('/servers/awg0/settings')
+    assert 'name="client_to_client"' in page.text and 'name="private_access"' not in page.text
+    module.ctl = original
+    client.post('/servers/awg0/settings', data={'csrf': token(page), 'endpoint': 'vpn.example.test', 'port': '45678',
+                                                'mtu': '1380', 'dns': '1.1.1.1', 'private_access': 'off', 'ipv6_block': 'on'})
+    sent = [data for op, data in calls if op == 'settings'][-1]
+    assert sent['private_access'] == 'off' and sent['ipv6_block'] == 'on'
+
+
+def test_profile_carries_the_switches_and_old_profiles_still_import():
+    manager = (ROOT / 'src/awg31mgr').read_text()
+    assert "OPTIONAL_PROFILE = ('client_to_client', 'private_access', 'ipv6_block')" in manager
+    assert 'allowed <= set(settings) <= allowed|set(OPTIONAL_PROFILE)' in manager
+    assert "'session-revoke'" in manager and "'obfuscation-generate'" in manager
+
+
+def test_restore_never_brings_back_an_old_password():
+    script = (ROOT / 'scripts/restore-backup.py').read_text()
+    guard = script.index("if AUTH.exists():\n        desired.pop('auth/auth.json')")
+    assert guard < script.index('stop_services()\n        # An older SQLite WAL')
+
+
+def test_nginx_site_has_hsts_login_limit_and_optional_allow_list():
+    def render(allow=''):
+        return subprocess.run(['bash', '-c', 'source "$1"; proxy_render_config vpn.example.net 443 8080 /c.pem /k.pem "$2"',
+                               '_', str(ROOT / 'scripts/setup-nginx.sh'), allow], capture_output=True, text=True, check=True).stdout
+    site = render()
+    assert 'add_header Strict-Transport-Security "max-age=31536000" always;' in site
+    assert 'limit_req_zone $binary_remote_addr zone=awg31_login:10m rate=10r/m;' in site
+    assert re.search(r'location = /login \{\s+limit_req zone=awg31_login burst=5 nodelay;', site)
+    assert 'allow ' not in site and 'deny all' not in site
+    limited = render('203.0.113.7, 198.51.100.0/24')
+    assert limited.index('allow 127.0.0.1;') < limited.index('allow 203.0.113.7;') < limited.index('allow 198.51.100.0/24;') < limited.index('deny all;')
+    def valid(value):
+        return subprocess.run(['bash', '-c', 'source "$1"; proxy_validate_allow "$2"', '_',
+                               str(ROOT / 'scripts/setup-nginx.sh'), value], capture_output=True, text=True).returncode == 0
+    assert valid('') and valid('203.0.113.7,198.51.100.0/24') and not valid('203.0.113.7; include /etc/passwd') and not valid('2001:db8::/32')
+
+
+def wizard_function(name):
+    script = (ROOT / 'scripts/setup-wizard.sh').read_text()
+    return re.search(r'^%s\(\) \{.*?^\}' % name, script, flags=re.S | re.M).group(0)
+
+
+def test_unattended_wizard_takes_environment_values_and_never_reads_the_terminal():
+    code = wizard_function('ask') + '\n' + wizard_function('confirm') + '''
+ask PORT 'UDP port' 51820; ask MTU 'MTU' 1280
+confirm 'Proceed? [y/N]:' && echo "PORT=$PORT MTU=$MTU confirmed"'''
+    env = {**os.environ, 'UNATTENDED': '1', 'AWG31_PORT': '45678'}
+    result = subprocess.run(['bash', '-c', code], capture_output=True, text=True, env=env, stdin=subprocess.DEVNULL, timeout=10)
+    assert result.returncode == 0 and 'PORT=45678 MTU=1280 confirmed' in result.stdout
+    interactive = subprocess.run(['bash', '-c', code], capture_output=True, text=True, input='\n\nn\n',
+                                 env={**os.environ, 'UNATTENDED': '0', 'AWG31_PORT': '45678'}, timeout=10)
+    assert 'confirmed' not in interactive.stdout          # typed "n"; environment presets are ignored when asking
+    yes_default = wizard_function('confirm') + "\nconfirm 'Open? [Y/n]:' yes_default && echo opened"
+    assert 'opened' in subprocess.run(['bash', '-c', yes_default], capture_output=True, text=True, input='\n',
+                                      env={**os.environ, 'UNATTENDED': '0'}, timeout=10).stdout
+
+
+def test_installer_states_downgrade_guard_and_new_modes_are_present():
+    script = (ROOT / 'install.sh').read_text()
+    assert '-f /etc/systemd/system/awg31-panel.service && -f /etc/awg31-panel/auth.json' in script   # "complete" needs both
+    assert 'installing over them' in script and '--uninstall --purge' in script
+    assert '--allow-downgrade' in script and 'sort -V' in script
+    assert 'install -o root -g root -m 755 "$PROJECT/install.sh" /usr/local/libexec/awg31/install.sh' in script
+    wizard = (ROOT / 'scripts/setup-wizard.sh').read_text()
+    assert 'ufw allow "$PORT/udp"' in wizard and 'firewall-cmd --permanent --add-port="$PORT/udp"' in wizard
+    upgrade = (ROOT / 'scripts/upgrade-core.sh').read_text()
+    assert 'pip" install --disable-pip-version-check --quiet --upgrade -r "$APP/requirements.txt"' in upgrade
+    assert 'linux-headers-$flavour' in (ROOT / 'scripts/os-support.sh').read_text()
+    menu = (ROOT / 'scripts/awg31-menu').read_text()
+    assert '  port)' in menu and '  uninstall)' in menu
+    uninstall = (ROOT / 'scripts/uninstall.sh').read_text()
+    assert 'Type $word to continue' in uninstall and 'rm -rf /var/lib/awg31-panel' in uninstall
+    assert uninstall.index('if ((PURGE)); then\n    say \'Deleting VPN data\'') > uninstall.index("say 'Removing program files'")

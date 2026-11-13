@@ -70,8 +70,8 @@ say 'Checking existing server inventory'
 "$MGR" servers </dev/null
 say 'Installing narrowly scoped sudo permission'
 source "$DIR/scripts/sudoers.sh"
+# Only our own file is validated: an unrelated broken file in sudoers.d must not block updates.
 awg31_install_sudoers "$SUD" || die 'Cannot install sudoers allowlist'
-visudo -c >/dev/null
 say 'Updating web UI files'
 install -o root -g root -m 644 "$DIR/src/amnezialink.py" "$APP/amnezialink.py"
 install -o root -g root -m 644 "$DIR/src/quicinitial.py" "$APP/quicinitial.py"
@@ -83,6 +83,16 @@ if [[ -f "$DIR/VERSION" ]]; then install -o root -g root -m 644 "$DIR/VERSION" "
 # Self-hosted UI fonts (no CDN); older installations do not have them yet.
 install -d -o root -g root -m 755 "$APP/fonts"
 install -o root -g root -m 644 "$DIR"/src/fonts/* "$APP/fonts/"
+# Security fixes of FastAPI/Starlette and friends arrive only this way. A failure
+# (for example PyPI unreachable) keeps the packages that already work.
+install -o root -g root -m 644 "$DIR/src/requirements.txt" "$APP/requirements.txt"
+say 'Refreshing Python packages within the supported version ranges'
+if "$APP/.venv/bin/pip" install --disable-pip-version-check --quiet --upgrade -r "$APP/requirements.txt"; then
+    "$APP/.venv/bin/pip" freeze --disable-pip-version-check > "$APP/installed-packages.txt" 2>/dev/null || :
+    chgrp -R awgpanel "$APP/.venv" && chmod -R g+rX "$APP/.venv"
+else
+    say 'WARNING: Python packages were not refreshed; continuing with the installed ones'
+fi
 port="$(systemctl cat awg31-panel.service | sed -nE 's/.*--port ([0-9]+).*/\1/p' | tail -n1)"
 [[ "$port" =~ ^[0-9]+$ ]] || die 'Cannot detect localhost panel port'
 systemctl restart awg31-panel.service
@@ -95,6 +105,8 @@ install -d -o root -g root -m 755 /usr/local/libexec/awg31/scripts
 install -o root -g root -m 755 "$DIR/scripts/setup-nginx.sh" /usr/local/libexec/awg31/scripts/setup-nginx.sh
 install -o root -g root -m 644 "$DIR/scripts/os-support.sh" /usr/local/libexec/awg31/scripts/os-support.sh
 install -o root -g root -m 755 "$DIR/scripts/awg31-menu" /usr/local/bin/awg31
+install -o root -g root -m 755 "$DIR/scripts/uninstall.sh" /usr/local/libexec/awg31/scripts/uninstall.sh
+install -o root -g root -m 755 "$DIR/install.sh" /usr/local/libexec/awg31/install.sh
 # Limit growth of root-owned audit log without exposing credentials.
 if command -v logrotate >/dev/null 2>&1; then
     install -o root -g root -m 644 "$DIR/scripts/awg31-audit.logrotate" /etc/logrotate.d/awg31-panel

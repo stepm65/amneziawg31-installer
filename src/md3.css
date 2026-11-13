@@ -1033,3 +1033,5 @@ body {background:var(--ui-bg);font-size:14px;line-height:1.48;}
 /* Long hex packets wrap inside the field instead of running off in one line. */
 .cps-field textarea{white-space:pre-wrap;overflow-wrap:anywhere;word-break:break-all}
 .cps-preset .field input{width:100%}
+.config-stale{display:flex;align-items:center;gap:4px;margin-top:4px;color:#ffca75;font-size:11px}
+.config-stale .icon{flex:none}

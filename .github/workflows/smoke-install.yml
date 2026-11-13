@@ -1,0 +1,25 @@
+name: Install smoke test
+# A real unattended installation on a disposable Ubuntu machine: kernel module
+# build, awg0, firewall rules, the panel, update in place, port change and purge.
+on:
+  push:
+  pull_request:
+jobs:
+  smoke:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - name: Machine
+        run: |
+          uname -r
+          mokutil --sb-state || true
+          sudo ufw status || true
+      - name: Install, exercise and purge
+        run: sudo env CI=true bash tests/smoke/check_install.sh
+      - name: Service logs on failure
+        if: failure()
+        run: |
+          sudo journalctl -u awg31-panel -u 'awg-quick@awg0' -n 80 --no-pager || true
+          sudo dkms status || true
+          sudo dmesg | tail -n 30 || true

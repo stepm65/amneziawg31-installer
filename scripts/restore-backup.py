@@ -113,6 +113,10 @@ def apply(name):
     manifest,raw=validate(name)
     ifaces=manifest['interfaces']
     desired=target_files(ifaces)
+    # An old archive must not bring back an old administrator password or
+    # session key: panel credentials are restored only when none exist.
+    if AUTH.exists():
+        desired.pop('auth/auth.json')
     # Refuse to remove additional interfaces in an unrecognized current inventory.
     existing={p.stem for p in CONF.glob('awg*.conf') if VALID_IFACE.fullmatch(p.stem)}
     if existing-set(ifaces):

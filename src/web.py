@@ -233,7 +233,7 @@ TEXT['ru'].update({
     'kernel_check':'Проверка модуля DKMS после обновления ядра',
     'backup':'Резервные копии', 'backup_make':'Создать полную резервную копию',
     'backup_secret':'Архив содержит приватные ключи и данные администратора. Храните его в безопасном месте.',
-    'backup_download':'Скачать архив', 'backup_restore':'Восстановить', 'restore_warn':'Восстановление заменит настройки, клиентов и ключи из резервной копии, перезапустит VPN и панель. Текущие данные будут сохранены в аварийной копии.', 'restore_confirm':'Введите ВОССТАНОВИТЬ для подтверждения', 'restore_sent':'Восстановление запланировано. Соединение с панелью временно прервётся. Следите за журналом systemd.', 'profile':'Профиль сервера',
+    'backup_download':'Скачать архив', 'backup_restore':'Восстановить', 'restore_warn':'Восстановление заменит настройки, клиентов и ключи из резервной копии, перезапустит VPN и панель. Текущий пароль администратора сохранится. Текущие данные будут сохранены в аварийной копии.', 'restore_confirm':'Введите ВОССТАНОВИТЬ для подтверждения', 'restore_sent':'Восстановление запланировано. Соединение с панелью временно прервётся. Следите за журналом systemd.', 'profile':'Профиль сервера',
     'profile_download':'Экспорт профиля JSON', 'profile_import':'Импортировать профиль',
     'profile_note':'Импорт изменит параметры сервера и перезапустит интерфейс. Приватные ключи не заменяются.',
     'profile_content':'JSON-профиль', 'password_change':'Сменить пароль администратора',
@@ -254,7 +254,7 @@ TEXT['en'].update({
     'kernel_check':'DKMS module check after a kernel update',
     'backup':'Backups', 'backup_make':'Create full backup',
     'backup_secret':'Backups contain private keys and administrator credentials. Store them securely.',
-    'backup_download':'Download archive', 'backup_restore':'Restore', 'restore_warn':'Restoration replaces settings, clients and keys from the backup and restarts the VPN and panel. Current data will be snapshotted first.', 'restore_confirm':'Type RESTORE to confirm', 'restore_sent':'Restore job scheduled. The panel may disconnect temporarily. Monitor systemd logs.', 'profile':'Server profile',
+    'backup_download':'Download archive', 'backup_restore':'Restore', 'restore_warn':'Restoration replaces settings, clients and keys from the backup and restarts the VPN and panel. The current administrator password is kept. Current data will be snapshotted first.', 'restore_confirm':'Type RESTORE to confirm', 'restore_sent':'Restore job scheduled. The panel may disconnect temporarily. Monitor systemd logs.', 'profile':'Server profile',
     'profile_download':'Export JSON profile', 'profile_import':'Import profile',
     'profile_note':'Importing restarts the selected VPN interface. Private keys are not replaced.',
     'profile_content':'JSON profile', 'password_change':'Change administrator password',
@@ -273,7 +273,17 @@ TEXT['ru'].update({
     'peer_routes_hint':'По одной сети на строку или через запятую. Сети прописываются на СЕРВЕРЕ (AllowedIPs этого клиента и маршрут), в конфигурации самого клиента их нет и быть не должно: это его собственные сети. В режиме split они добавляются в конфигурации остальных клиентов — их нужно скачать заново. Например: 192.168.50.0/24 и 172.20.10.5/32.',
     'c2c_label':'Связь клиентов между собой', 'c2c_on':'Разрешена: клиенты видят друг друга по VPN-адресам',
     'c2c_off':'Запрещена: клиенты изолированы друг от друга',
-    'c2c_hint':'Действует внутри VPN-подсети этого сервера. Сети за клиентом (site-to-site) работают в обоих случаях.',
+    'c2c_hint':'«Запрещена» изолирует клиентов этого сервера друг от друга и от клиентов других серверов awgN. Сети за клиентом (site-to-site) работают в обоих случаях.',
+    'private_label':'Доступ клиентов к частным сетям сервера',
+    'private_on':'Разрешён: клиенты видят локальную сеть, в которой стоит сервер',
+    'private_off':'Запрещён: 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16 за сервером закрыты',
+    'private_hint':'Сервис метаданных облака (169.254.0.0/16) закрыт для клиентов всегда.',
+    'ipv6_label':'IPv6 у клиентов',
+    'ipv6_off':'Не трогать: IPv6 клиента идёт мимо VPN',
+    'ipv6_on':'Блокировать: ::/0 направляется в туннель и отбрасывается',
+    'ipv6_hint':'После изменения клиентам нужна новая конфигурация. Проверьте на своих приложениях: некоторые клиенты требуют IPv6-адрес.',
+    'config_stale':'Нужна новая конфигурация',
+    'config_stale_hint':'Настройки изменились после того, как этому клиенту выдали файл, QR или ссылку.',
     'peer_routes_short':'Сети за клиентом',
     'cps_enabled':'Использовать I1–I5 для этого клиента',
     'cps_hint':'Опциональные CPS-пакеты, отправляемые клиентом перед handshake. По умолчанию выключены для совместимости QR и приложений. Если включить и оставить поля пустыми, I1 будет создан автоматически (случайные байты).',
@@ -304,7 +314,17 @@ TEXT['en'].update({
     'peer_routes_hint':'One CIDR per line or comma-separated. The networks are set on the SERVER (this client’s AllowedIPs and a route); they are not in this client’s own configuration and should not be: they are its own networks. In split mode they are added to the other clients’ configurations, which must be downloaded again. Examples: 192.168.50.0/24 and 172.20.10.5/32.',
     'c2c_label':'Traffic between clients', 'c2c_on':'Allowed: clients reach each other by VPN address',
     'c2c_off':'Blocked: clients are isolated from each other',
-    'c2c_hint':'Applies inside this server’s VPN subnet. Networks behind a client (site-to-site) work either way.',
+    'c2c_hint':'“Blocked” isolates this server’s clients from each other and from clients of the other awgN servers. Networks behind a client (site-to-site) work either way.',
+    'private_label':'Client access to the server’s private networks',
+    'private_on':'Allowed: clients reach the local network the server sits in',
+    'private_off':'Blocked: 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16 behind the server are closed',
+    'private_hint':'The cloud metadata service (169.254.0.0/16) is always closed to clients.',
+    'ipv6_label':'Client IPv6',
+    'ipv6_off':'Leave alone: client IPv6 bypasses the VPN',
+    'ipv6_on':'Block: ::/0 is routed into the tunnel and dropped',
+    'ipv6_hint':'Clients need a new configuration after a change. Test with your apps: some clients require an IPv6 address.',
+    'config_stale':'Needs a new configuration',
+    'config_stale_hint':'Settings changed after this client was given the file, QR code or link.',
     'peer_routes_short':'Behind-client networks',
     'cps_enabled':'Enable I1–I5 for this client',
     'cps_hint':'Optional client-originated CPS packets sent before handshake. Disabled by default for easier QR/app compatibility. If you enable this and leave the fields empty, I1 is created automatically (random bytes).',
@@ -1034,14 +1054,11 @@ def overview_series(request:Request,window:str='15m'):
 @app.get('/servers/{interface}/api/obfuscation/generate')
 def obfuscation_generate(request: Request, interface: str = '', timing_ranges: bool = False):
     require_auth(request)
-    nums = secrets.SystemRandom().sample(range(10000, 2500000),4)
-    sizes = [secrets.randbelow(50)+12 for _ in range(4)]
-    while sizes[0] + 56 == sizes[1]: sizes[1] = secrets.randbelow(50)+12
-    params = {'Jc':secrets.randbelow(5)+4, 'Jmin':10, 'Jmax':50,
-              **{k:sizes[i] for i,k in enumerate(('S1','S2','S3','S4'))},
-              **{f'H{i+1}':str(n) for i,n in enumerate(nums)},
-              'HeaderProtectionKey':base64.b64encode(secrets.token_bytes(32)).decode(),
-              'ContentPaddingAddition':'0-16','RandomTrailers':'on','DisableCookies':'on'}
+    try:
+        params = ctl('obfuscation-generate', {})
+    except RuntimeError:
+        raise HTTPException(status_code=503, detail='Generator unavailable') from None
+    params = {key: value for key, value in params.items() if value != ''}
     if timing_ranges:
         params.update({'RekeyAfterTime':'112-118', 'RekeyTimeout':'4-6',
                        'RejectAfterTime':'176-184', 'KeepaliveTimeout':'9-11',
@@ -1219,7 +1236,12 @@ def login_post(request: Request, password: str = Form(...), next: str = Form('/'
     address = str(request.client.host if request.client else 'unknown')[:80]
     attempts = [t for t in login_attempts.get(address,[]) if now-t<300]
     # Cap the dictionary size and avoid unlimited entries from varied addresses.
-    if len(login_attempts)>4096: login_attempts.clear()
+    if len(login_attempts)>4096:
+        # Drop idle addresses first; never wipe the counters of active attackers.
+        for stale in [a for a, times in login_attempts.items() if not any(now-t<300 for t in times)]:
+            login_attempts.pop(stale, None)
+        while len(login_attempts)>4096:
+            login_attempts.pop(min(login_attempts, key=lambda a: max(login_attempts[a], default=0)))
     login_attempts[address]=attempts
     if len(attempts) >= 5:
         return page(tr(lang, 'sign_in'),
@@ -1245,6 +1267,10 @@ def login_post(request: Request, password: str = Form(...), next: str = Form('/'
 
 @app.get('/logout')
 def logout(request: Request):
+    if logged(request):
+        # Signed cookies cannot be recalled one by one: invalidate all of them.
+        try: ctl('session-revoke', {})
+        except (RuntimeError, ValueError): pass
     request.session.clear()
     return RedirectResponse('/login', status_code=303)
 
@@ -1257,6 +1283,16 @@ def human_size(value):
         if n < 1024 or unit == 'TiB':
             return f'{n:.0f} {unit}' if unit == 'B' else f'{n:.1f} {unit}'
         n /= 1024
+
+
+def switch_field(field_id, name, text_prefix, state, lang, order=('on', 'off')):
+    """An on/off server switch as a labelled select with a one-line explanation."""
+    current = state.get(name, order[0])
+    options = ''.join(f'<option value="{value}"{" selected" if current == value else ""}>'
+                      f'{h(tr(lang, text_prefix + "_" + value))}</option>' for value in order)
+    return (f'<label class="field" for="{field_id}"><span>{h(tr(lang, text_prefix + "_label"))}</span>'
+            f'<select id="{field_id}" name="{name}">{options}</select>'
+            f'<small>{h(tr(lang, text_prefix + "_hint"))}</small></label>')
 
 
 def form_field(name, val, label, help='', required=True, field_id=None):
@@ -1310,9 +1346,13 @@ def error_page(request, heading, exc, status_code=400):
 
 
 def client_export(request, name):
-    """Fetch one client's export data; an unknown or invalid name is a 404."""
+    """Fetch one client's export data and note that it was handed out.
+
+    An unknown or invalid name is a 404. Only real exports (file, QR, link) come
+    through here; merely opening the client page does not count.
+    """
     try:
-        return control(request, 'download', {'name': name})
+        return control(request, 'download', {'name': name, 'mark': True})
     except RuntimeError:
         raise HTTPException(status_code=404, detail=tr(lang_of(request), 'not_available')) from None
 
@@ -1419,7 +1459,9 @@ def server_content(request: Request, section: str = 'overview'):
                  f'<td><code class="ip-pill">{h(c["ip"])}</code>'
                  f'<small class="peer-routes-compact">{h(c.get("routed_subnets", ""))}</small></td>'
                  f'<td><span class="pill pill-{status_class}"><span class="dot"></span>'
-                 f'{h(t("active" if active else "disabled"))}</span><small class="handshake">{h(seen)}</small></td>'
+                 f'{h(t("active" if active else "disabled"))}</span><small class="handshake">{h(seen)}</small>'
+                 + (f'<small class="config-stale" title="{h(t("config_stale_hint"))}">{icon("info",12)}{h(t("config_stale"))}</small>'
+                    if c.get('config_stale') else '') + '</td>'
                  f'<td><span class="traffic mono">↓ {h(human_size(st.get("received",0)))} <span class="traffic-divider"></span> '
                  f'↑ {h(human_size(st.get("sent",0)))}</span></td>'
                  f'<td><div class="actions">{actions}</div></td></tr>')
@@ -1505,11 +1547,10 @@ def server_content(request: Request, section: str = 'overview'):
         form_field('port', state['port'], t('server_port')),
         form_field('mtu', state['mtu'], t('mtu_label')),
         form_field('dns', state['dns'], t('client_dns')),
-        '<label class="field" for="client-to-client"><span>' + h(t('c2c_label')) + '</span>'
-        '<select id="client-to-client" name="client_to_client">'
-        + ''.join(f'<option value="{value}"{" selected" if state.get("client_to_client","on")==value else ""}>'
-                  f'{h(t("c2c_"+value))}</option>' for value in ('on','off'))
-        + '</select><small>' + h(t('c2c_hint')) + '</small></label>',
+        switch_field('client-to-client', 'client_to_client', 'c2c', state, lang),
+        *([switch_field('private-access', 'private_access', 'private', state, lang),
+           switch_field('ipv6-block', 'ipv6_block', 'ipv6', state, lang, order=('off', 'on'))]
+          if state.get('mode') == 'full' else []),
     ])
     obf=state.get('obfuscation') or {}
     obf_labels={key:key for key in OBF_EDIT_FIELDS}
@@ -1735,7 +1776,7 @@ async def settings(request: Request, interface: str = ''):
     form=await request.form()
     require_csrf(request,form.get('csrf',''))
     lang=lang_of(request)
-    payload={k: str(form[k]) for k in ('endpoint','port','mtu','dns','client_to_client') if k in form}
+    payload={k: str(form[k]) for k in ('endpoint','port','mtu','dns','client_to_client','private_access','ipv6_block') if k in form}
     payload.update({k: str(form[k]) for k in OBF_EDIT_FIELDS if k in form})
     try:
         control(request,'settings',payload)

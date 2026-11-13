@@ -35,16 +35,62 @@ case "${1:-menu}" in
     cat /opt/awg31-panel/VERSION 2>/dev/null || echo 'unknown: installed before version tracking'
     ;;
   update)
-    # The same one-command installer in upgrade mode. Optional argument: a
-    # release tag (v1.2.3) or dev-latest. Release archives are SHA256-verified.
+    # Optional argument: a release tag (v1.2.3) or dev-latest. Release archives
+    # are SHA256-verified. The installer that does this is the copy shipped
+    # with the installed (already verified) release, not a script from main.
     shift || true
-    [[ $# -le 1 ]] || { echo 'Usage: awg31 update [vX.Y.Z|dev-latest]' >&2; exit 2; }
-    installer="$(mktemp /tmp/awg31-install.XXXXXXXX)"
-    trap 'rm -f -- "$installer"' EXIT
-    curl -fsSL --retry 2 --connect-timeout 8 --max-time 60 \
-      https://raw.githubusercontent.com/stepm65/amneziawg31-installer/main/install.sh -o "$installer" \
-      || { echo 'Cannot download the installer from GitHub' >&2; exit 1; }
-    bash "$installer" --upgrade "$@"
+    installer=/usr/local/libexec/awg31/install.sh
+    if [[ ! -f "$installer" ]]; then
+        installer="$(mktemp /tmp/awg31-install.XXXXXXXX)"
+        trap 'rm -f -- "$installer"' EXIT
+        curl -fsSL --retry 2 --connect-timeout 8 --max-time 60 \
+          https://raw.githubusercontent.com/stepm65/amneziawg31-installer/main/install.sh -o "$installer" \
+          || { echo 'Cannot download the installer from GitHub' >&2; exit 1; }
+    fi
+    # Run a private copy: the update replaces the installed file while it runs.
+    runner="$(mktemp /tmp/awg31-update.XXXXXXXX)"
+    cp -- "$installer" "$runner"
+    bash "$runner" --upgrade "$@"; status=$?
+    rm -f -- "$runner"
+    exit "$status"
+    ;;
+  port)
+    [[ $# -eq 2 && "$2" =~ ^[0-9]{1,5}$ ]] && ((10#$2 >= 1 && 10#$2 <= 65535)) ||
+      { echo 'Usage: awg31 port NEW_PORT   (local TCP port of the panel, 1-65535)' >&2; exit 2; }
+    new=$((10#$2))
+    unit=/etc/systemd/system/awg31-panel.service
+    old="$(sed -nE 's/.*--port ([0-9]+).*/\1/p' "$unit" | tail -n1)"
+    [[ "$old" =~ ^[0-9]+$ ]] || { echo 'Cannot read the current port from the service unit' >&2; exit 1; }
+    [[ "$new" != "$old" ]] || { echo "The panel already listens on $old"; exit 0; }
+    if ss -H -ltn "sport = :$new" | grep -q .; then echo "TCP port $new is already in use" >&2; exit 1; fi
+    cp -p -- "$unit" "$unit.awg31-old"
+    sed -i -E "s/(--port )[0-9]+/\1$new/" "$unit"
+    systemctl daemon-reload && systemctl restart awg31-panel.service
+    . /usr/local/libexec/awg31/scripts/os-support.sh
+    if ! awg31_wait_panel "$new" 30; then
+        echo 'The panel did not start on the new port: restoring the old one' >&2
+        mv -f -- "$unit.awg31-old" "$unit"
+        systemctl daemon-reload && systemctl restart awg31-panel.service
+        exit 1
+    fi
+    rm -f -- "$unit.awg31-old"
+    site=/etc/nginx/conf.d/awg31-panel.conf
+    if [[ -f "$site" ]] && grep -q "127.0.0.1:$old;" "$site"; then
+        cp -p -- "$site" "$site.awg31-old"
+        sed -i "s/127\.0\.0\.1:$old;/127.0.0.1:$new;/g" "$site"
+        if nginx -t >/dev/null 2>&1; then
+            systemctl reload nginx; rm -f -- "$site.awg31-old"
+            echo "Nginx site updated to proxy to 127.0.0.1:$new"
+        else
+            mv -f -- "$site.awg31-old" "$site"
+            echo "WARNING: Nginx rejected the change; edit $site by hand (proxy_pass http://127.0.0.1:$new;)" >&2
+        fi
+    fi
+    echo "The panel now listens on 127.0.0.1:$new (was $old). Update your own reverse proxy if you use one."
+    ;;
+  uninstall)
+    shift
+    exec bash /usr/local/libexec/awg31/scripts/uninstall.sh "$@"
     ;;
   reset-password)
     # Console-only recovery: the web panel cannot call this (not in sudoers).
@@ -75,6 +121,8 @@ AmneziaWG 3.1 local management
   sudo awg31 update [VER]    Update panel and controller (latest release, vX.Y.Z or dev-latest)
   sudo awg31 version         Show the installed version
   sudo awg31 reset-password  Set a new panel password (forgotten password)
+  sudo awg31 port NEW_PORT   Change the local TCP port of the panel
+  sudo awg31 uninstall       Remove the console (add --purge to delete VPN data too)
   sudo awg31 restart-panel   Restart web panel only
   sudo awg31 logs            View panel logs
   sudo awg31 nginx           Configure optional Nginx HTTPS (safe for existing VPN)

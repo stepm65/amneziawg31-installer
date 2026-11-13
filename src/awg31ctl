@@ -6,6 +6,7 @@ All server private material stays root-owned. Web frontend invokes via sudo.
 """
 import fcntl
 import base64
+import hashlib
 import secrets
 import ipaddress
 import json
@@ -140,7 +141,8 @@ def get_conn(create=False):
                        'last_rx': 'INTEGER NOT NULL DEFAULT 0',
                        'last_tx': 'INTEGER NOT NULL DEFAULT 0',
                        'disabled_reason': "TEXT NOT NULL DEFAULT ''",
-                       'last_handshake': 'INTEGER NOT NULL DEFAULT 0'}
+                       'last_handshake': 'INTEGER NOT NULL DEFAULT 0',
+                       'exported_hash': "TEXT NOT NULL DEFAULT ''"}
         for name, definition in new_columns.items():
             if name not in columns:
                 con.execute(f'ALTER TABLE clients ADD COLUMN {name} {definition}')
@@ -163,7 +165,8 @@ def get_settings(con):
     data.setdefault('RandomTrailers', 'on'); data.setdefault('DisableCookies', 'on')
     # Servers created before this switch keep their behaviour: a full tunnel
     # forwarded between clients, a split one did not.
-    data.setdefault('client_to_client', 'on' if data.get('mode') == 'full' else 'off')
+    for name in SWITCHES:
+        data[name] = switch(data, name)
     for key in TIMING_KEYS:
         data.setdefault(key, '')
     return data
@@ -246,7 +249,8 @@ def fresh_obfuscation():
     sizes = [secrets.randbelow(45) + 12 for _ in range(4)]
     while sizes[0]+56 == sizes[1]:
         sizes[1] = secrets.randbelow(45)+12
-    headers = secrets.SystemRandom().sample(range(10_000,2_000_000), 4)
+    # Any distinct values above the four WireGuard message types (1-4).
+    headers = secrets.SystemRandom().sample(range(5, 2**31), 4)
     result = dict(Jc=secrets.randbelow(5)+4, Jmin=10, Jmax=50,
                   **dict(zip(S_KEYS, sizes)),
                   **dict(zip(H_KEYS,map(str,headers))),
@@ -438,9 +442,10 @@ def reconcile_routed(old, new):
         elif owner != IFACE:
             raise RuntimeError(f'Cannot steal existing route: {prefix}')
         for rule in routing_firewall(prefix):
-            check = subprocess.run(['iptables','-w','-C','FORWARD',*rule.split()],
-                                   capture_output=True, check=False, timeout=10)
-            if check.returncode: run('iptables','-w','-I','FORWARD','1',*rule.split())
+            # Delete, then insert at the top: these must sit above the isolation rules.
+            subprocess.run(['iptables','-w','-D','FORWARD',*rule.split()],
+                           capture_output=True, check=False, timeout=10)
+            run('iptables','-w','-I','FORWARD','1',*rule.split())
 
 
 def i_lines(peer):
@@ -459,6 +464,68 @@ def awg_lines(cfg, for_client=False):
         if cfg.get(k,'on') == 'on': lines.append(f'{k} = on')
     for k in TIMING_KEYS:
         if cfg.get(k): lines.append(f'{k} = {cfg[k]}')
+    return lines
+
+
+PRIVATE_NETWORKS = ('10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16')
+SWITCHES = {'client_to_client': None, 'private_access': 'on', 'ipv6_block': 'off'}
+
+
+def switch(cfg, name):
+    """on/off server switches with defaults that keep older servers unchanged."""
+    default = SWITCHES[name]
+    if default is None:                      # client_to_client: full tunnels forwarded, split ones did not
+        default = 'on' if cfg.get('mode') == 'full' else 'off'
+    value = str(cfg.get(name, default)).lower()
+    return value if value in ('on', 'off') else default
+
+
+def firewall_lines(cfg, net, peers):
+    """FORWARD rules owned by this interface, as awg-quick PostUp/PostDown lines.
+
+    Every rule is deleted and re-inserted at position 1, so the order below is
+    the order in the chain no matter what was left behind: the last rule here
+    is evaluated first. Rules of the opposite switch state are removed in
+    PostUp and all variants in PostDown, which keeps the chain clean when a
+    switch changes between restarts.
+    """
+    lines = []
+
+    def top(rule):
+        lines.append(f'PostUp = iptables -w -D FORWARD {rule} 2>/dev/null || true')
+        lines.append(f'PostUp = iptables -w -I FORWARD 1 {rule}')
+        lines.append(f'PostDown = iptables -w -D FORWARD {rule} 2>/dev/null || true')
+
+    def gone(rule):
+        lines.append(f'PostUp = iptables -w -D FORWARD {rule} 2>/dev/null || true')
+        lines.append(f'PostDown = iptables -w -D FORWARD {rule} 2>/dev/null || true')
+
+    routed_networks = sorted(routed_from_rows(peers))
+    between = f'-i {IFACE} -o {IFACE} -s {net} -d {net} -j ACCEPT'
+    # Isolation covers clients of this server and of every other awgN server.
+    isolate = (f'-i {IFACE} -o awg+ -s {net} -j DROP', f'-i awg+ -o {IFACE} -d {net} -j DROP')
+    gone(f'-i {IFACE} -o {IFACE} -s {net} -d {net} -j DROP')          # rule shape used by 0.9.7
+    if switch(cfg, 'client_to_client') == 'on':
+        for rule in isolate: gone(rule)
+        top(between)
+    else:
+        gone(between)
+        for rule in isolate: top(rule)
+    if cfg['mode'] != 'full' and (switch(cfg, 'client_to_client') == 'on' or routed_networks):
+        # Without a full tunnel nothing else turns forwarding on.
+        lines.append('PostUp = sysctl -q -w net.ipv4.ip_forward=1')
+    if cfg['mode'] == 'full':
+        # Optional: keep VPN clients out of the private networks the server itself sits in.
+        for private in PRIVATE_NETWORKS:
+            rule = f'-i {IFACE} -o {cfg["uplink"]} -s {net} -d {private} -j DROP'
+            (gone if switch(cfg, 'private_access') == 'on' else top)(rule)
+    # Link-local is never a legitimate destination behind NAT. On cloud hosts
+    # 169.254.169.254 is the instance metadata service (credentials, user-data).
+    top(f'-i {IFACE} -s {net} -d 169.254.0.0/16 -j DROP')
+    # Networks behind a client stay reachable in every switch state: top of the chain.
+    for network in routed_networks:
+        for rule in routing_firewall(network):
+            top(rule)
     return lines
 
 
@@ -486,30 +553,7 @@ def server_config(cfg, peers):
             f'PostDown = iptables -w -D FORWARD {forward_back} || true',
             f'PostDown = iptables -w -D FORWARD {forward_out} || true',
         ])
-    # Client-to-client traffic inside the VPN subnet: an explicit rule in both
-    # states, so the result does not depend on the host's FORWARD policy.
-    # PostUp removes the opposite variant first and PostDown removes both, which
-    # keeps the firewall clean when the switch changes between restarts.
-    between = f'-i {IFACE} -o {IFACE} -s {net} -d {net} -j'
-    default_between = 'on' if cfg['mode'] == 'full' else 'off'
-    wanted = 'ACCEPT' if cfg.get('client_to_client', default_between) == 'on' else 'DROP'
-    other = 'DROP' if wanted == 'ACCEPT' else 'ACCEPT'
-    routed_networks = sorted(routed_from_rows(peers))
-    if cfg['mode'] != 'full' and (wanted == 'ACCEPT' or routed_networks):
-        # Without a full tunnel nothing else turns forwarding on.
-        lines.append('PostUp = sysctl -q -w net.ipv4.ip_forward=1')
-    lines.extend([
-        f'PostUp = iptables -w -D FORWARD {between} {other} 2>/dev/null || true',
-        f'PostUp = iptables -w -C FORWARD {between} {wanted} || iptables -w -I FORWARD 1 {between} {wanted}',
-        f'PostDown = iptables -w -D FORWARD {between} ACCEPT 2>/dev/null || true',
-        f'PostDown = iptables -w -D FORWARD {between} DROP 2>/dev/null || true',
-    ])
-    # Routed LANs are inserted after (above) the rule for the VPN subnet, so a
-    # site-to-site peer keeps working even when clients are isolated.
-    for network in routed_networks:
-        for rule in routing_firewall(network):
-            lines.append(f'PostUp = iptables -w -C FORWARD {rule} || iptables -w -I FORWARD 1 {rule}')
-            lines.append(f'PostDown = iptables -w -D FORWARD {rule} || true')
+    lines.extend(firewall_lines(cfg, net, peers))
     for p in peers:
         if p['enabled']:
             lines += ['', f'# Client: {p["name"]}', '[Peer]',
@@ -526,7 +570,9 @@ def client_allowed_ips(cfg, p, peers=()):
     other enabled clients announce (site-to-site); never the client's own LANs.
     """
     if cfg['mode'] == 'full':
-        return '0.0.0.0/0'
+        # ::/0 sends the client's IPv6 into the tunnel, where the IPv4-only
+        # server drops it: no IPv6 traffic bypasses the VPN.
+        return '0.0.0.0/0, ::/0' if switch(cfg, 'ipv6_block') == 'on' else '0.0.0.0/0'
     networks = [cfg['subnet']]
     for other in peers:
         if not other.get('enabled') or other.get('name') == p.get('name'):
@@ -755,15 +801,26 @@ def clients_add(con):
         'name':name,'private_key':private,'ip':address,'psk':psk,**cps}, peer_rows(con))}
 
 
+def config_fingerprint(text):
+    return hashlib.sha256(text.encode()).hexdigest()
+
+
 def clients_action(con, which):
-    name = str(read_json().get('name',''))
+    request = read_json()
+    name = str(request.get('name',''))
     if not NAME_RE.fullmatch(name): raise ValueError('Неверное имя клиента')
     row = con.execute('SELECT * FROM clients WHERE name=?',(name,)).fetchone()
     if not row: raise ValueError('Клиент не найден')
     cfg = get_settings(con)
     if which == 'download':
         # Disabled peers remain editable/exportable to the authenticated admin.
-        return {'name':name,'ip':row['ip'],'config':client_config(cfg,dict(row),peer_rows(con)),
+        exported = client_config(cfg,dict(row),peer_rows(con))
+        if request.get('mark') is True:
+            # The admin took the file, QR or link: remember what was handed out,
+            # so the panel can tell when the client needs a fresh configuration.
+            con.execute('UPDATE clients SET exported_hash=? WHERE name=?',(config_fingerprint(exported),name))
+            con.commit()
+        return {'name':name,'ip':row['ip'],'config':exported,
                 'routed_subnets':row['routed_subnets'],
                 'server_ip':cfg['server_ip'], 'subnet':cfg['subnet'],
                 'client_public_key':row['public_key'],
@@ -844,11 +901,18 @@ def settings_update(con):
     obf = validate_obfuscation(request, {**old,**new})
     old_mode = old['mode']
     # A changed route mode changes all exported configs; clients must reimport.
-    between = str(request.get('client_to_client', old.get('client_to_client', 'on'))).lower()
-    if between not in ('on', 'off'):
-        raise ValueError('client_to_client: expected on or off')
-    cfg = {**old, **new, **obf, 'client_to_client': between}
-    stored = {**new, **obf, 'client_to_client': between}
+    switches = {}
+    for name in SWITCHES:
+        value = str(request.get(name, switch(old, name))).lower()
+        if value not in ('on', 'off'):
+            raise ValueError(f'{name}: expected on or off')
+        switches[name] = value
+    dns = ipaddress.ip_address(new['dns'])
+    if (old_mode == 'full' and switches['private_access'] == 'off' and dns.is_private
+            and dns not in ipaddress.ip_network(old['subnet'])):
+        raise ValueError('DNS клиентов находится в частной сети: оставьте доступ к частным сетям включённым или укажите публичный DNS')
+    cfg = {**old, **new, **obf, **switches}
+    stored = {**new, **obf, **switches}
     stored['header_key'] = obf['header_key']
     # Refuse mode change to avoid PostDown from the old mode being skipped at restart.
     if new['mode'] != old_mode or new['uplink'] != old['uplink']:
@@ -886,7 +950,8 @@ def live_stats():
 def get_status(con, with_clients=False):
     cfg = get_settings(con)
     result = {k:cfg[k] for k in ('subnet','server_ip','port','mtu','dns','endpoint','mode','uplink','public_key')}
-    result['client_to_client'] = cfg.get('client_to_client', 'on' if cfg['mode'] == 'full' else 'off')
+    for name in SWITCHES:
+        result[name] = switch(cfg, name)
     # Only authenticated dashboard receives this, never the public traffic API.
     result['obfuscation'] = {k:cfg.get(k) for k in ('Jc','Jmin','Jmax',*S_KEYS,*H_KEYS,
                   'ContentPaddingAddition','RandomTrailers','DisableCookies',*TIMING_KEYS)}
@@ -895,9 +960,13 @@ def get_status(con, with_clients=False):
     result['running'] = subprocess.run(['ip','link','show',IFACE],capture_output=True).returncode==0
     if with_clients:
         stats = live_stats()
+        peers = peer_rows(con)
         result['clients'] = [
-            {k:p[k] for k in ('name','ip','public_key','enabled','created_at','routed_subnets','i_enabled','comment','expires_at','traffic_limit_bytes','used_bytes','disabled_reason','last_handshake')} | {'stats': (stats.get(p['public_key']) or {'handshake':p['last_handshake'],'received':p['last_rx'],'sent':p['last_tx']})}
-            for p in peer_rows(con)]
+            {k:p[k] for k in ('name','ip','public_key','enabled','created_at','routed_subnets','i_enabled','comment','expires_at','traffic_limit_bytes','used_bytes','disabled_reason','last_handshake')}
+            | {'stats': (stats.get(p['public_key']) or {'handshake':p['last_handshake'],'received':p['last_rx'],'sent':p['last_tx']}),
+               # True when the configuration handed out earlier no longer matches the server.
+               'config_stale': bool(p.get('exported_hash')) and p['exported_hash'] != config_fingerprint(client_config(cfg,p,peers))}
+            for p in peers]
     return result
 
 

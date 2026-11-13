@@ -84,7 +84,8 @@ def test_web_server_switch_and_generator(tmp_path,monkeypatch):
         {'interface':'awg0','subnet':'10.77.10.0/24','port':45678,'running':True,'clients':0},
         {'interface':'awg1','subnet':'10.77.20.0/24','port':51821,'running':False,'clients':0}]}
         if op=='servers' else ({**state,'interface':(data or {}).get('interface','awg0')} if op=='list'
-        else {'ok':True}))
+        else ({'Jc':5,'H1':'77','HeaderProtectionKey':base64.b64encode(bytes(32)).decode(),'RekeyTimeout':''}
+              if op=='obfuscation-generate' else {'ok':True})))
     c=TestClient(module.app)
     assert c.get('/api/obfuscation/generate').status_code==401
     c.post('/login',data={'password':'testpassword1234'})

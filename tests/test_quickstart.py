@@ -74,18 +74,20 @@ def test_upstream_patch_present():
     assert '__builtin_types_compatible_p' in text
 
 
-def test_wizard_can_generate_the_password_and_shows_it_once():
+def test_generated_password_goes_to_a_root_only_file_not_the_terminal():
     wizard = (ROOT / 'scripts/setup-wizard.sh').read_text()
     assert 'secrets.token_urlsafe(18)' in wizard
-    assert wizard.count('echo "  Пароль:   $PASSWORD_GENERATED"') == 1
-    assert 'unset PASSWORD_GENERATED' in wizard
-    assert 'Повторите пароль' in wizard                          # a typed password is still confirmed
+    assert 'PASSWORD_FILE=/root/awg31-initial-password.txt' in wizard and 'chmod 600 "$PASSWORD_FILE"' in wizard
+    assert not re.search(r'echo[^\n]*\$PANEL_PASSWORD', wizard)        # the secret itself is never printed
+    assert 'Повторите пароль' in wizard                               # a typed password is still confirmed
 
 
 def test_menu_has_update_and_version():
     menu = (ROOT / 'scripts/awg31-menu').read_text()
     assert 'update)' in menu and 'version)' in menu
-    assert f'{RAW} -o "$installer"' in menu and 'bash "$installer" --upgrade "$@"' in menu
+    # The installed, already verified installer is preferred over a download from main.
+    assert 'installer=/usr/local/libexec/awg31/install.sh' in menu and 'bash "$runner" --upgrade "$@"' in menu
+    assert menu.index('installer=/usr/local/libexec/awg31/install.sh') < menu.index(RAW)
     for script in ('scripts/setup-wizard.sh', 'scripts/upgrade-core.sh'):
         assert '/VERSION' in (ROOT / script).read_text()
 

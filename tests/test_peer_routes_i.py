@@ -82,7 +82,7 @@ def test_db_migration_keeps_legacy_peers(tmp_path,monkeypatch):
     assert row['routed_subnets']==''
     assert row['i_enabled']==0
     assert row['i1']==''
-    assert len(row.keys())==22
+    assert len(row.keys())==23
     con.close()
 
 
@@ -108,7 +108,7 @@ def test_route_renders_server_peer_only_and_firewall_scoped():
     peer=make_client('site','10.77.10.2','192.168.50.0/24, 192.168.60.12/32')
     server=ctl.server_config(cfg,[peer])
     assert 'AllowedIPs = 10.77.10.2/32, 192.168.50.0/24, 192.168.60.12/32' in server
-    assert 'PostUp = iptables -w -C FORWARD -i awg0 -o awg0 -d 192.168.50.0/24 -j ACCEPT' in server
+    assert 'PostUp = iptables -w -I FORWARD 1 -i awg0 -o awg0 -d 192.168.50.0/24 -j ACCEPT' in server
     assert 'PostDown = iptables -w -D FORWARD -i awg0 -o awg0 -s 192.168.50.0/24 -j ACCEPT' in server
     client=ctl.client_config(cfg, peer)
     assert 'AllowedIPs = 0.0.0.0/0' in client
@@ -134,8 +134,8 @@ def test_modify_peer_route_without_restart(tmp_path,monkeypatch):
             if 'table' in argv: return types.SimpleNamespace(returncode=0,stdout='[]',stderr='')
             r=argv[-1]
             return types.SimpleNamespace(returncode=0,stdout=json.dumps([{'dst':r,'dev':'awg0'}] if r in routes else []),stderr='')
-        if argv[:4] == ['iptables','-w','-C','FORWARD']:
-            return types.SimpleNamespace(returncode=1,stdout='',stderr='')
+        if argv[:4] == ['iptables','-w','-D','FORWARD']:
+            return types.SimpleNamespace(returncode=1,stdout='',stderr='')     # nothing to delete yet
         raise AssertionError(f'Unexpected call: {argv}')
     monkeypatch.setattr(ctl.subprocess,'run',fake_os)
     def fake_run(*argv,stdin=None):

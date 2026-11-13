@@ -21,11 +21,13 @@ BASE = Path(os.environ.get('AWG31_ROOT', '/var/lib/awg31-panel'))
 CONFIG_DIR = Path(os.environ.get('AWG31_CONFIG_DIR', '/etc/amnezia/amneziawg'))
 CTL = os.environ.get('AWG31_CTL_PATH', '/usr/local/sbin/awg31ctl')
 VALID = re.compile(r'^awg(?:0|[1-9][0-9]?)$')
+OPTIONAL_PROFILE = ('client_to_client', 'private_access', 'ipv6_block')
 OPS = {'status', 'list', 'add', 'download', 'enable', 'disable', 'delete', 'delete-batch', 'settings', 'client-network', 'client-policy', 'history'}
 ADMIN = {'servers', 'server-create', 'server-start', 'server-stop', 'server-restart', 'server-delete',
          'sample-all','host-history','backup-create','backup-list','backup-export','backup-check','backup-restore','profile-export',
          'profile-import','audit','audit-list','password-change','diagnostics',
-         'backup-delete','backup-policy','backup-policy-set','backup-run','password-reset'}
+         'backup-delete','backup-policy','backup-policy-set','backup-run','password-reset',
+         'session-revoke','obfuscation-generate'}
 
 
 def run(*args, input=None):
@@ -135,7 +137,8 @@ def main():
     op=sys.argv[1]
     # Terminal invocations without JSON must not wait forever for EOF.
     # The web API still sends structured JSON through a non-TTY pipe.
-    no_payload = {'servers', 'sample-all', 'backup-create', 'backup-list', 'backup-policy', 'backup-run', 'audit-list'}
+    no_payload = {'servers', 'sample-all', 'backup-create', 'backup-list', 'backup-policy', 'backup-run', 'audit-list',
+                  'session-revoke', 'obfuscation-generate'}
     raw = '' if op in no_payload or sys.stdin.isatty() else sys.stdin.read(32768)
     data=json.loads(raw) if raw.strip() else {}
     if not isinstance(data,dict): raise ValueError('Expected JSON object')
@@ -144,6 +147,12 @@ def main():
     if op=='audit': return admin.audit(data)
     if op=='audit-list': return admin.audit_recent()
     if op=='password-change': return admin.password_change(data)
+    if op=='session-revoke': return admin.session_revoke()
+    if op=='obfuscation-generate':
+        # One generator for the wizard, new servers and the panel button.
+        fresh=SourceFileLoader('awg31_generator',CTL).load_module().fresh_obfuscation()
+        fresh['HeaderProtectionKey']=fresh.pop('header_key')
+        return fresh
     # Root console only: this command is intentionally missing from sudoers.
     if op=='password-reset': return admin.password_reset(data)
     if op=='backup-create': return admin.create_backup(sys.modules[__name__])
@@ -192,7 +201,7 @@ def main():
     if op=='diagnostics': return admin.diagnose(sys.modules[__name__],iface)
     if op=='profile-export':
         status=child(iface,'status',{})
-        editable={k:status[k] for k in ('endpoint','port','mtu','dns')}
+        editable={k:status[k] for k in ('endpoint','port','mtu','dns',*OPTIONAL_PROFILE)}
         editable.update(status['obfuscation'])
         return {'format':'awg31-profile-v1','interface':iface,'settings':editable}
     if op=='profile-import':
@@ -204,7 +213,8 @@ def main():
                  'H1','H2','H3','H4','HeaderProtectionKey','ContentPaddingAddition',
                  'RandomTrailers','DisableCookies','RekeyAfterTime','RekeyTimeout',
                  'RejectAfterTime','KeepaliveTimeout','MaxHandshakeAttempts'}
-        if not isinstance(settings,dict) or set(settings)!=allowed:
+        # Switches are optional so that profiles exported by older versions still import.
+        if not isinstance(settings,dict) or not allowed <= set(settings) <= allowed|set(OPTIONAL_PROFILE):
             raise ValueError('Incomplete profile or unexpected fields')
         return child(iface,'settings',settings)
     if op in OPS:

@@ -8,7 +8,26 @@ DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 
 say() { printf '\n[%s] %s\n' 'AWG31' "$*"; }
 die() { echo "[ERROR] $*" >&2; exit 1; }
-ask() { local key="$1" text="$2" default="$3" answer; read -r -p "$text [$default]: " answer; printf -v "$key" '%s' "${answer:-$default}"; }
+UNATTENDED="${AWG31_UNATTENDED:-0}"
+# Interactive: ask, Enter accepts the default. Unattended: AWG31_<NAME> or the default.
+ask() {
+    local key="$1" text="$2" default="$3" preset="AWG31_$1" answer
+    if [[ "$UNATTENDED" == 1 ]]; then
+        answer="${!preset:-$default}"
+        printf '%s: %s\n' "$text" "$answer"
+    else
+        read -r -p "$text [$default]: " answer
+    fi
+    printf -v "$key" '%s' "${answer:-$default}"
+}
+# Yes/no question. Unattended runs answer yes. "yes_default" makes Enter mean yes.
+confirm() {
+    local reply
+    if [[ "$UNATTENDED" == 1 ]]; then return 0; fi
+    read -r -p "$1 " reply
+    if [[ -z "$reply" && "${2:-}" == yes_default ]]; then return 0; fi
+    [[ "${reply,,}" == y || "${reply,,}" == yes || "$reply" == 'д' || "$reply" == 'да' ]]
+}
 
 [[ $EUID -eq 0 ]] || die 'Запустите установку от root: bash install.sh'
 [[ -f "$DIR/src/awg31ctl" && -f "$DIR/src/web.py" ]] || die 'Мастер запускается через install.sh из полного каталога проекта'
@@ -82,8 +101,7 @@ if [[ "$NGINX_MODE" != none ]]; then
     if [[ "$(getenforce 2>/dev/null || :)" == Enforcing ]] && [[ "$AWG31_OS_FAMILY" == rpm ]]; then
         [[ "$NGINX_HTTPS_PORT" == 443 ]] || die 'Для Rocky с SELinux Enforcing пока поддерживается HTTPS-порт 443'
         echo 'Rocky SELinux: Nginx потребуется право httpd_can_network_connect для reverse proxy.'
-        read -r -p 'Разрешить установщику включить SELinux boolean (без отключения SELinux)? [y/N]: ' ACK_SELINUX
-        [[ "${ACK_SELINUX,,}" == y || "${ACK_SELINUX,,}" == yes ]] || die 'Выбор отменён: без разрешения SELinux Nginx proxy не заработает'
+        confirm 'Разрешить установщику включить SELinux boolean (без отключения SELinux)? [y/N]:' || die 'Выбор отменён: без разрешения SELinux Nginx proxy не заработает'
         NGINX_SELINUX_ACK=yes
     fi
 fi
@@ -119,15 +137,13 @@ PY
 if [[ "$AWG31_OS_FAMILY" == rpm ]] && systemctl is-active --quiet firewalld 2>/dev/null; then
     say 'ВНИМАНИЕ: Rocky Linux использует firewalld. Для Full Tunnel может понадобиться отдельная настройка policy/masquerading; наши правила iptables не гарантируют обход политики firewalld.'
     if [[ "$MODE" == 'full' ]]; then
-        read -r -p 'Продолжить установку с firewalld (после установки проверить NAT)? [y/N]: ' FIREWALL_ACK
-        [[ "${FIREWALL_ACK,,}" == y || "${FIREWALL_ACK,,}" == yes ]] || die 'Отменено. Правила firewalld не изменены.'
+        confirm 'Продолжить установку с firewalld (после установки проверить NAT)? [y/N]:' || die 'Отменено. Правила firewalld не изменены.'
     fi
 fi
 if ss -H -ltn "sport = :$PANEL_PORT" | grep -q .; then die 'TCP-порт панели уже занят'; fi
 if ss -H -lun "sport = :$PORT" | grep -q .; then die 'UDP-порт VPN уже занят'; fi
 say 'Проверка завершена. AWG 3.1 устанавливается Quick Start отдельно (prepare-awg31.sh). PPA и Docker не требуются.'
-read -r -p 'Подтверждаете установку? [y/N]: ' AGREE
-[[ "${AGREE,,}" == y || "${AGREE,,}" == yes || "$AGREE" == 'д' ]] || die 'Установка отменена'
+confirm 'Подтверждаете установку? [y/N]:' || die 'Установка отменена'
 
 say 'Проверяем зависимости для выбранной системы'
 awg31_install_packages
@@ -203,23 +219,37 @@ fi
 chgrp -R awgpanel /opt/awg31-panel/.venv
 chmod -R g+rX /opt/awg31-panel/.venv
 install -d -o root -g awgpanel -m 750 /etc/awg31-panel
-PASSWORD_GENERATED=''
-echo 'Пароль администратора: введите свой (минимум 12 символов) или нажмите Enter — будет создан случайный.'
-while :; do
-    IFS= read -r -s -p 'Пароль администратора веб-панели: ' PANEL_PASSWORD; echo
-    if [[ -z "$PANEL_PASSWORD" ]]; then
-        # 24 URL-safe characters from the OS random source (144 bits).
-        PASSWORD_GENERATED="$(python3 -c 'import secrets; print(secrets.token_urlsafe(18))')"
-        PANEL_PASSWORD="$PASSWORD_GENERATED"
-        break
+PASSWORD_FILE=''
+PANEL_PASSWORD=''
+generate_password() {
+    # 24 URL-safe characters from the OS random source (144 bits). It goes to a
+    # root-only file, not to the terminal: scrollback and session logs keep text.
+    PANEL_PASSWORD="$(python3 -c 'import secrets; print(secrets.token_urlsafe(18))')"
+    PASSWORD_FILE=/root/awg31-initial-password.txt
+    (umask 077; printf '%s\n' "$PANEL_PASSWORD" > "$PASSWORD_FILE")
+    chmod 600 "$PASSWORD_FILE"
+}
+if [[ "$UNATTENDED" == 1 ]]; then
+    if [[ -n "${AWG31_PASSWORD_FILE:-}" ]]; then
+        [[ -r "$AWG31_PASSWORD_FILE" ]] || die "AWG31_PASSWORD_FILE не читается: $AWG31_PASSWORD_FILE"
+        IFS= read -r PANEL_PASSWORD < "$AWG31_PASSWORD_FILE" || :
+        [[ ${#PANEL_PASSWORD} -ge 12 && ${#PANEL_PASSWORD} -le 256 ]] || die 'Пароль в AWG31_PASSWORD_FILE должен быть длиной 12–256 символов'
+    else
+        generate_password
     fi
-    if [[ ${#PANEL_PASSWORD} -lt 12 ]]; then echo 'Пароль слишком короткий'; continue; fi
-    if [[ ${#PANEL_PASSWORD} -gt 256 ]]; then echo 'Пароль длиннее 256 символов'; continue; fi
-    IFS= read -r -s -p 'Повторите пароль: ' PANEL_PASSWORD_REPEAT; echo
-    [[ "$PANEL_PASSWORD" == "$PANEL_PASSWORD_REPEAT" ]] && break
-    echo 'Пароли не совпадают, попробуйте ещё раз'
-done
-unset PANEL_PASSWORD_REPEAT
+else
+    echo 'Пароль администратора: введите свой (минимум 12 символов) или нажмите Enter — будет создан случайный.'
+    while :; do
+        IFS= read -r -s -p 'Пароль администратора веб-панели: ' PANEL_PASSWORD; echo
+        if [[ -z "$PANEL_PASSWORD" ]]; then generate_password; break; fi
+        if [[ ${#PANEL_PASSWORD} -lt 12 ]]; then echo 'Пароль слишком короткий'; continue; fi
+        if [[ ${#PANEL_PASSWORD} -gt 256 ]]; then echo 'Пароль длиннее 256 символов'; continue; fi
+        IFS= read -r -s -p 'Повторите пароль: ' PANEL_PASSWORD_REPEAT; echo
+        [[ "$PANEL_PASSWORD" == "$PANEL_PASSWORD_REPEAT" ]] && break
+        echo 'Пароли не совпадают, попробуйте ещё раз'
+    done
+    unset PANEL_PASSWORD_REPEAT
+fi
 # Password travels over stdin, not argv or environment.
 printf '%s' "$PANEL_PASSWORD" | python3 -c '
 import hashlib,json,secrets,sys
@@ -263,7 +293,9 @@ RestrictAddressFamilies=AF_INET AF_UNIX AF_NETLINK
 WantedBy=multi-user.target
 EOF
 systemctl daemon-reload
-systemctl enable --now awg31-panel.service
+systemctl enable awg31-panel.service
+# restart, not start: a panel left running by an earlier attempt must pick up this unit.
+systemctl restart awg31-panel.service
 say 'Ждём запуска веб-панели'
 awg31_wait_panel "$PANEL_PORT" || die 'Панель не ответила на /health. VPN awg0 создан и работает; повторный запуск команды установки завершит настройку.'
 
@@ -272,6 +304,8 @@ install -d -o root -g root -m 755 /usr/local/libexec/awg31/scripts
 install -o root -g root -m 755 "$DIR/scripts/setup-nginx.sh" /usr/local/libexec/awg31/scripts/setup-nginx.sh
 install -o root -g root -m 644 "$DIR/scripts/os-support.sh" /usr/local/libexec/awg31/scripts/os-support.sh
 install -o root -g root -m 755 "$DIR/scripts/awg31-menu" /usr/local/bin/awg31
+install -o root -g root -m 755 "$DIR/scripts/uninstall.sh" /usr/local/libexec/awg31/scripts/uninstall.sh
+install -o root -g root -m 755 "$DIR/install.sh" /usr/local/libexec/awg31/install.sh
 
 # Periodic usage enforcement, historical metrics and kernel health checks.
 # Limit growth of root-owned audit log without exposing credentials.
@@ -298,6 +332,8 @@ if [[ "$NGINX_MODE" != none ]]; then
        AWG31_PROXY_CERT="$NGINX_CERT" \
        AWG31_PROXY_KEY="$NGINX_KEY" \
        AWG31_PROXY_SELINUX_ACK="${NGINX_SELINUX_ACK:-no}" \
+       AWG31_PROXY_ALLOW="${AWG31_NGINX_ALLOW:-}" \
+       AWG31_PROXY_SKIP_FIREWALL_PROMPT="$([[ "$UNATTENDED" == 1 ]] && echo yes || echo no)" \
        bash "$DIR/scripts/setup-nginx.sh"; then
         NGINX_RESULT=ready
     else
@@ -306,6 +342,28 @@ if [[ "$NGINX_MODE" != none ]]; then
         echo '[AWG31 WARNING] Повтор: sudo awg31 nginx' >&2
     fi
 fi
+# An active host firewall silently drops the VPN port unless it is opened.
+FIREWALL_NOTE="Откройте UDP $PORT в firewall провайдера и сервера."
+open_vpn_port() {
+    local tool="$1"
+    if [[ "${AWG31_OPEN_FIREWALL:-yes}" == no ]] ||
+       ! confirm "Обнаружен активный $tool. Открыть в нём UDP $PORT для VPN? [Y/n]:" yes_default; then
+        FIREWALL_NOTE="ВНИМАНИЕ: $tool активен, UDP $PORT в нём НЕ открыт — VPN не заработает, пока вы не откроете порт."
+        return 0
+    fi
+    if [[ "$tool" == ufw ]]; then
+        ufw allow "$PORT/udp" >/dev/null
+    else
+        firewall-cmd --permanent --add-port="$PORT/udp" >/dev/null && firewall-cmd --reload >/dev/null
+    fi && FIREWALL_NOTE="UDP $PORT открыт в $tool. Проверьте также firewall провайдера." ||
+        FIREWALL_NOTE="ВНИМАНИЕ: не удалось открыть UDP $PORT в $tool — откройте порт вручную."
+}
+if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q '^Status: active'; then
+    open_vpn_port ufw
+elif command -v firewall-cmd >/dev/null 2>&1 && systemctl is-active --quiet firewalld 2>/dev/null; then
+    open_vpn_port firewalld
+fi
+
 say 'Установка завершена'
 LINE='────────────────────────────────────────────────────────────'
 echo "$LINE"
@@ -319,17 +377,16 @@ case "$NGINX_RESULT" in
     skipped) echo "  Доступ:   ssh -L $PANEL_PORT:127.0.0.1:$PANEL_PORT root@$ENDPOINT → http://localhost:$PANEL_PORT"
              echo '            или HTTPS через Nginx: sudo awg31 nginx' ;;
 esac
-if [[ -n "$PASSWORD_GENERATED" ]]; then
-    echo "  Пароль:   $PASSWORD_GENERATED"
-    echo '            Показан один раз — сохраните. Сменить: sudo awg31 reset-password'
+if [[ -n "$PASSWORD_FILE" ]]; then
+    echo "  Пароль:   в файле $PASSWORD_FILE (доступен только root)"
+    echo "            Посмотреть: sudo cat $PASSWORD_FILE — затем удалите файл. Сменить: sudo awg31 reset-password"
 else
     echo '  Пароль:   заданный вами. Сбросить: sudo awg31 reset-password'
 fi
 if [[ -n "$FIRST_CLIENT" ]]; then echo "  Клиент:   $FIRST_CLIENT (конфигурация и QR — в панели)"; fi
 echo '  Меню:     sudo awg31'
 echo "$LINE"
-unset PASSWORD_GENERATED
-echo "Откройте UDP $PORT в firewall провайдера и сервера."
+echo "$FIREWALL_NOTE"
 if [[ "$MODE" == 'full' ]]; then
     echo 'Режим full: через VPN идёт весь IPv4 клиента. IPv6 на клиентах не туннелируется — отключите его или заблокируйте.'
 else

@@ -32,7 +32,6 @@ fi
 say 'Проверяем минимальные права sudo'
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/sudoers.sh"
 awg31_install_sudoers /etc/sudoers.d/awg31-panel || die 'Не удалось установить sudoers для панели'
-visudo -c
 
 say 'Проверяем доступ панели к контроллеру'
 runuser -u awgpanel -- sudo -n /usr/local/sbin/awg31mgr status >/dev/null 
@@ -69,7 +68,8 @@ WantedBy=multi-user.target
 EOF
 chmod 644 /etc/systemd/system/awg31-panel.service
 systemctl daemon-reload
-systemctl enable --now awg31-panel.service
+systemctl enable awg31-panel.service
+systemctl restart awg31-panel.service
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/os-support.sh"
 awg31_wait_panel "$PANEL_PORT" || die 'Панель не ответила на /health'
 printf '\n'

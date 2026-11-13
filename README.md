@@ -4,7 +4,7 @@
 
 An installer and a web console for running **AmneziaWG 3.1** on your own server: a kernel module built with DKMS, an interactive setup wizard and a bilingual (EN/RU) panel for servers, clients, traffic and backups. No Docker, no control plane in the cloud, nothing loaded from a CDN.
 
-Version **0.9.7** · MIT licence · not affiliated with the AmneziaVPN developers.
+Version **0.9.8** · MIT licence · not affiliated with the AmneziaVPN developers.
 
 ![Infrastructure overview](docs/screenshots/en-dashboard.png)
 
@@ -14,7 +14,8 @@ Version **0.9.7** · MIT licence · not affiliated with the AmneziaVPN developer
 - **Random obfuscation per server.** `S1–S4`, `H1–H4`, `Jc`, `HeaderProtectionKey` are generated for every server, including the first one, and can be regenerated in the panel.
 - **Several independent servers** (`awg0`, `awg1`, … up to 8), each with its own keys, subnet, UDP port and clients.
 - **Clients:** `.conf` download, QR code, `vpn://` link for AmneziaVPN, comment, expiry date, traffic quota, networks behind a client (site-to-site), bulk delete.
-- **Client-to-client switch** per server: clients either reach each other by VPN address or are isolated by an explicit firewall rule. Networks behind a client keep working in both states, and in split mode they are added to the other clients' configurations.
+- **Per-server traffic switches:** clients may reach each other or are isolated (also from clients of the other servers); access to the private networks behind the server can be closed; client IPv6 can be routed into the tunnel and dropped. The cloud metadata address range is always closed to clients. Networks behind a client keep working in every state.
+- **Stale-configuration badge:** the client list shows who needs a new file after settings changed.
 - **I1–I5 packets:** a Generate button for each field and ready-made templates for `I1` (random bytes, DNS query, STUN binding request, QUIC-shaped packet). Enabling them with empty fields creates `I1` automatically.
 - **Monitoring:** host CPU, RAM, swap, disk and uplink traffic, per-server traffic charts, 30 days of history collected by a systemd timer.
 - **Backups:** full archives with checksums, download, schedule (daily or weekly), retention, restore with a safety snapshot.
@@ -63,7 +64,9 @@ The installer builds the kernel module and tools, then starts a short wizard. Ev
 5. Reverse proxy: none, Nginx with a self-signed certificate, or Nginx with your certificate.
 6. Administrator password: type your own (twice, at least 12 characters) or press Enter and a random one is generated and shown once at the end.
 
-After installation, run `sudo awg31` to see the management commands: status, update, backups, password reset, Nginx setup and more.
+A generated password is written to `/root/awg31-initial-password.txt` (readable by root only), not printed. If ufw or firewalld is active, the wizard offers to open the VPN port in it.
+
+After installation, run `sudo awg31` to see the management commands: status, update, backups, password reset, panel port, Nginx setup, uninstall and more.
 
 Every release is published with a `.sha256` sum next to the archive. Both `install.sh` and `awg31 update` verify the archive against that sum and abort on a mismatch, before anything is unpacked. The sum protects against a damaged or truncated download; it comes from the same release page as the archive. `dev-latest` is not a release and is not checksum-pinned.
 
@@ -79,6 +82,30 @@ ssh -L 8080:127.0.0.1:8080 root@your-server
 If the sign-in page keeps coming back, your browser refuses the secure session cookie over plain HTTP: use Chrome or Firefox for the tunnel, or set up Nginx (`sudo awg31 nginx`).
 
 Prefer to read the code first? Clone the repository and run `sudo bash install.sh` inside it: the result is the same.
+
+### Unattended installation
+
+For automation, set `AWG31_UNATTENDED=1`: no questions are asked and defaults are used unless a variable overrides them.
+
+```bash
+curl -Ls https://raw.githubusercontent.com/stepm65/amneziawg31-installer/main/install.sh | \
+  sudo env AWG31_UNATTENDED=1 AWG31_ENDPOINT=vpn.example.com AWG31_PORT=51820 bash
+```
+
+| Variable | Default |
+|---|---|
+| `AWG31_SUBNET` | `10.77.10.0/24` |
+| `AWG31_PORT` | `51820` |
+| `AWG31_MTU` | `1280` |
+| `AWG31_ENDPOINT` | detected public IPv4 |
+| `AWG31_DNS` | `1.1.1.1` |
+| `AWG31_MODE` | `full` |
+| `AWG31_UPLINK` | interface of the default route |
+| `AWG31_PANEL_PORT` | `8080` |
+| `AWG31_FIRST_CLIENT` | `test-client` (`skip` for none) |
+| `AWG31_PASSWORD_FILE` | none: a password is generated into `/root/awg31-initial-password.txt` |
+| `AWG31_OPEN_FIREWALL` | `yes`: open the UDP port in an active ufw/firewalld |
+| `AWG31_NGINX_CHOICE` | `0` (no Nginx); `1`/`2` also need `AWG31_NGINX_HOST`, and `2` needs `AWG31_NGINX_CERT`, `AWG31_NGINX_KEY` |
 
 ## The panel
 
@@ -123,6 +150,8 @@ sudo awg31 backups          list backups
 sudo awg31 restore-check N  verify a backup
 sudo awg31 restore N        restore a backup (VPN restarts)
 sudo awg31 reset-password   set a new panel password
+sudo awg31 port N           change the local TCP port of the panel
+sudo awg31 uninstall        remove the console; --purge also deletes VPN data
 sudo awg31 nginx            configure the Nginx HTTPS proxy
 sudo awg31 restart-panel    restart the web panel only
 sudo awg31 logs             panel logs
@@ -136,7 +165,7 @@ sudo awg31 update v0.9.6     # a specific release
 sudo awg31 update dev-latest # rolling build from main
 ```
 
-Running the Quick Start command again on a server that already has the console does the same thing. The update replaces the panel, the controller, fonts and the `sudo` allowlist. Interfaces, keys, clients and firewall rules are left as they are. A copy of the replaced files and databases is kept in `/var/backups/awg31-upgrade.*`.
+Running the Quick Start command again on a server that already has the console does the same thing. `awg31 update` uses the installer that came with the installed release, and refuses to install an older version unless `--allow-downgrade` is given. The update replaces the panel, the controller, fonts and the `sudo` allowlist, and refreshes the Python packages within the supported version ranges. Interfaces, keys, clients and firewall rules are left as they are. A copy of the replaced files and databases is kept in `/var/backups/awg31-upgrade.*`.
 
 If your installed `awg31` has no `update` command yet, run `bash <(curl -Ls https://raw.githubusercontent.com/stepm65/amneziawg31-installer/main/install.sh) --upgrade` once.
 
@@ -144,7 +173,7 @@ If a server shows a warning that `H1–H4` are `1, 2, 3, 4`, press **Generate pa
 
 ### Interrupted installation
 
-If the installer stopped after the VPN was created but before the panel started, it will not overwrite the existing server. If the stop happened after the administrator password step, finish the setup from a clone of the repository (otherwise restore the VPS snapshot and start again):
+If the installer stopped after the VPN was created but before the panel started, it will not overwrite the existing server. If nothing was created yet (the failure came before the VPN step), simply run the installer again. If the VPN exists and the stop happened after the administrator password step, finish the setup from a clone of the repository. To throw the half-made setup away and start over, run the installer with `--uninstall --purge`.
 
 ```bash
 git clone https://github.com/stepm65/amneziawg31-installer.git
@@ -166,8 +195,11 @@ sudo bash amneziawg31-installer/scripts/resume-panel.sh
 
 - A client `.conf`, `vpn://` link or QR code contains a private key. Whoever has it can connect.
 - Backups are **not encrypted** and contain every private key and the panel credentials. Copy them off the server over a secure channel and store them encrypted.
-- Do not expose the panel without HTTPS. If you publish it through Nginx, restrict access by IP address where you can.
-- In full mode only IPv4 goes through the tunnel. Disable IPv6 on clients or block it, otherwise IPv6 traffic bypasses the VPN.
+- Do not expose the panel without HTTPS. The generated Nginx site sends HSTS, limits sign-in attempts per address and can restrict access to the addresses you list (`sudo awg31 nginx`).
+- Signing out ends every session of the panel, including a copied cookie.
+- Restoring a backup keeps the current administrator password; the one in the archive is used only when none exists.
+- In full mode only IPv4 goes through the tunnel. Turn on “Client IPv6: block” in the server settings (clients then need a new configuration), or disable IPv6 on the clients; otherwise IPv6 traffic bypasses the VPN.
+- VPN clients can reach services of the server itself on its VPN address (for example SSH). The console does not manage the host's INPUT rules.
 - After a kernel update, run `sudo awg31 doctor`: the module is rebuilt by DKMS only if headers for the new kernel are installed.
 
 More in [SECURITY.md](SECURITY.md).
@@ -180,7 +212,9 @@ More in [SECURITY.md](SECURITY.md).
 | Ubuntu 24.04 | supported by the installer, not yet confirmed on a live server |
 | Rocky Linux 9 / 10 | supported by the installer, not yet confirmed on a live server; with firewalld check NAT in full mode yourself |
 
-Also not yet confirmed on a live server: restoring a backup, running several servers at once, and `vpn://` links and QR codes with every AmneziaVPN release (the plain `.conf` is the reference format). Automated tests cover the controller, the panel and the installer logic, not a real kernel or network.
+Every commit is also installed for real on a GitHub Actions Ubuntu 24.04 machine: unattended installation, kernel module, firewall rules, the panel, update in place, port change and purge.
+
+Not yet confirmed on a live server: restoring a backup, running several servers at once, the IPv6 block with every client app, and `vpn://` links and QR codes with every AmneziaVPN release (the plain `.conf` is the reference format).
 
 ## Development
 

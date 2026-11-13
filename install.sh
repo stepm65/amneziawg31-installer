@@ -6,6 +6,12 @@
 #   bash <(curl -Ls .../install.sh) dev-latest    rolling build from main
 #   bash <(curl -Ls .../install.sh) --upgrade     update panel + controller only
 #   bash <(curl -Ls .../install.sh) --doctor      read-only diagnostics
+#   bash <(curl -Ls .../install.sh) --uninstall [--purge]
+#
+# Unattended installation (no questions): set AWG31_UNATTENDED=1 and, when the
+# defaults do not fit, AWG31_SUBNET, AWG31_PORT, AWG31_MTU, AWG31_ENDPOINT,
+# AWG31_DNS, AWG31_MODE, AWG31_UPLINK, AWG31_PANEL_PORT, AWG31_FIRST_CLIENT,
+# AWG31_PASSWORD_FILE, AWG31_OPEN_FIREWALL=no.
 #
 # Run it as root. Release archives are verified against the SHA256 sum
 # published next to them; a mismatch aborts before anything is unpacked.
@@ -24,16 +30,25 @@ AmneziaWG 3.1 Console installer
   bash <(curl -Ls $RAW) dev-latest   install the rolling build from main
   ... --upgrade [VERSION]            update panel and controller, VPN untouched
   ... --doctor                       read-only diagnostics
+  ... --uninstall [--purge]          remove the console (and, with --purge, all VPN data)
+  ... --allow-downgrade              let --upgrade install an older version
+  AWG31_UNATTENDED=1 ...             install without questions (see the README)
 EOF
 }
 
 MODE=install
 TARGET="${AWG31_VERSION:-}"
+UNATTENDED="${AWG31_UNATTENDED:-0}"
+ALLOW_DOWNGRADE=0
+PURGE=0
 for arg in "$@"; do
     case "$arg" in
         --install) MODE=install ;;
         --upgrade|--update) MODE=upgrade ;;
         --doctor) MODE=doctor ;;
+        --uninstall) MODE=uninstall ;;
+        --purge) PURGE=1 ;;
+        --allow-downgrade) ALLOW_DOWNGRADE=1 ;;
         -h|--help) usage; exit 0 ;;
         dev-latest) TARGET=dev-latest ;;
         v[0-9]*) TARGET="$arg" ;;
@@ -64,7 +79,15 @@ case "${ID:-}:${VERSION_ID:-}" in
     ubuntu:24.04|ubuntu:26.04|rocky:9|rocky:9.*|rocky:10|rocky:10.*) ;;
     *) die 'Supported: Ubuntu 24.04/26.04, Rocky Linux 9/10' ;;
 esac
-[[ "$MODE" == doctor || -t 0 || -r /dev/tty ]] || die 'An interactive terminal is required'
+# The wizard asks questions on the terminal; everything else runs without one.
+if [[ "$UNATTENDED" == 1 ]]; then
+    TTY=/dev/null
+else
+    TTY=/dev/tty
+    if [[ "$MODE" == install ]] && ! { : <"$TTY"; } 2>/dev/null; then
+        die 'No terminal to ask questions on. Run from an interactive shell, or set AWG31_UNATTENDED=1.'
+    fi
+fi
 
 # `bash <(curl ...)` and `curl ... | bash` have no project directory: BASH_SOURCE
 # is /dev/fd/N or empty. Never treat the caller's working directory as ours.
@@ -73,7 +96,7 @@ if [[ -n "${BASH_SOURCE[0]:-}" && -f "${BASH_SOURCE[0]}" ]]; then
     SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 fi
 valid_project(){
-    [[ -f "$1/scripts/setup-wizard.sh" && -f "$1/src/awg31ctl" && -f "$1/src/web.py" &&
+    [[ -f "$1/scripts/setup-wizard.sh" && -f "$1/src/awg31ctl" && -f "$1/src/web.py" && -f "$1/scripts/uninstall.sh" &&
        -f "$1/scripts/prepare-awg31.sh" && -f "$1/scripts/upgrade-core.sh" && -f "$1/VERSION" ]]
 }
 
@@ -147,6 +170,10 @@ install_menu(){
     if [[ -f "$PROJECT/scripts/awg31-menu" ]]; then
         install -o root -g root -m 755 "$PROJECT/scripts/awg31-menu" /usr/local/bin/awg31
     fi
+    # `awg31 update` runs this verified copy instead of fetching a script from main.
+    install -d -o root -g root -m 755 /usr/local/libexec/awg31/scripts
+    install -o root -g root -m 755 "$PROJECT/install.sh" /usr/local/libexec/awg31/install.sh
+    install -o root -g root -m 755 "$PROJECT/scripts/uninstall.sh" /usr/local/libexec/awg31/scripts/uninstall.sh
 }
 
 if [[ "$MODE" == doctor ]]; then
@@ -154,8 +181,31 @@ if [[ "$MODE" == doctor ]]; then
     exit 0
 fi
 
+if [[ "$MODE" == uninstall ]]; then
+    args=()
+    if ((PURGE)); then args+=(--purge); fi
+    if [[ "$UNATTENDED" == 1 ]]; then args+=(--yes); fi
+    if [[ "$UNATTENDED" == 1 ]]; then
+        bash "$PROJECT/scripts/uninstall.sh" "${args[@]}"
+    else
+        bash "$PROJECT/scripts/uninstall.sh" "${args[@]}" <"$TTY"
+    fi
+    exit $?
+fi
+
+# Three states, judged by what a finished installation always leaves behind:
+#   complete     the service unit, the credentials and the code are all present
+#   interrupted  VPN data exists, but the panel was never finished
+#   fresh        neither; stray program files from a failed first attempt do not count
 panel_installed=0
-if [[ -f /opt/awg31-panel/web.py && -f /usr/local/sbin/awg31ctl ]]; then panel_installed=1; fi
+if [[ -f /etc/systemd/system/awg31-panel.service && -f /etc/awg31-panel/auth.json &&
+      -f /opt/awg31-panel/web.py && -f /usr/local/sbin/awg31ctl ]]; then
+    panel_installed=1
+fi
+vpn_data=0
+if [[ -f /var/lib/awg31-panel/state.sqlite3 || -e /etc/amnezia/amneziawg/awg0.conf || -d /var/lib/awg31-panel/servers ]]; then
+    vpn_data=1
+fi
 
 if [[ "$MODE" == install && $panel_installed -eq 1 ]]; then
     say 'AmneziaWG 3.1 Console is already installed here: switching to update mode'
@@ -163,21 +213,39 @@ if [[ "$MODE" == install && $panel_installed -eq 1 ]]; then
 fi
 
 if [[ "$MODE" == upgrade ]]; then
-    [[ $panel_installed -eq 1 ]] || die 'Nothing to update: the console is not installed. Run the installer without --upgrade.'
-    say 'Updating panel and controller; VPN interfaces, keys and clients are not touched'
+    [[ $panel_installed -eq 1 ]] || die 'Nothing to update: the console is not (fully) installed. Run the installer without --upgrade.'
+    current="$(tr -d '[:space:]' < /opt/awg31-panel/VERSION 2>/dev/null || :)"
+    wanted="$(tr -d '[:space:]' < "$PROJECT/VERSION")"
+    if [[ -n "$current" && "$current" != "$wanted" && $ALLOW_DOWNGRADE -eq 0 ]] &&
+       [[ "$(printf '%s\n%s\n' "$current" "$wanted" | sort -V | head -n1)" == "$wanted" ]]; then
+        die "Installed version $current is newer than $wanted. Older code may not understand the current databases. Add --allow-downgrade to do it anyway."
+    fi
+    say "Updating panel and controller${current:+ from $current} to $wanted; VPN interfaces, keys and clients are not touched"
     bash "$PROJECT/scripts/upgrade-core.sh"
     install_menu
-    say "Update finished: $(cat "$PROJECT/VERSION"). Menu: sudo awg31"
+    say "Update finished: $wanted. Menu: sudo awg31"
     exit 0
 fi
 
-# A VPN without a panel means an earlier run stopped half-way. Do not overwrite it.
-if [[ -f /var/lib/awg31-panel/state.sqlite3 || -e /etc/amnezia/amneziawg/awg0.conf || -d /var/lib/awg31-panel/servers ]]; then
-    die 'Found an AmneziaWG server without a working panel (an interrupted installation). Nothing was overwritten. See "Interrupted installation" in the README.'
+if [[ $vpn_data -eq 1 ]]; then
+    cat >&2 <<EOF
+[AWG31 ERROR] VPN data exists here, but the panel is not installed (an interrupted
+installation, or an uninstall that kept the data). Nothing was overwritten.
+  Start over, deleting that data:   run this installer with  --uninstall --purge
+  Finish an interrupted setup:      see "Interrupted installation" in the README
+EOF
+    exit 1
+fi
+if [[ -e /opt/awg31-panel || -e /usr/local/sbin/awg31ctl ]]; then
+    say 'Found program files from an unfinished earlier attempt (no VPN data): installing over them'
 fi
 say 'Preparing the AmneziaWG 3.1 kernel module and tools (no PPA, no Docker)'
-bash "$PROJECT/scripts/prepare-awg31.sh" </dev/tty ||
+bash "$PROJECT/scripts/prepare-awg31.sh" <"$TTY" ||
     die 'Prerequisites are not ready. If Secure Boot asked for MOK enrolment, enrol the key and run the same command again.'
-say 'Starting the interactive VPN and web panel setup'
-bash "$PROJECT/scripts/setup-wizard.sh" </dev/tty
+if [[ "$UNATTENDED" == 1 ]]; then
+    say 'Starting the unattended VPN and web panel setup'
+else
+    say 'Starting the interactive VPN and web panel setup'
+fi
+AWG31_UNATTENDED="$UNATTENDED" bash "$PROJECT/scripts/setup-wizard.sh" <"$TTY"
 install_menu

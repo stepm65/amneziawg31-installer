@@ -37,12 +37,28 @@ proxy_validate_certificate() {
     key_public="$(openssl pkey -in "$key" -passin pass: -pubout -outform DER 2>/dev/null | sha256sum | cut -d' ' -f1)"
     [[ "$cert_public" == "$key_public" ]] || proxy_die 'Certificate and private key do not match'
 }
+# Comma- or space-separated IPv4 addresses/CIDRs allowed to open the panel.
+proxy_validate_allow() {
+    python3 - "$1" <<'PY'
+import ipaddress,re,sys
+for item in filter(None, re.split(r'[,\s]+', sys.argv[1])):
+    try:
+        if ipaddress.ip_network(item, strict=False).version != 4: raise ValueError
+    except ValueError:
+        sys.exit(f'Invalid IPv4 address or CIDR in the allow list: {item[:40]}')
+PY
+}
 proxy_render_config() {
-    local domain="$1" https_port="$2" panel_port="$3" cert="$4" key="$5"
+    local domain="$1" https_port="$2" panel_port="$3" cert="$4" key="$5" allow="${6:-}" access='' item
+    for item in ${allow//,/ }; do access+="    allow ${item};"$'\n'; done
+    # The installer's own health check connects from this host.
+    if [[ -n "$access" ]]; then access="    allow 127.0.0.1;"$'\n'"${access}    deny all;"$'\n'; fi
     # Inputs must be validated before calling this function when writing config.
     cat <<EOF
 # AWG31 managed virtual host. Do not store certificates or keys in this file.
 # TLS listener is IPv4-only; the panel backend stays on 127.0.0.1.
+# Sign-in attempts are limited per address before they reach the panel.
+limit_req_zone \$binary_remote_addr zone=awg31_login:10m rate=10r/m;
 server {
     listen ${https_port} ssl;
     server_name ${domain};
@@ -57,6 +73,18 @@ server {
     add_header X-Content-Type-Options nosniff always;
     add_header X-Frame-Options DENY always;
     add_header Referrer-Policy no-referrer always;
+    add_header Strict-Transport-Security "max-age=31536000" always;
+${access}
+    location = /login {
+        limit_req zone=awg31_login burst=5 nodelay;
+        limit_req_status 429;
+        proxy_pass http://127.0.0.1:${panel_port};
+        proxy_http_version 1.1;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto https;
+    }
 
     location / {
         proxy_pass http://127.0.0.1:${panel_port};
@@ -116,6 +144,8 @@ proxy_interactive() {
         proxy_ask AWG31_PROXY_HOST 'Domain or IPv4 for Nginx HTTPS (without https://)' 'vpn.example.net'
         proxy_ask AWG31_PROXY_HTTPS_PORT 'Public HTTPS TCP port' '443'
         proxy_ask AWG31_PANEL_PORT 'Local panel TCP port' '8080'
+        proxy_ask AWG31_PROXY_ALLOW 'IPv4 addresses/CIDRs allowed to open the panel, comma-separated (all = everyone)' 'all'
+        [[ "$AWG31_PROXY_ALLOW" != all ]] || AWG31_PROXY_ALLOW=''
         if [[ "$AWG31_PROXY_MODE" == existing ]]; then
             proxy_ask AWG31_PROXY_CERT 'Absolute path to certificate/fullchain PEM' '/etc/letsencrypt/live/vpn.example.net/fullchain.pem'
             proxy_ask AWG31_PROXY_KEY 'Absolute path to unencrypted private key PEM' '/etc/letsencrypt/live/vpn.example.net/privkey.pem'
@@ -144,6 +174,7 @@ proxy_main() {
     proxy_validate_port "$https_port"
     proxy_validate_port "$panel_port"
     [[ "$https_port" != "$panel_port" ]] || proxy_die 'HTTPS port must differ from panel localhost port'
+    proxy_validate_allow "${AWG31_PROXY_ALLOW:-}"
     # Use standard TLS certificate directories to retain SELinux labels on Rocky.
     if [[ "$AWG31_OS_FAMILY" == rpm ]]; then
         cert_dir=/etc/pki/tls
@@ -243,7 +274,7 @@ proxy_main() {
         proxy_self_signed_cert "$host" "$cert_dir" "$cert" "$key"
     fi
     # Keep config private during installation; nginx master is root.
-    proxy_render_config "$host" "$https_port" "$panel_port" "$cert" "$key" >"$conf"
+    proxy_render_config "$host" "$https_port" "$panel_port" "$cert" "$key" "${AWG31_PROXY_ALLOW:-}" >"$conf"
     chmod 644 "$conf"
     site_created=1
     nginx -t
