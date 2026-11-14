@@ -91,6 +91,10 @@ TEXT = {
         'my': '<b>Ваш VPN</b>', 'my_client': ('<b>{name}</b>\nСостояние: {state}\nИспользовано: {used}{quota}\n'
                                               'Последнее соединение: {seen}\nДействует до: {expiry}'),
         'my_hint': 'По вопросам доступа обратитесь к администратору.',
+        'b_tg_export_on': '🔓 Разрешить владельцу конфиг', 'b_tg_export_off': '🔒 Запретить владельцу конфиг',
+        'owner_export': ' · может получить конфиг', 'my_conf_caption': 'Конфигурация {name}. В файле приватный ключ: никому его не пересылайте.',
+        'my_qr_caption': 'QR-код {name} для приложения AmneziaWG. Никому его не показывайте.',
+        'n_owner_export': '📤 Владелец получил конфигурацию клиента <b>{target}</b> через бота.',
         'n_user_expiring': '⏳ Срок вашего VPN-доступа <b>{name}</b> истекает {when}. Обратитесь к администратору.',
         'test': '✅ Бот AmneziaWG 3.1 Console подключён. Отправьте /menu.',
         'n_backup': '💾 Создана резервная копия <code>{target}</code>.', 'n_backup_failed': '⚠️ Резервная копия по расписанию не создана: {target}',
@@ -148,6 +152,10 @@ TEXT = {
         'my': '<b>Your VPN</b>', 'my_client': ('<b>{name}</b>\nState: {state}\nUsed: {used}{quota}\n'
                                                'Last handshake: {seen}\nValid until: {expiry}'),
         'my_hint': 'For access questions contact the administrator.',
+        'b_tg_export_on': '🔓 Let the owner get the config', 'b_tg_export_off': '🔒 Stop config for the owner',
+        'owner_export': ' · may get the config', 'my_conf_caption': 'Configuration of {name}. The file contains a private key: do not forward it to anybody.',
+        'my_qr_caption': 'QR code of {name} for the AmneziaWG app. Do not show it to anybody.',
+        'n_owner_export': '📤 The owner fetched the configuration of client <b>{target}</b> through the bot.',
         'n_user_expiring': '⏳ Your VPN access <b>{name}</b> expires {when}. Contact the administrator.',
         'test': '✅ The AmneziaWG 3.1 Console bot is connected. Send /menu.',
         'n_backup': '💾 Backup <code>{target}</code> was created.', 'n_backup_failed': '⚠️ The scheduled backup was not created: {target}',
@@ -396,14 +404,18 @@ class Bot:
                       quota=self.plain('of_quota', quota=human_size(limit)) if limit else '', seen=seen,
                       expiry=(c.get('expires_at') or '')[:10] or self.plain('no_expiry'),
                       comment=self.plain('comment', text=c['comment']) if c.get('comment') else '',
-                      owner=self.plain('owner', id=c['telegram_id']) if c.get('telegram_id') else '',
+                      owner=(self.plain('owner', id=c['telegram_id']) + (self.plain('owner_export') if c.get('owner_export') else ''))
+                      if c.get('telegram_id') else '',
                       stale=self.plain('stale') if c.get('config_stale') else '')
         toggle = (self.t('b_off'), f'ca:{iface}:{name}:off') if enabled else (self.t('b_on'), f'ca:{iface}:{name}:on')
         rows = [[(self.t('b_conf'), f'ca:{iface}:{name}:conf'), (self.t('b_qr'), f'ca:{iface}:{name}:qr')],
                 [toggle, (self.t('b_exp'), f'ca:{iface}:{name}:exp'), (self.t('b_quota'), f'ca:{iface}:{name}:quota')],
                 [(self.t('b_tg'), f'ca:{iface}:{name}:tg'), (self.t('b_del'), f'ca:{iface}:{name}:del'),
-                 (self.t('b_refresh'), f'c:{iface}:{name}')],
-                [(self.t('b_back'), f'cl:{iface}:0')]]
+                 (self.t('b_refresh'), f'c:{iface}:{name}')]]
+        if c.get('telegram_id'):
+            rows.append([(self.t('b_tg_export_off'), f'ca:{iface}:{name}:xoff')] if c.get('owner_export')
+                        else [(self.t('b_tg_export_on'), f'ca:{iface}:{name}:xon')])
+        rows.append([(self.t('b_back'), f'cl:{iface}:0')])
         return text, rows
 
     def screen_status(self):
@@ -440,8 +452,9 @@ class Bot:
         return text, [[(self.t('b_make_backup'), 'bky')], [(self.t('b_menu'), 'm')]]
 
     # ------------------------------------------------------------ actions
-    def send_config(self, chat, iface, name, as_qr):
+    def send_config(self, chat, iface, name, as_qr, owner=False):
         export = self.ctl('download', {'interface': iface, 'name': name, 'mark': True})
+        captions = ('my_qr_caption', 'my_conf_caption') if owner else ('qr_caption', 'conf_caption')
         config = export['config']
         if as_qr:
             import qrcode
@@ -453,10 +466,10 @@ class Bot:
             buffer = io.BytesIO()
             image.save(buffer, format='PNG')
             self.api.send_file('sendPhoto', 'photo', chat, f'{name}-qr.png', buffer.getvalue(),
-                               TEXT[self.config['lang']]['qr_caption'].format(name=name, iface=iface))
+                               TEXT[self.config['lang']][captions[0]].format(name=name, iface=iface))
         else:
             self.api.send_file('sendDocument', 'document', chat, f'{name}.conf', config.encode(),
-                               TEXT[self.config['lang']]['conf_caption'].format(name=name, iface=iface))
+                               TEXT[self.config['lang']][captions[1]].format(name=name, iface=iface))
 
     def add_client(self, chat, admin, iface, name):
         if not NAME_RE.fullmatch(name):
@@ -491,7 +504,7 @@ class Bot:
             self.owners_map, self.owners_at = found, now
         return self.owners_map
 
-    def serve_owner(self, user, chat, message_id=None, callback_id=None):
+    def serve_owner(self, user, chat, message_id=None, callback_id=None, data=''):
         """Answer a non-administrator; returns silently unless they own a client."""
         if not user or (chat or {}).get('type') != 'private':
             return
@@ -511,8 +524,21 @@ class Bot:
             mine = self.owners().get(user_id, [])
             if not mine:
                 return
+            wanted = data.split(':')
+            if len(wanted) == 3 and wanted[0] in ('mc', 'mq'):
+                # The request is checked against the fresh list: the client must be this
+                # person's, enabled, and the administrator must have allowed the export.
+                for iface, c in mine:
+                    if (iface, c['name']) == (wanted[1], wanted[2]) and c.get('owner_export') and c.get('enabled'):
+                        self.send_config(chat['id'], iface, c['name'], as_qr=wanted[0] == 'mq', owner=True)
+                        try:
+                            self.ctl('audit', {'event': 'client_config_sent', 'target': f'{iface}/{c["name"]} (owner {user_id})'})
+                        except BotError:
+                            pass
+                        return
             parts = [self.t('my')]
-            for _, c in mine:
+            rows = []
+            for iface, c in mine:
                 enabled = bool(c.get('enabled'))
                 state = self.plain('enabled' if enabled else 'disabled')
                 if not enabled and c.get('disabled_reason') in ('expired', 'quota'):
@@ -523,8 +549,11 @@ class Bot:
                                     quota=self.plain('of_quota', quota=human_size(limit)) if limit else '',
                                     seen=datetime.fromtimestamp(handshake, timezone.utc).strftime('%Y-%m-%d %H:%M UTC') if handshake else self.plain('never'),
                                     expiry=(c.get('expires_at') or '')[:10] or self.plain('no_expiry')))
+                if c.get('owner_export') and enabled:
+                    rows.append([(f"{self.t('b_conf')} {c['name']}", f"mc:{iface}:{c['name']}"),
+                                 (f"{self.t('b_qr')} {c['name']}", f"mq:{iface}:{c['name']}")])
             parts.append(self.t('my_hint'))
-            self.show(chat['id'], '\n\n'.join(parts), [[(self.t('b_refresh'), 'me')]], message_id)
+            self.show(chat['id'], '\n\n'.join(parts), rows + [[(self.t('b_refresh'), 'me')]], message_id)
         except BotError as exc:
             log(f'owner request failed: {exc}')
 
@@ -533,7 +562,8 @@ class Bot:
             query = update['callback_query']
             message = query.get('message') or {}
             if not self.authorized(query.get('from'), message.get('chat')):
-                self.serve_owner(query.get('from'), message.get('chat'), message.get('message_id'), query.get('id'))
+                self.serve_owner(query.get('from'), message.get('chat'), message.get('message_id'), query.get('id'),
+                                 str(query.get('data', '')))
                 return
             try:
                 self.api.call('answerCallbackQuery', callback_query_id=query['id'])
@@ -704,6 +734,10 @@ class Bot:
             self.show(chat, self.t('ask_exp', name=name),
                       [[(self.t('b_days', n=n), f'ce:{iface}:{name}:{n}') for n in (7, 30, 90)],
                        [(self.t('b_noexp'), f'ce:{iface}:{name}:0'), (self.t('b_no'), f'c:{iface}:{name}')]], message_id)
+        elif action in ('xon', 'xoff'):
+            self.set_policy(admin, iface, name, owner_export=action == 'xon')
+            self.owners_at = None
+            self.show(chat, *self.screen_client(iface, name), message_id=message_id)
         elif action == 'tg':
             self.pending[admin] = ('tg', iface, name, self.clock() + PENDING_SECONDS)
             self.show(chat, self.t('ask_tg', name=name), [[(self.t('b_no'), f'c:{iface}:{name}')]], message_id)
@@ -758,6 +792,10 @@ class Bot:
             self.notify(self.t('n_login_failed', count=len(failed), target=failed[-1].get('target', '')))
         for entry in fresh:
             event, target = entry.get('event'), str(entry.get('target', ''))
+            if event == 'client_config_sent':
+                if notify['security']:
+                    self.notify(self.t('n_owner_export', target=target))
+                continue
             if '(telegram ' in target:
                 continue                    # the administrator did this through the bot and already saw the result
             if event == 'login_success' and notify['security']:

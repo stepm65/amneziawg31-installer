@@ -62,7 +62,7 @@ class FakeController:
     @staticmethod
     def new_client(ip):
         return {'ip': ip, 'enabled': True, 'expires_at': '', 'traffic_limit_bytes': 0, 'used_bytes': 0,
-                'disabled_reason': '', 'comment': '', 'config_stale': False, 'telegram_id': '',
+                'disabled_reason': '', 'comment': '', 'config_stale': False, 'telegram_id': '', 'owner_export': False,
                 'stats': {'handshake': 0, 'received': 0, 'sent': 0}}
 
     def __call__(self, command, data=None):
@@ -538,3 +538,54 @@ def test_owner_is_warned_about_expiry_even_when_admin_notifications_are_off(env)
     bot.tick()
     sent = [p for m, p in api.calls if m == 'sendMessage']
     assert len(sent) == 1 and sent[0]['chat_id'] == OWNER and 'alice' in sent[0]['text'] and 'awg0' not in sent[0]['text']
+
+
+def test_owner_gets_config_and_qr_only_with_the_switch_on(env):
+    bot, api, controller, now = env
+    alice = controller.clients['awg0']['alice']
+    alice['telegram_id'] = str(OWNER)
+    controller.clients['awg0']['other'] = {**controller.new_client('10.8.0.8'), 'owner_export': True, 'telegram_id': '424242'}
+    bot.tick()
+    bot.handle_update(message('/start', user=OWNER))
+    assert api.buttons() == ['me'], 'no download buttons while the switch is off'
+    now[0] += 10
+    bot.handle_update(press('mc:awg0:alice', user=OWNER))
+    now[0] += 10
+    bot.handle_update(press('mq:awg0:other', user=OWNER))      # somebody else's client, export allowed there
+    assert api.files == [] and 'download' not in controller.commands()
+
+    bot.handle_update(press('ca:awg0:alice:xon'))              # the administrator turns the switch on
+    assert alice['owner_export'] is True and 'may get the config' in api.texts()[-1]
+    now[0] += 10
+    bot.handle_update(message('/start', user=OWNER))
+    assert api.buttons() == ['mc:awg0:alice', 'mq:awg0:alice', 'me']
+    now[0] += 10
+    bot.handle_update(press('mc:awg0:alice', user=OWNER))
+    now[0] += 10
+    bot.handle_update(press('mq:awg0:alice', user=OWNER))
+    assert [(m, chat, name) for m, chat, name, _, _ in api.files] == [('sendDocument', OWNER, 'alice.conf'),
+                                                                      ('sendPhoto', OWNER, 'alice-qr.png')]
+    assert 'awg0' not in api.files[0][4]
+    assert controller.audit[-1]['event'] == 'client_config_sent' and controller.audit[-1]['target'] == f'awg0/alice (owner {OWNER})'
+    start = len(api.calls)
+    bot.tick()
+    told = [p for m, p in api.calls[start:] if m == 'sendMessage']
+    assert len(told) == 2 and all(p['chat_id'] == ADMIN and 'awg0/alice' in p['text'] for p in told)
+
+    for change in ({'enabled': False}, {'enabled': True, 'owner_export': False}, {'owner_export': True, 'telegram_id': '424242'}):
+        alice.update(change)
+        now[0] += 10
+        bot.handle_update(press('mc:awg0:alice', user=OWNER))
+    assert len(api.files) == 2, 'disabled client, switch off or another owner: nothing is sent'
+
+
+def test_export_permission_does_not_pass_to_another_owner():
+    ctl = SourceFileLoader('awg31ctl_owner', str(ROOT / 'src/awg31ctl')).load_module()
+    old = {'comment': '', 'expires_at': '', 'traffic_limit_bytes': 0, 'telegram_id': '111222333', 'owner_export': 1}
+    assert ctl.validate_policy({'comment': 'x'}, old)['owner_export'] == 1
+    assert ctl.validate_policy({'telegram_id': '444555666'}, old)['owner_export'] == 0
+    assert ctl.validate_policy({'telegram_id': '444555666', 'owner_export': True}, old)['owner_export'] == 1
+    assert ctl.validate_policy({'telegram_id': ''}, old)['owner_export'] == 0
+    assert ctl.validate_policy({'owner_export': True}, {})['owner_export'] == 0, 'no owner, nothing to allow'
+    assert ctl.validate_policy({'owner_export': '1', 'telegram_id': '111222333'})['owner_export'] == 1
+    assert ctl.validate_policy({'owner_export': False}, old)['owner_export'] == 0

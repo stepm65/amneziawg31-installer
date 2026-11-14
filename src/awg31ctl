@@ -143,7 +143,8 @@ def get_conn(create=False):
                        'disabled_reason': "TEXT NOT NULL DEFAULT ''",
                        'last_handshake': 'INTEGER NOT NULL DEFAULT 0',
                        'exported_hash': "TEXT NOT NULL DEFAULT ''",
-                       'telegram_id': "TEXT NOT NULL DEFAULT ''"}
+                       'telegram_id': "TEXT NOT NULL DEFAULT ''",
+                       'owner_export': 'INTEGER NOT NULL DEFAULT 0'}
         for name, definition in new_columns.items():
             if name not in columns:
                 con.execute(f'ALTER TABLE clients ADD COLUMN {name} {definition}')
@@ -714,7 +715,16 @@ def validate_policy(data, old=None):
     if telegram == '0': telegram = ''
     if telegram and not re.fullmatch(r'[1-9][0-9]{2,14}', telegram):
         raise ValueError('Telegram ID: только цифры (числовой ID пользователя, не @имя)')
-    return {'comment':comment,'expires_at':expiry,'traffic_limit_bytes':limit,'telegram_id':telegram}
+    # May the owner fetch the configuration (a private key) from the bot? Off by
+    # default, and switched off again whenever the owner changes, unless the same
+    # request turns it on: a permission never passes to another person silently.
+    if 'owner_export' in data:
+        export = data['owner_export'] in (True, 1, '1', 'true', 'on')
+    else:
+        export = bool(old.get('owner_export')) and telegram == str(old.get('telegram_id') or '')
+    if not telegram: export = False
+    return {'comment':comment,'expires_at':expiry,'traffic_limit_bytes':limit,'telegram_id':telegram,
+            'owner_export':int(export)}
 
 
 def sample_usage(con, now=None):
@@ -776,8 +786,9 @@ def client_policy_update(con):
     row = con.execute('SELECT * FROM clients WHERE name=?',(name,)).fetchone()
     if not row: raise ValueError('Клиент не найден')
     policy = validate_policy(data,dict(row))
-    con.execute('UPDATE clients SET comment=?,expires_at=?,traffic_limit_bytes=?,telegram_id=? WHERE name=?',
-                (policy['comment'],policy['expires_at'],policy['traffic_limit_bytes'],policy['telegram_id'],name))
+    con.execute('UPDATE clients SET comment=?,expires_at=?,traffic_limit_bytes=?,telegram_id=?,owner_export=? WHERE name=?',
+                (policy['comment'],policy['expires_at'],policy['traffic_limit_bytes'],policy['telegram_id'],
+                 policy['owner_export'],name))
     con.commit()
     return {'ok':True,'name':name,**policy}
 
@@ -797,11 +808,11 @@ def clients_add(con):
     policy = validate_policy(data)
     con.execute('''INSERT INTO clients
         (name, ip, private_key, public_key, psk, enabled, created_at,
-         routed_subnets, i_enabled, i1, i2, i3, i4, i5, comment, expires_at, traffic_limit_bytes, telegram_id)
-         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
+         routed_subnets, i_enabled, i1, i2, i3, i4, i5, comment, expires_at, traffic_limit_bytes, telegram_id, owner_export)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
         (name,address,private,public,psk,1,datetime.now(timezone.utc).isoformat(),
          routes,cps['i_enabled'], *(cps[k] for k in I_KEYS),
-         policy['comment'],policy['expires_at'],policy['traffic_limit_bytes'],policy['telegram_id']))
+         policy['comment'],policy['expires_at'],policy['traffic_limit_bytes'],policy['telegram_id'],policy['owner_export']))
     apply(cfg, con)
     con.commit()
     return {'name':name,'ip':address,'config':client_config(cfg,{
@@ -835,6 +846,7 @@ def clients_action(con, which):
                 'comment':row['comment'], 'expires_at':row['expires_at'],
                 'traffic_limit_bytes':row['traffic_limit_bytes'], 'used_bytes':row['used_bytes'],
                 'disabled_reason':row['disabled_reason'], 'telegram_id':row['telegram_id'],
+                'owner_export':bool(row['owner_export']),
                 **{key:row[key] for key in I_KEYS}}
     if which == 'enable':
         if row['expires_at'] and datetime.fromisoformat(row['expires_at']) <= datetime.now(timezone.utc):
@@ -969,7 +981,7 @@ def get_status(con, with_clients=False):
         stats = live_stats()
         peers = peer_rows(con)
         result['clients'] = [
-            {k:p[k] for k in ('name','ip','public_key','enabled','created_at','routed_subnets','i_enabled','comment','expires_at','traffic_limit_bytes','used_bytes','disabled_reason','last_handshake','telegram_id')}
+            {k:p[k] for k in ('name','ip','public_key','enabled','created_at','routed_subnets','i_enabled','comment','expires_at','traffic_limit_bytes','used_bytes','disabled_reason','last_handshake','telegram_id','owner_export')}
             | {'stats': (stats.get(p['public_key']) or {'handshake':p['last_handshake'],'received':p['last_rx'],'sent':p['last_tx']}),
                # True when the configuration handed out earlier no longer matches the server.
                'config_stale': bool(p.get('exported_hash')) and p['exported_hash'] != config_fingerprint(client_config(cfg,p,peers))}

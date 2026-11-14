@@ -82,7 +82,7 @@ def test_db_migration_keeps_legacy_peers(tmp_path,monkeypatch):
     assert row['routed_subnets']==''
     assert row['i_enabled']==0
     assert row['i1']==''
-    assert len(row.keys())==24
+    assert len(row.keys())==25
     con.close()
 
 

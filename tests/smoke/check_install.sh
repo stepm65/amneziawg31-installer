@@ -129,6 +129,18 @@ tg_wait 30 'Your VPN' || fail 'client owner got no status'
 tg_push "$(tg_text '/add by-owner' 777000111)"
 sleep 5
 if "$MGR" list <<<'{"interface":"awg0"}' | grep -q by-owner; then fail 'a client owner created a client'; fi
+# The configuration goes to the owner only after the administrator allows it for this client.
+tg_press(){ printf '{"callback_query":{"id":"1","data":"%s","from":{"id":%s},"message":{"message_id":2,"chat":{"id":%s,"type":"private"}}}}' "$1" "$2" "$2"; }
+owner_files(){ tg_calls | grep -o 'name=\\"chat_id\\"[^-]*777000111' | wc -l; }
+tg_push "$(tg_press 'mc:awg0:tg-client' 777000111)"
+sleep 6
+[[ "$(owner_files)" == 0 ]] || fail 'the owner got a configuration without permission'
+echo '{"interface":"awg0","name":"tg-client","owner_export":true}' | "$MGR" client-policy >/dev/null
+tg_push "$(tg_press 'mc:awg0:tg-client' 777000111)"
+for attempt in $(seq 1 30); do [[ "$(owner_files)" -ge 1 ]] && break; sleep 1; done
+[[ "$(owner_files)" -ge 1 ]] || fail 'the owner did not get the configuration after it was allowed'
+grep -q 'client_config_sent.*awg0/tg-client (owner 777000111)' /var/log/awg31-panel/audit.jsonl || fail 'owner download is not in the audit log'
+echo '{"interface":"awg0","name":"tg-client","telegram_id":"777000222"}' | "$MGR" client-policy | grep -q '"owner_export": 0' || fail 'export permission passed to a new owner'
 if echo '{"interface":"awg0","name":"tg-client","telegram_id":"@name"}' | "$MGR" client-policy >/dev/null 2>&1; then fail 'a non-numeric Telegram ID was accepted'; fi
 curl --noproxy '*' -s -o /dev/null --max-time 10 -d 'password=wrong-password-456' http://127.0.0.1:18081/login || :
 tg_wait 100 'Failed sign-in attempts' || fail 'no notification about a failed sign-in'

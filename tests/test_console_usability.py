@@ -88,4 +88,4 @@ def test_client_expiry_edit_preserves_time_and_submits_single_value(ui):
                            follow_redirects=False)
     assert response.status_code == 303
     assert ('client-policy', {'name':'beta', 'expires_at':expiry, 'comment':'NAS',
-                             'traffic_limit_bytes':0, 'telegram_id':'', 'interface':'awg1'}) in calls
+                             'traffic_limit_bytes':0, 'telegram_id':'', 'owner_export':False, 'interface':'awg1'}) in calls
