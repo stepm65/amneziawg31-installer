@@ -258,9 +258,12 @@ More in [SECURITY.md](SECURITY.md).
 
 | Platform | Status |
 |---|---|
-| Ubuntu 26.04 | module build and load, `awg0` and the panel confirmed on a live server |
-| Ubuntu 24.04 | supported by the installer, not yet confirmed on a live server |
-| Rocky Linux 9 / 10 | supported by the installer, not yet confirmed on a live server; with firewalld check NAT in full mode yourself |
+| Ubuntu 26.04 | confirmed on a live server; full installation test on every change (kernel 7.0, sudo-rs, Python 3.14, Nginx) |
+| Ubuntu 24.04 | full installation test on every change, Nginx included |
+| Rocky Linux 9 | installation test on every change with SELinux enforcing, without the Nginx part; with firewalld check NAT in full mode yourself |
+| Rocky Linux 10 | supported by the installer, not tested |
+
+The installation tests run in GitHub Actions on real (virtual) machines: kernel module build, the VPN, firewall rules, the panel, the control helper, the Telegram bot against a stand-in Telegram, backups with restore, two-factor sign-in, a second server, update in place and uninstall.
 
 Every commit is also installed for real on a GitHub Actions Ubuntu 24.04 machine: unattended installation, kernel module, firewall rules, the panel, update in place, port change and purge.
 
