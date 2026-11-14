@@ -82,11 +82,56 @@ step 'Backup and verification'
 name="$("$MGR" backup-create | python3 -c 'import json,sys; print(json.load(sys.stdin)["name"])')"
 awg31 restore-check "$name"
 
+step 'Telegram bot: narrow sudo rule, commands, notifications'
+TG=http://127.0.0.1:18443
+python3 "$ROOT/tests/smoke/fake_telegram.py" 18443 &
+TG_PID=$!
+trap 'kill "$TG_PID" 2>/dev/null || :' EXIT
+sleep 1
+tg_calls(){ curl --noproxy '*' -fsS --max-time 10 "$TG/_calls"; }
+tg_push(){ curl --noproxy '*' -fsS --max-time 10 -X POST --data "$1" "$TG/_push" >/dev/null; }
+tg_wait(){ # tg_wait SECONDS PATTERN
+    local i
+    for ((i = 0; i < $1; i++)); do tg_calls | grep -q -- "$2" && return 0; sleep 1; done
+    tg_calls | tail -c 1500; return 1
+}
+tg_text(){ printf '{"message":{"message_id":1,"text":"%s","from":{"id":%s},"chat":{"id":%s,"type":"private"}}}' "$1" "$2" "$2"; }
+AWG31_TELEGRAM_API="$TG" AWG31_TELEGRAM_TOKEN="123456789:$(printf 'A%.0s' {1..35})" AWG31_TELEGRAM_ADMINS=4242 \
+    AWG31_TELEGRAM_LANG=en awg31 telegram
+systemctl is-active --quiet awg31-bot.service || fail 'bot service is not active'
+[[ "$(stat -c '%U:%G %a' /etc/awg31-bot/telegram.json)" == 'root:awgbot 640' ]] || fail 'bot configuration has wrong owner or mode'
+if runuser -u awgpanel -- cat /etc/awg31-bot/telegram.json >/dev/null 2>&1; then fail 'the panel user can read the bot token'; fi
+if runuser -u awgbot -- cat /etc/awg31-panel/auth.json >/dev/null 2>&1; then fail 'the bot user can read the panel secrets'; fi
+runuser -u awgbot -- sudo -n "$MGR" servers </dev/null >/dev/null || fail 'bot cannot run a permitted command'
+for forbidden in server-delete backup-restore backup-export password-change settings session-revoke; do
+    if echo '{"interface":"awg0","confirm":"awg0"}' | runuser -u awgbot -- sudo -n "$MGR" "$forbidden" >/dev/null 2>&1; then
+        fail "bot user may run $forbidden"
+    fi
+done
+[[ -f "$CONF" ]] || fail 'a forbidden command went through'
+tg_wait 20 'bot is connected' || fail 'no test message after setup'
+tg_push "$(tg_text '/add tg-client' 4242)"
+tg_wait 40 'filename=\\"tg-client.conf\\"' || fail 'bot did not send the configuration file'
+tg_wait 20 'filename=\\"tg-client-qr.png\\"' || fail 'bot did not send the QR code'
+"$MGR" list <<<'{"interface":"awg0"}' | grep -q '"tg-client"' || fail 'client created by the bot is missing'
+grep -q 'client_added.*awg0/tg-client (telegram 4242)' /var/log/awg31-panel/audit.jsonl || fail 'bot action is not in the audit log'
+tg_push "$(tg_text '/add intruder' 666)"
+tg_push "$(tg_text '/status' 4242)"
+tg_wait 30 'Kernel module' || fail 'bot did not answer /status'
+if "$MGR" list <<<'{"interface":"awg0"}' | grep -q intruder; then fail 'a stranger created a client'; fi
+if tg_calls | grep -q '"chat_id": 666'; then fail 'the bot answered a stranger'; fi
+curl --noproxy '*' -s -o /dev/null --max-time 10 -d 'password=wrong-password-456' http://127.0.0.1:18081/login || :
+tg_wait 100 'Failed sign-in attempts' || fail 'no notification about a failed sign-in'
+awg31 telegram status
+
 step 'Running the installer again updates in place'
 keys_before="$(sha256sum "$CONF" | cut -d' ' -f1)"
 bash "$ROOT/install.sh"
 panel 18081 || fail 'panel is down after the update'
 [[ "$(sha256sum "$CONF" | cut -d' ' -f1)" == "$keys_before" ]] || fail 'the update changed the VPN configuration'
+systemctl is-active --quiet awg31-bot.service || fail 'bot is down after the update'
+tg_push "$(tg_text '/servers' 4242)"
+tg_wait 40 '"text": "<b>Servers</b>"' || fail 'bot does not answer after the update'
 
 step 'Uninstall with purge'
 bash /usr/local/libexec/awg31/scripts/uninstall.sh --purge --yes
@@ -95,7 +140,10 @@ if systemctl is-active --quiet awg31-panel.service; then fail 'panel service is 
 if ss -H -ltn 'sport = :18081' | grep -q .; then fail 'something still listens on the panel port'; fi
 if systemctl list-timers --all --no-legend | grep -q awg31; then fail 'timers left behind'; fi
 if forward | grep -q awg0; then forward; fail 'firewall rules left behind'; fi
-for path in /opt/awg31-panel /etc/awg31-panel /var/lib/awg31-panel /usr/local/bin/awg31 /etc/sudoers.d/awg31-panel "$CONF"; do
+if systemctl is-active --quiet awg31-bot.service; then fail 'bot service is still running'; fi
+if id awgbot >/dev/null 2>&1; then fail 'bot user left behind'; fi
+for path in /opt/awg31-panel /etc/awg31-panel /var/lib/awg31-panel /usr/local/bin/awg31 /etc/sudoers.d/awg31-panel "$CONF" \
+            /etc/awg31-bot /var/lib/awg31-bot /etc/sudoers.d/awg31-bot /etc/systemd/system/awg31-bot.service; do
     [[ ! -e "$path" ]] || fail "left behind: $path"
 done
 
@@ -104,9 +152,22 @@ install -d /opt/awg31-panel
 cp "$ROOT/src/web.py" /opt/awg31-panel/web.py
 cp "$ROOT/src/awg31ctl" /usr/local/sbin/awg31ctl
 AWG31_PANEL_PORT=18082 AWG31_NGINX_CHOICE=1 AWG31_NGINX_HOST=203.0.113.10 AWG31_NGINX_HTTPS_PORT=8443 \
-  AWG31_NGINX_ALLOW='198.51.100.7, 192.0.2.0/24' bash "$ROOT/install.sh"
+  AWG31_NGINX_ALLOW='198.51.100.7, 192.0.2.0/24' \
+  AWG31_TELEGRAM_API="$TG" AWG31_TELEGRAM_TOKEN="123456789:$(printf 'B%.0s' {1..35})" AWG31_TELEGRAM_ADMINS='4242, 4343' \
+  AWG31_TELEGRAM_NOTIFY=server,backups bash "$ROOT/install.sh"
 panel 18082 || fail 'panel does not answer after reinstall'
 awg show awg0 >/dev/null || fail 'awg0 is not up after reinstall'
+
+step 'Telegram bot enabled by the unattended installer, then switched off'
+systemctl is-active --quiet awg31-bot.service || fail 'the installer did not start the bot'
+awg31 telegram status | tee /tmp/awg31-telegram-status
+grep -q '4242, 4343' /tmp/awg31-telegram-status || fail 'administrators were not saved'
+grep -q 'server, backups' /tmp/awg31-telegram-status || fail 'notification choice was not saved'
+if grep -q BBBBB /tmp/awg31-telegram-status; then fail 'status prints the token'; fi
+awg31 telegram off
+if systemctl is-active --quiet awg31-bot.service; then fail 'bot still runs after telegram off'; fi
+[[ ! -e /etc/awg31-bot/telegram.json && ! -e /etc/sudoers.d/awg31-bot ]] || fail 'token or sudo rule left after telegram off'
+if runuser -u awgbot -- sudo -n "$MGR" servers </dev/null >/dev/null 2>&1; then fail 'bot user keeps sudo after telegram off'; fi
 
 step 'Nginx HTTPS proxy: health, HSTS, allow list, sign-in limit'
 https(){ curl --noproxy '*' -ksS --max-time 10 --resolve 203.0.113.10:8443:127.0.0.1 "$@"; }

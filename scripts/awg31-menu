@@ -10,6 +10,11 @@ case "${1:-menu}" in
     [[ -f /usr/local/libexec/awg31/scripts/setup-nginx.sh ]] || { echo 'Nginx wizard is not installed' >&2; exit 1; }
     bash /usr/local/libexec/awg31/scripts/setup-nginx.sh --interactive
     ;;
+  telegram)
+    shift
+    [[ -f /usr/local/libexec/awg31/scripts/setup-telegram.sh ]] || { echo 'Telegram bot files are not installed; run: sudo awg31 update' >&2; exit 1; }
+    exec bash /usr/local/libexec/awg31/scripts/setup-telegram.sh "$@"
+    ;;
   servers) /usr/local/sbin/awg31mgr servers ;;
   backup) /usr/local/sbin/awg31mgr backup-create ;;
   backups) /usr/local/sbin/awg31mgr backup-list ;;
@@ -126,6 +131,7 @@ AmneziaWG 3.1 local management
   sudo awg31 restart-panel   Restart web panel only
   sudo awg31 logs            View panel logs
   sudo awg31 nginx           Configure optional Nginx HTTPS (safe for existing VPN)
+  sudo awg31 telegram        Connect the Telegram bot (also: telegram status | test | off)
 
   Panel listens on 127.0.0.1. HTTPS is optional; use sudo awg31 nginx to configure it.
   VPN server configuration is managed through the authenticated web panel.

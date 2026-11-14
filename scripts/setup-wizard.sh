@@ -175,6 +175,7 @@ install -o root -g root -m 755 "$DIR/scripts/restore-backup.py" /usr/local/libex
 install -o root -g root -m 644 "$DIR/src/web.py" /opt/awg31-panel/web.py
 install -o root -g root -m 644 "$DIR/src/amnezialink.py" /opt/awg31-panel/amnezialink.py
 install -o root -g root -m 644 "$DIR/src/quicinitial.py" /opt/awg31-panel/quicinitial.py
+install -o root -g root -m 644 "$DIR/src/awg31bot.py" /opt/awg31-panel/awg31bot.py
 install -o root -g root -m 644 "$DIR/src/panel.css" /opt/awg31-panel/panel.css
 install -o root -g root -m 644 "$DIR/src/md3.css" /opt/awg31-panel/md3.css
 install -o root -g root -m 644 "$DIR/src/panel.js" /opt/awg31-panel/panel.js
@@ -306,6 +307,9 @@ install -o root -g root -m 644 "$DIR/scripts/os-support.sh" /usr/local/libexec/a
 install -o root -g root -m 755 "$DIR/scripts/awg31-menu" /usr/local/bin/awg31
 install -o root -g root -m 755 "$DIR/scripts/uninstall.sh" /usr/local/libexec/awg31/scripts/uninstall.sh
 install -o root -g root -m 755 "$DIR/install.sh" /usr/local/libexec/awg31/install.sh
+install -o root -g root -m 755 "$DIR/scripts/setup-telegram.sh" /usr/local/libexec/awg31/scripts/setup-telegram.sh
+install -o root -g root -m 644 "$DIR/scripts/sudoers.sh" /usr/local/libexec/awg31/scripts/sudoers.sh
+install -o root -g root -m 644 "$DIR/scripts/awg31-bot.service" /usr/local/libexec/awg31/scripts/awg31-bot.service
 
 # Periodic usage enforcement, historical metrics and kernel health checks.
 # Limit growth of root-owned audit log without exposing credentials.
@@ -342,6 +346,18 @@ if [[ "$NGINX_MODE" != none ]]; then
         echo '[AWG31 WARNING] Повтор: sudo awg31 nginx' >&2
     fi
 fi
+# The Telegram bot is optional: unattended installs enable it with two variables,
+# everybody else runs `sudo awg31 telegram` whenever they want it.
+TELEGRAM_RESULT=skipped
+if [[ -n "${AWG31_TELEGRAM_TOKEN:-}" && -n "${AWG31_TELEGRAM_ADMINS:-}" ]]; then
+    say 'Подключаем Telegram-бота'
+    if bash /usr/local/libexec/awg31/scripts/setup-telegram.sh; then
+        TELEGRAM_RESULT=ready
+    else
+        TELEGRAM_RESULT=failed
+        echo '[AWG31 WARNING] VPN и панель работают, но Telegram-бот не подключён. Повтор: sudo awg31 telegram' >&2
+    fi
+fi
 # An active host firewall silently drops the VPN port unless it is opened.
 FIREWALL_NOTE="Откройте UDP $PORT в firewall провайдера и сервера."
 open_vpn_port() {
@@ -376,6 +392,11 @@ case "$NGINX_RESULT" in
     failed)  echo '  HTTPS:    Nginx НЕ настроен (повтор: sudo awg31 nginx); VPN и панель работают' ;;
     skipped) echo "  Доступ:   ssh -L $PANEL_PORT:127.0.0.1:$PANEL_PORT root@$ENDPOINT → http://localhost:$PANEL_PORT"
              echo '            или HTTPS через Nginx: sudo awg31 nginx' ;;
+esac
+case "$TELEGRAM_RESULT" in
+    ready)   echo '  Telegram: бот подключён (sudo awg31 telegram status)' ;;
+    failed)  echo '  Telegram: бот НЕ подключён (повтор: sudo awg31 telegram)' ;;
+    skipped) echo '  Telegram: управление и уведомления через бота — sudo awg31 telegram' ;;
 esac
 if [[ -n "$PASSWORD_FILE" ]]; then
     echo "  Пароль:   в файле $PASSWORD_FILE (доступен только root)"

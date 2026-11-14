@@ -20,6 +20,6 @@ jobs:
       - name: Service logs on failure
         if: failure()
         run: |
-          sudo journalctl -u awg31-panel -u 'awg-quick@awg0' -n 80 --no-pager || true
+          sudo journalctl -u awg31-panel -u awg31-bot -u 'awg-quick@awg0' -n 80 --no-pager || true
           sudo dkms status || true
           sudo dmesg | tail -n 30 || true

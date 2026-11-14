@@ -4,7 +4,7 @@
 
 An installer and a web console for running **AmneziaWG 3.1** on your own server: a kernel module built with DKMS, an interactive setup wizard and a bilingual (EN/RU) panel for servers, clients, traffic and backups. No Docker, no control plane in the cloud, nothing loaded from a CDN.
 
-Version **0.9.8** · MIT licence · not affiliated with the AmneziaVPN developers.
+Version **0.9.9** · MIT licence · not affiliated with the AmneziaVPN developers.
 
 ![Infrastructure overview](docs/screenshots/en-dashboard.png)
 
@@ -20,6 +20,7 @@ Version **0.9.8** · MIT licence · not affiliated with the AmneziaVPN developer
 - **Monitoring:** host CPU, RAM, swap, disk and uplink traffic, per-server traffic charts, 30 days of history collected by a systemd timer.
 - **Backups:** full archives with checksums, download, schedule (daily or weekly), retention, restore with a safety snapshot.
 - **Security by layout:** the panel runs as an unprivileged user on `127.0.0.1`; root actions go through one narrow `sudo` allowlist; strict CSP, CSRF tokens, scrypt password hash, audit log.
+- **Telegram bot (optional):** clients, configurations with QR codes, server start and stop, backups and notifications, through its own narrower `sudo` allowlist.
 - **Optional Nginx** reverse proxy with a self-signed or your own certificate.
 
 ## Requirements
@@ -106,6 +107,7 @@ curl -Ls https://raw.githubusercontent.com/stepm65/amneziawg31-installer/main/in
 | `AWG31_PASSWORD_FILE` | none: a password is generated into `/root/awg31-initial-password.txt` |
 | `AWG31_OPEN_FIREWALL` | `yes`: open the UDP port in an active ufw/firewalld |
 | `AWG31_NGINX_CHOICE` | `0` (no Nginx); `1`/`2` also need `AWG31_NGINX_HOST`, and `2` needs `AWG31_NGINX_CERT`, `AWG31_NGINX_KEY` |
+| `AWG31_TELEGRAM_TOKEN`, `AWG31_TELEGRAM_ADMINS` | none: no bot (see [Telegram bot](#telegram-bot)) |
 
 ## The panel
 
@@ -153,9 +155,35 @@ sudo awg31 reset-password   set a new panel password
 sudo awg31 port N           change the local TCP port of the panel
 sudo awg31 uninstall        remove the console; --purge also deletes VPN data
 sudo awg31 nginx            configure the Nginx HTTPS proxy
+sudo awg31 telegram         connect the Telegram bot (status | test | off)
 sudo awg31 restart-panel    restart the web panel only
 sudo awg31 logs             panel logs
 ```
+
+## Telegram bot
+
+Optional. The bot manages clients and servers from Telegram and tells you when something happens. It polls Telegram itself, so no inbound port is opened.
+
+```bash
+sudo awg31 telegram          # connect: asks for the token from @BotFather and finds your Telegram ID
+sudo awg31 telegram status   # is it running, who may use it
+sudo awg31 telegram test     # send a test message
+sudo awg31 telegram off      # stop the bot and delete the token from the server
+```
+
+| The bot can | Only in the panel or the console |
+|---|---|
+| create a client and send its `.conf` and QR code | delete a server, create a server |
+| enable, disable, delete a client; set expiry and quota | change server settings, obfuscation, client networks |
+| show servers, clients, traffic, kernel module and panel state | restore, download or delete a backup |
+| start, stop, restart a server | change the panel password |
+| create a backup | |
+
+Notifications (each group can be turned off during setup): a server went down or came back, the kernel module is not loaded, the panel service stopped; a client was disabled by expiry or quota, a client expires within three days; sign-in to the panel, failed sign-in attempts, password change; a backup was created or the scheduled backup failed.
+
+Only the numeric Telegram IDs you list are served, and only in a private chat with the bot; everybody else gets no answer. Deleting a client and stopping a server ask for confirmation. Everything done through the bot is written to the audit log with the Telegram ID.
+
+Unattended: `AWG31_TELEGRAM_TOKEN` and `AWG31_TELEGRAM_ADMINS` (IDs separated by commas), optionally `AWG31_TELEGRAM_LANG` (`ru`/`en`) and `AWG31_TELEGRAM_NOTIFY` (`all`, `none` or a list of `server,clients,security,backups`). They work both with the installer and with `sudo -E awg31 telegram`.
 
 ## Update
 
@@ -189,6 +217,7 @@ sudo bash amneziawg31-installer/scripts/resume-panel.sh
 | `/etc/awg31-panel/auth.json` | password hash and session key |
 | `/var/backups/awg31-panel/` | backups and pre-change snapshots |
 | `/var/log/awg31-panel/audit.jsonl` | audit log |
+| `/etc/awg31-bot/telegram.json` | Telegram bot token and administrator IDs |
 | `/opt/awg31-panel/` | panel code, Python environment, fonts |
 
 ## Security notes
@@ -196,6 +225,7 @@ sudo bash amneziawg31-installer/scripts/resume-panel.sh
 - A client `.conf`, `vpn://` link or QR code contains a private key. Whoever has it can connect.
 - Backups are **not encrypted** and contain every private key and the panel credentials. Copy them off the server over a secure channel and store them encrypted.
 - Do not expose the panel without HTTPS. The generated Nginx site sends HSTS, limits sign-in attempts per address and can restrict access to the addresses you list (`sudo awg31 nginx`).
+- The Telegram bot sends client configurations (private keys) into your chat with it; they stay in the Telegram cloud. Whoever controls an administrator's Telegram account can create and delete clients and stop servers, so protect that account with two-step verification. The bot token is removed by `sudo awg31 telegram off` and by uninstalling.
 - Signing out ends every session of the panel, including a copied cookie.
 - Restoring a backup keeps the current administrator password; the one in the archive is used only when none exists.
 - In full mode only IPv4 goes through the tunnel. Turn on “Client IPv6: block” in the server settings (clients then need a new configuration), or disable IPv6 on the clients; otherwise IPv6 traffic bypasses the VPN.

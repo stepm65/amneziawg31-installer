@@ -16,6 +16,35 @@ AWG31_SUDO_COMMANDS=(
   audit audit-list password-change session-revoke obfuscation-generate
 )
 
+# The Telegram bot runs as its own user with a narrower list: it cannot delete
+# a server, restore or download a backup, change settings or the panel password.
+AWG31_BOT_SUDO_COMMANDS=(
+  servers server-start server-stop server-restart
+  list add download enable disable delete client-policy
+  diagnostics backup-create backup-list audit audit-list
+)
+
+awg31_render_bot_sudoers() {
+  local manager="${1:-/usr/local/sbin/awg31mgr}" line='' command
+  for command in "${AWG31_BOT_SUDO_COMMANDS[@]}"; do
+    line+="${line:+, }$manager $command"
+  done
+  printf 'awgbot ALL=(root) NOPASSWD: %s\n' "$line"
+}
+
+awg31_install_bot_sudoers() {
+  local target="${1:-/etc/sudoers.d/awg31-bot}" candidate
+  candidate="$(mktemp /etc/sudoers.d/.awg31-bot.XXXXXX)" || return 1
+  if ! { awg31_render_bot_sudoers >"$candidate" && chmod 440 "$candidate" &&
+         visudo -cf "$candidate" >/dev/null &&
+         install -o root -g root -m 440 "$candidate" "$target"; }; then
+    rm -f -- "$candidate"
+    return 1
+  fi
+  rm -f -- "$candidate"
+  visudo -cf "$target" >/dev/null
+}
+
 awg31_render_sudoers() {
   local manager="${1:-/usr/local/sbin/awg31mgr}" line='' command
   for command in "${AWG31_SUDO_COMMANDS[@]}"; do

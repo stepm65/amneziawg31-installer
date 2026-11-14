@@ -29,7 +29,7 @@ if [[ -d "$CONFIG_DIR" ]]; then
     done
 fi
 
-echo 'This removes the web panel, the controller, services, timers and the sudo rule.'
+echo 'This removes the web panel, the Telegram bot and its token, the controller, services, timers and sudo rules.'
 echo "VPN servers found: ${interfaces[*]:-none}. They will be STOPPED; clients lose the connection."
 if ((PURGE)); then
     echo 'PURGE: server and client keys, client databases, backups, logs and the panel password are DELETED.'
@@ -53,7 +53,7 @@ fi
 say 'Stopping services'
 # One unit per call: with several names systemctl gives up on the first unit
 # that does not exist (the backup timer is optional) and leaves the rest running.
-for unit in awg31-panel.service awg31-sampler.timer awg31-kernel-check.timer awg31-backup.timer; do
+for unit in awg31-panel.service awg31-bot.service awg31-sampler.timer awg31-kernel-check.timer awg31-backup.timer; do
     systemctl disable --now "$unit" >/dev/null 2>&1 || :
 done
 for unit in awg31-panel.service awg31-sampler.service awg31-kernel-check.service awg31-backup.service; do
@@ -68,10 +68,10 @@ say 'Removing program files'
 rm -f /etc/systemd/system/awg31-panel.service /etc/systemd/system/awg31-sampler.service \
       /etc/systemd/system/awg31-sampler.timer /etc/systemd/system/awg31-kernel-check.service \
       /etc/systemd/system/awg31-kernel-check.timer /etc/systemd/system/awg31-backup.service \
-      /etc/systemd/system/awg31-backup.timer
+      /etc/systemd/system/awg31-backup.timer /etc/systemd/system/awg31-bot.service
 systemctl daemon-reload >/dev/null 2>&1 || :
 systemctl reset-failed 'awg31-*' >/dev/null 2>&1 || :
-rm -f /etc/sudoers.d/awg31-panel /etc/logrotate.d/awg31-panel /etc/sysctl.d/96-awg31-ipv4.conf
+rm -f /etc/sudoers.d/awg31-panel /etc/sudoers.d/awg31-bot /etc/logrotate.d/awg31-panel /etc/sysctl.d/96-awg31-ipv4.conf
 rm -f /usr/local/sbin/awg31ctl /usr/local/sbin/awg31mgr /usr/local/sbin/awg31admin.py /usr/local/bin/awg31
 rm -rf /opt/awg31-panel /usr/local/libexec/awg31
 if [[ -f /etc/nginx/conf.d/awg31-panel.conf ]]; then
@@ -82,6 +82,9 @@ if [[ -f /etc/nginx/conf.d/awg31-panel.conf ]]; then
     say 'Removed the Nginx site of the panel (Nginx itself and certificates are untouched)'
 fi
 if id awgpanel >/dev/null 2>&1; then userdel awgpanel >/dev/null 2>&1 || :; fi
+# The bot token is a credential for an outside service: it never outlives the software.
+rm -rf /etc/awg31-bot /var/lib/awg31-bot
+if id awgbot >/dev/null 2>&1; then userdel awgbot >/dev/null 2>&1 || :; fi
 
 if ((PURGE)); then
     say 'Deleting VPN data'

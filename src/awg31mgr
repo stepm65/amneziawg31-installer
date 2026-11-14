@@ -156,7 +156,14 @@ def main():
     # Root console only: this command is intentionally missing from sudoers.
     if op=='password-reset': return admin.password_reset(data)
     if op=='backup-create': return admin.create_backup(sys.modules[__name__])
-    if op=='backup-run': return admin.scheduled_backup(sys.modules[__name__])
+    if op=='backup-run':
+        try: return admin.scheduled_backup(sys.modules[__name__])
+        except (OSError,RuntimeError,ValueError,sqlite3.Error) as exc:
+            # The schedule runs unattended: leave a trace the panel and the bot can show.
+            reason=''.join(c for c in str(exc) if ord(c)>=32)[:110]
+            try: admin.audit({'event':'backup_failed','target':reason})
+            except (OSError,ValueError): pass
+            raise
     if op=='backup-policy': return {'policy': admin.backup_policy()}
     if op=='backup-policy-set': return admin.save_backup_policy(data)
     if op=='backup-delete': return admin.delete_backup(data)

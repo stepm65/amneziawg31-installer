@@ -75,6 +75,7 @@ awg31_install_sudoers "$SUD" || die 'Cannot install sudoers allowlist'
 say 'Updating web UI files'
 install -o root -g root -m 644 "$DIR/src/amnezialink.py" "$APP/amnezialink.py"
 install -o root -g root -m 644 "$DIR/src/quicinitial.py" "$APP/quicinitial.py"
+install -o root -g root -m 644 "$DIR/src/awg31bot.py" "$APP"/awg31bot.py
 install -o root -g root -m 644 "$DIR/src/web.py" "$APP/web.py"
 install -o root -g root -m 644 "$DIR/src/panel.css" "$APP/panel.css"
 install -o root -g root -m 644 "$DIR/src/md3.css" "$APP/md3.css"
@@ -107,6 +108,21 @@ install -o root -g root -m 644 "$DIR/scripts/os-support.sh" /usr/local/libexec/a
 install -o root -g root -m 755 "$DIR/scripts/awg31-menu" /usr/local/bin/awg31
 install -o root -g root -m 755 "$DIR/scripts/uninstall.sh" /usr/local/libexec/awg31/scripts/uninstall.sh
 install -o root -g root -m 755 "$DIR/install.sh" /usr/local/libexec/awg31/install.sh
+install -o root -g root -m 755 "$DIR/scripts/setup-telegram.sh" /usr/local/libexec/awg31/scripts/setup-telegram.sh
+install -o root -g root -m 644 "$DIR/scripts/sudoers.sh" /usr/local/libexec/awg31/scripts/sudoers.sh
+install -o root -g root -m 644 "$DIR/scripts/awg31-bot.service" /usr/local/libexec/awg31/scripts/awg31-bot.service
+# A configured Telegram bot follows the update: new code, unit and sudo rule.
+if [[ -f /etc/awg31-bot/telegram.json ]] && id awgbot >/dev/null 2>&1; then
+    chmod -R o+rX "$APP/.venv"
+    install -o root -g root -m 644 "$DIR/scripts/awg31-bot.service" /etc/systemd/system/awg31-bot.service
+    if awg31_install_bot_sudoers; then
+        systemctl daemon-reload
+        systemctl enable awg31-bot.service >/dev/null 2>&1 || :
+        systemctl restart awg31-bot.service || say 'WARNING: the Telegram bot did not restart (sudo awg31 telegram status)'
+    else
+        say 'WARNING: could not update the sudo rule of the Telegram bot'
+    fi
+fi
 # Limit growth of root-owned audit log without exposing credentials.
 if command -v logrotate >/dev/null 2>&1; then
     install -o root -g root -m 644 "$DIR/scripts/awg31-audit.logrotate" /etc/logrotate.d/awg31-panel

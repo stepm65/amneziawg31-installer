@@ -19,7 +19,8 @@ VALID_AUDIT = {'login_success', 'login_failed', 'password_changed', 'client_adde
                'client_modified', 'client_deleted', 'client_enabled', 'client_disabled',
                'server_created', 'server_started', 'server_stopped', 'server_restarted', 'server_deleted', 'logout',
                'server_settings_changed', 'profile_imported', 'backup_created',
-               'backup_downloaded', 'backup_deleted', 'backup_policy_changed', 'backup_pruned'}
+               'backup_downloaded', 'backup_deleted', 'backup_policy_changed', 'backup_pruned',
+               'backup_failed'}
 
 
 def _host_uplink():
