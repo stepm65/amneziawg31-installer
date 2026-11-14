@@ -152,7 +152,85 @@ case "${1:-menu}" in
         fi
         echo 'Decrypt anywhere:  gpg -d awg31-....tar.gz.gpg > backup.tar.gz'
         ;;
-      *) echo 'Usage: awg31 backup-encryption [status|on|off]' >&2; exit 2 ;;
+      change)
+        echo 'A new passphrase replaces the current one; every backup the current one opens is re-encrypted.'
+        phrase="${AWG31_BACKUP_PASSPHRASE:-}"
+        if [[ -z "$phrase" && -t 0 ]]; then
+            IFS= read -r -s -p 'New passphrase, 16+ characters (Enter = generate one): ' phrase; echo
+            if [[ -n "$phrase" ]]; then
+                IFS= read -r -s -p 'Repeat the passphrase: ' again; echo
+                [[ "$phrase" == "$again" ]] || { echo 'Passphrases do not match; nothing changed' >&2; exit 1; }
+            fi
+        fi
+        reply="$(printf '%s' "$phrase" | python3 -c 'import json,sys; print(json.dumps({"passphrase": sys.stdin.read()}))' \
+                 | /usr/local/sbin/awg31mgr backup-encryption-change)"
+        unset phrase again
+        printf '%s' "$reply" | python3 -c '
+import json, sys
+r = json.load(sys.stdin)
+print("Passphrase changed; backups re-encrypted:", r["reencrypted"])
+if r["skipped"]:
+    print("NOT re-encrypted (sealed with an earlier passphrase, they still need that one):")
+    for name in r["skipped"]: print("  " + name)
+if r.get("passphrase"):
+    print("\n  Passphrase:  " + r["passphrase"] + "\n\nWrite it down NOW and keep it away from this server. It is not shown again.")
+print("Copies already sent to Telegram or a remote storage keep the OLD passphrase.")'
+        ;;
+      *) echo 'Usage: awg31 backup-encryption [status|on|off|change]' >&2; exit 2 ;;
+    esac
+    ;;
+  backup-remote)
+    ask_value(){ # ask_value VARIABLE 'Prompt' [default]; unattended: AWG31_REMOTE_<VARIABLE>
+        local name="AWG31_REMOTE_$1" value
+        value="${!name:-}"
+        if [[ -z "$value" && -t 0 ]]; then read -r -p "$2${3:+ [$3]}: " value; fi
+        printf '%s' "${value:-${3:-}}"
+    }
+    case "${2:-status}" in
+      status) /usr/local/sbin/awg31mgr backup-remote </dev/null ;;
+      test) /usr/local/sbin/awg31mgr backup-remote-test </dev/null && echo 'The storage accepted a test file.' ;;
+      off)
+        echo '{"off": true}' | /usr/local/sbin/awg31mgr backup-remote-set >/dev/null
+        echo 'Remote storage is off. Files already uploaded stay where they are.'
+        ;;
+      s3)
+        echo 'S3-compatible storage (AWS S3, MinIO, Backblaze B2, Yandex Object Storage, ...). Only encrypted backups are uploaded.'
+        endpoint="$(ask_value ENDPOINT 'Endpoint URL' 'https://s3.amazonaws.com')"
+        region="$(ask_value REGION 'Region' 'us-east-1')"
+        bucket="$(ask_value BUCKET 'Bucket name')"
+        prefix="$(ask_value PREFIX 'Folder inside the bucket, ending with / (empty = none)' '')"
+        access="$(ask_value ACCESS_KEY 'Access key ID')"
+        secret="${AWG31_REMOTE_SECRET_KEY:-}"
+        if [[ -z "$secret" && -t 0 ]]; then IFS= read -r -s -p 'Secret access key (hidden): ' secret; echo; fi
+        # Values travel as JSON over stdin, never in argv.
+        E="$endpoint" G="$region" B="$bucket" P="$prefix" A="$access" S="$secret" python3 -c '
+import json, os
+e = os.environ
+print(json.dumps({"type": "s3", "endpoint": e["E"], "region": e["G"], "bucket": e["B"], "prefix": e["P"], "access_key": e["A"], "secret_key": e["S"]}))' \
+          | /usr/local/sbin/awg31mgr backup-remote-set >/dev/null
+        unset secret
+        /usr/local/sbin/awg31mgr backup-remote-test </dev/null >/dev/null && echo 'Storage saved and tested: every new backup is uploaded there.' \
+          || { echo 'Storage saved, but the test upload FAILED (see the error above). Fix the values and run the command again.' >&2; exit 1; }
+        ;;
+      sftp)
+        echo 'SFTP server. Only encrypted backups are uploaded; the server gets its own SSH key for this.'
+        host="$(ask_value HOST 'Host name or IP')"
+        port="$(ask_value PORT 'SSH port' '22')"
+        user="$(ask_value USER 'User name')"
+        path="$(ask_value PATH 'Directory on the server (absolute)' '/')"
+        reply="$(H="$host" O="$port" U="$user" D="$path" python3 -c '
+import json, os
+e = os.environ
+print(json.dumps({"type": "sftp", "host": e["H"], "port": e["O"], "user": e["U"], "path": e["D"]}))' | /usr/local/sbin/awg31mgr backup-remote-set)"
+        echo "Add this public key to ~/.ssh/authorized_keys of $user on $host:"
+        echo
+        printf '%s' "$reply" | python3 -c 'import json,sys; print("  " + json.load(sys.stdin)["public_key"])'
+        echo
+        if [[ -t 0 && "${AWG31_UNATTENDED:-0}" != 1 ]]; then read -r -p 'Press Enter when the key is added to test the upload... ' _; fi
+        /usr/local/sbin/awg31mgr backup-remote-test </dev/null >/dev/null && echo 'Storage saved and tested: every new backup is uploaded there.' \
+          || { echo 'Storage saved, but the test upload FAILED (see the error above). After adding the key run: sudo awg31 backup-remote test' >&2; exit 1; }
+        ;;
+      *) echo 'Usage: awg31 backup-remote [status|s3|sftp|test|off]' >&2; exit 2 ;;
     esac
     ;;
   doctor) bash /usr/local/libexec/awg31/scripts/kernel-check.sh; /usr/local/sbin/awg31mgr diagnostics ;;
@@ -173,7 +251,8 @@ AmneziaWG 3.1 local management
   sudo awg31 version         Show the installed version
   sudo awg31 reset-password  Set a new panel password (forgotten password)
   sudo awg31 totp-off        Turn off two-factor sign-in (lost authenticator)
-  sudo awg31 backup-encryption on|off|status  Encrypt backups with a passphrase
+  sudo awg31 backup-encryption on|off|status|change  Encrypt backups with a passphrase
+  sudo awg31 backup-remote s3|sftp|test|status|off  Upload every new backup to S3 or SFTP
   sudo awg31 port NEW_PORT   Change the local TCP port of the panel
   sudo awg31 uninstall       Remove the console (add --purge to delete VPN data too)
   sudo awg31 restart-panel   Restart web panel only

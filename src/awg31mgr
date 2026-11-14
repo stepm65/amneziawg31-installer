@@ -28,7 +28,8 @@ ADMIN = {'servers', 'server-create', 'server-start', 'server-stop', 'server-rest
          'profile-import','audit','audit-list','password-change','diagnostics',
          'backup-delete','backup-policy','backup-policy-set','backup-run','password-reset',
          'session-revoke','obfuscation-generate','totp-enable','totp-disable','totp-reset',
-         'telegram-status','telegram-set','backup-encryption','backup-encryption-set','backup-export-encrypted'}
+         'telegram-status','telegram-set','backup-encryption','backup-encryption-set','backup-export-encrypted',
+         'backup-encryption-change','backup-remote','backup-remote-set','backup-remote-test'}
 
 
 def load_source(name, path):
@@ -149,7 +150,7 @@ def main():
     # Terminal invocations without JSON must not wait forever for EOF.
     # The web API still sends structured JSON through a non-TTY pipe.
     no_payload = {'servers', 'sample-all', 'backup-create', 'backup-list', 'backup-policy', 'backup-run', 'audit-list',
-                  'session-revoke', 'obfuscation-generate', 'totp-reset', 'telegram-status', 'backup-encryption'}
+                  'session-revoke', 'obfuscation-generate', 'totp-reset', 'telegram-status', 'backup-encryption', 'backup-remote', 'backup-remote-test'}
     raw = '' if op in no_payload or sys.stdin.isatty() else sys.stdin.read(32768)
     data=json.loads(raw) if raw.strip() else {}
     if not isinstance(data,dict): raise ValueError('Expected JSON object')
@@ -168,6 +169,10 @@ def main():
     # Root console only: these three are intentionally missing from sudoers.
     if op=='totp-reset': return admin.totp_reset()
     if op=='backup-encryption-set': return admin.backup_encryption_set(data)
+    if op=='backup-encryption-change': return admin.backup_encryption_change(data)
+    if op=='backup-remote-set': return admin.backup_remote_set(data)
+    if op=='backup-remote-test': return admin.backup_remote_test()
+    if op=='backup-remote': return admin.backup_remote_status()
     if op=='obfuscation-generate':
         # One generator for the wizard, new servers and the panel button.
         fresh=load_source('awg31_generator',CTL).fresh_obfuscation()
@@ -175,9 +180,9 @@ def main():
         return fresh
     # Root console only: this command is intentionally missing from sudoers.
     if op=='password-reset': return admin.password_reset(data)
-    if op=='backup-create': return admin.create_backup(sys.modules[__name__])
+    if op=='backup-create': return admin.after_backup(admin.create_backup(sys.modules[__name__]))
     if op=='backup-run':
-        try: return admin.scheduled_backup(sys.modules[__name__])
+        try: return admin.after_backup(admin.scheduled_backup(sys.modules[__name__]))
         except (OSError,RuntimeError,ValueError,sqlite3.Error) as exc:
             # The schedule runs unattended: leave a trace the panel and the bot can show.
             reason=''.join(c for c in str(exc) if ord(c)>=32)[:110]

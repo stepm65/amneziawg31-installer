@@ -671,3 +671,36 @@
   poll();window.setInterval(poll,5000);
   window.setInterval(()=>{for(const win of new Set(plots.map(selectedWindow)))refreshHistory(win);},60000);
 })();
+
+// Batch creation answers with a ZIP. A plain form submit would save the file and
+// leave the page showing the old client list, so the download is done here and
+// the page is reloaded afterwards. Without JavaScript the form still works.
+(function(){
+  const form=document.querySelector('form[data-batch-download]');
+  if(!form||!window.fetch||!window.URL)return;
+  form.addEventListener('submit',async event=>{
+    event.preventDefault();
+    const button=form.querySelector('button[type="submit"]');
+    if(button)button.disabled=true;
+    try{
+      const reply=await fetch(form.action,{method:'POST',body:new URLSearchParams(new FormData(form)),credentials:'same-origin'});
+      const type=reply.headers.get('content-type')||'';
+      if(!reply.ok||!type.startsWith('application/zip')){
+        // An error page: show it as it is.
+        const text=await reply.text();
+        document.open();document.write(text);document.close();
+        return;
+      }
+      const name=((reply.headers.get('content-disposition')||'').match(/filename="([^"]+)"/)||[])[1]||'clients.zip';
+      const url=URL.createObjectURL(await reply.blob());
+      const link=document.createElement('a');
+      link.href=url;link.download=name;document.body.appendChild(link);link.click();link.remove();
+      window.setTimeout(()=>{URL.revokeObjectURL(url);window.location.reload();},800);
+    }catch(_){
+      if(button)button.disabled=false;
+      form.removeAttribute('data-batch-download');
+      form.submit();          // network trouble before any answer: fall back to the plain submit
+    }
+  });
+})();
+

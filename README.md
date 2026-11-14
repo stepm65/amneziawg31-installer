@@ -154,7 +154,8 @@ sudo awg31 restore-check N  verify a backup
 sudo awg31 restore N        restore a backup (VPN restarts)
 sudo awg31 reset-password   set a new panel password
 sudo awg31 totp-off         turn off two-factor sign-in (lost authenticator)
-sudo awg31 backup-encryption on|off|status   encrypt backups with a passphrase
+sudo awg31 backup-encryption on|off|status|change   encrypt backups with a passphrase
+sudo awg31 backup-remote s3|sftp|test|status|off    upload every new backup to S3 or SFTP
 sudo awg31 port N           change the local TCP port of the panel
 sudo awg31 uninstall        remove the console; --purge also deletes VPN data
 sudo awg31 nginx            configure the Nginx HTTPS proxy
@@ -242,6 +243,9 @@ sudo bash amneziawg31-installer/scripts/resume-panel.sh
 
 - A client `.conf`, `vpn://` link or QR code contains a private key. Whoever has it can connect.
 - Backups contain every private key and the panel credentials and are **not encrypted by default**. Turn encryption on with `sudo awg31 backup-encryption on` and keep the passphrase away from the server: without it an encrypted backup cannot be restored elsewhere (`gpg -d file.tar.gz.gpg` opens it on any machine). The passphrase itself is stored on the server, readable by root only, so encryption protects archives that leave the server, not a compromised server.
+- `sudo awg31 backup-encryption change` sets a new passphrase and re-encrypts the archives on the server that the current one opens. Copies already sent to Telegram or a remote storage keep the old passphrase.
+- `sudo awg31 backup-remote s3` (AWS S3, MinIO, Backblaze B2, Yandex Object Storage and other S3-compatible services) or `sudo awg31 backup-remote sftp` uploads every new backup, scheduled or manual, right after it is created. Only encrypted archives are uploaded, so encryption has to be on. The access keys stay on the server, readable by root only; for SFTP the server gets its own SSH key and remembers the host key at the first connection. A failed upload does not fail the backup: it is written to the audit log and reported by the bot. Old files in the storage are not deleted — use the lifecycle rules of the storage.
+- After a kernel update the console checks, several times a day, that the AmneziaWG module is built for the new kernel, and tries to build it. If that fails, the panel (Maintenance → System) and the bot warn before the reboot that would leave the VPN down.
 - Two-factor sign-in is set up in **Maintenance → Security**. A lost authenticator is reset from the console with `sudo awg31 totp-off`.
 - A speed limit applies to both directions of a client and is enforced with `tc` on the VPN interface. A monthly quota resets on the first day of the month, UTC.
 - Do not expose the panel without HTTPS. The generated Nginx site sends HSTS, limits sign-in attempts per address and can restrict access to the addresses you list (`sudo awg31 nginx`).

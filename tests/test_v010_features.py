@@ -10,8 +10,10 @@ import shutil
 import subprocess
 import sys
 import tarfile
+import threading
 import time
 import zipfile
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from datetime import datetime, timedelta, timezone
 from importlib.machinery import SourceFileLoader
 from io import StringIO
@@ -645,3 +647,282 @@ def test_sudo_lists_keep_console_only_operations_out():
     allowed = set(subprocess.run(['bash', '-c', script], capture_output=True, text=True, check=True).stdout.split())
     assert not allowed & {'totp-reset', 'backup-encryption-set', 'password-reset', 'init', 'sample-all', 'backup-run'}
     assert {'totp-enable', 'totp-disable', 'telegram-status', 'telegram-set', 'add-batch', 'backup-encryption'} <= allowed
+
+
+# ------------------------------------------------------------------ passphrase change, remote storage, next kernel
+@needs_gpg
+def test_changing_the_passphrase_reencrypts_what_the_old_one_opens(backups):
+    admin, manager, tmp = backups
+    admin.backup_encryption_set({'passphrase': 'the first passphrase 111'})
+    first = admin.create_backup(manager)['name']
+    admin.backup_encryption_set({'passphrase': 'the second passphrase 222'})
+    second = admin.create_backup(manager)['name']
+    plain = None
+    with pytest.raises(ValueError):
+        admin.backup_encryption_change({'passphrase': 'short'})
+    reply = admin.backup_encryption_change({'passphrase': 'the third passphrase 333'})
+    assert reply['reencrypted'] == 1 and reply['skipped'] == [first] and reply['passphrase'] is None
+    key = tmp / 'etc' / 'backup-passphrase'
+    assert key.read_text().strip() == 'the third passphrase 333' and key.stat().st_mode & 0o777 == 0o600
+    assert sorted(p.name for p in (tmp / 'full').iterdir()) == sorted([first, second]), 'no temporary files left'
+    home = tmp / 'gnupg2'
+    home.mkdir(mode=0o700)
+
+    def opens(name, secret):
+        return subprocess.run(['gpg', '--homedir', str(home), '--batch', '--quiet', '--pinentry-mode', 'loopback', '--passphrase', secret,
+                               '--decrypt', str(tmp / 'full' / name)], capture_output=True).returncode == 0
+    assert opens(second, 'the third passphrase 333') and not opens(second, 'the second passphrase 222')
+    assert opens(first, 'the first passphrase 111'), 'an archive of an earlier passphrase is left untouched'
+    generated = admin.backup_encryption_change({})
+    assert generated['reencrypted'] == 1 and opens(second, generated['passphrase'])
+
+
+@needs_gpg
+def test_failed_passphrase_change_leaves_everything_as_it_was(backups, monkeypatch):
+    admin, manager, tmp = backups
+    admin.backup_encryption_set({'passphrase': 'the first passphrase 111'})
+    names = [admin.create_backup(manager)['name']]
+    time.sleep(1.1)
+    names.append(admin.create_backup(manager)['name'])
+    before = {name: (tmp / 'full' / name).read_bytes() for name in names}
+    real, calls = admin._gpg, []
+
+    def failing(args, **kwargs):
+        calls.append(args)
+        if '--symmetric' in args and len([c for c in calls if '--symmetric' in c]) == 2:
+            raise ValueError('disk full')
+        return real(args, **kwargs)
+    monkeypatch.setattr(admin, '_gpg', failing)
+    with pytest.raises(ValueError, match='disk full'):
+        admin.backup_encryption_change({'passphrase': 'the second passphrase 222'})
+    assert (tmp / 'etc' / 'backup-passphrase').read_text().strip() == 'the first passphrase 111'
+    assert {p.name: p.read_bytes() for p in (tmp / 'full').iterdir()} == before
+    assert sorted(p.name for p in (tmp / 'etc').iterdir()) == ['backup-passphrase']
+
+
+def test_s3_signature_matches_the_aws_documentation_example():
+    admin = load_admin('admin_sigv4')
+    empty = 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855'
+    header = admin.s3_authorization('GET', 'examplebucket.s3.amazonaws.com', '/test.txt',
+                                    {'Host': 'examplebucket.s3.amazonaws.com', 'Range': 'bytes=0-9', 'x-amz-content-sha256': empty,
+                                     'x-amz-date': '20130524T000000Z'}, empty, 'us-east-1', 'AKIAIOSFODNN7EXAMPLE',
+                                    'wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY', '20130524T000000Z')
+    assert header == ('AWS4-HMAC-SHA256 Credential=AKIAIOSFODNN7EXAMPLE/20130524/us-east-1/s3/aws4_request,'
+                      'SignedHeaders=host;range;x-amz-content-sha256;x-amz-date,'
+                      'Signature=f0e8bdb87c964420e857bd35b5d6ed310bd44f0170aba48dd91039c6036bdb41')
+
+
+@pytest.fixture
+def remote(backups, monkeypatch):
+    admin, manager, tmp = backups
+    monkeypatch.setenv('AWG31_BACKUP_REMOTE', str(tmp / 'etc' / 'backup-remote.json'))
+    return admin, manager, tmp
+
+
+S3 = {'type': 's3', 'endpoint': 'http://127.0.0.1:1', 'region': 'us-east-1', 'bucket': 'my-backups', 'prefix': 'vpn/',
+      'access_key': 'AKIAEXAMPLE', 'secret_key': 'very-secret-key-123'}
+
+
+@needs_gpg
+def test_remote_storage_needs_encryption_and_never_reports_its_keys(remote):
+    admin, manager, tmp = remote
+    with pytest.raises(ValueError, match='encryption'):
+        admin.backup_remote_set(dict(S3))
+    assert admin.backup_remote_status() == {'configured': False}
+    admin.backup_encryption_set({'passphrase': 'remote test passphrase 1'})
+    for bad in ({**S3, 'endpoint': 'ftp://x'}, {**S3, 'bucket': 'Bad Bucket'}, {**S3, 'prefix': 'no-slash'}, {**S3, 'secret_key': ''},
+                {'type': 'webdav'}, {'type': 'sftp', 'host': 'h;rm', 'user': 'u', 'path': '/'},
+                {'type': 'sftp', 'host': 'h', 'user': 'u', 'path': '/a b'}, {'type': 'sftp', 'host': 'h', 'user': 'Root!', 'path': '/'},
+                {'type': 'sftp', 'host': 'h', 'user': 'u', 'path': '/', 'port': '70000'}):
+        with pytest.raises(ValueError):
+            admin.backup_remote_set(bad)
+    admin.backup_remote_set(dict(S3))
+    file = tmp / 'etc' / 'backup-remote.json'
+    assert file.stat().st_mode & 0o777 == 0o600
+    status = admin.backup_remote_status()
+    assert status == {'configured': True, 'type': 's3', 'target': 's3://my-backups/vpn/ (http://127.0.0.1:1)'}
+    assert 'very-secret' not in json.dumps(status) and 'AKIAEXAMPLE' not in json.dumps(status)
+    admin.backup_remote_set({'off': True})
+    assert not file.exists() and admin.backup_remote_status() == {'configured': False}
+
+
+class S3Stub(BaseHTTPRequestHandler):
+    stored, reject = {}, False
+
+    def do_PUT(self):
+        body = self.rfile.read(int(self.headers['Content-Length']))
+        good = (self.headers['x-amz-content-sha256'] == hashlib.sha256(body).hexdigest()
+                and self.headers['Authorization'].startswith('AWS4-HMAC-SHA256 Credential=AKIAEXAMPLE/')
+                and 'SignedHeaders=host;x-amz-content-sha256;x-amz-date' in self.headers['Authorization'])
+        if S3Stub.reject or not good:
+            reply = b'<Error><Code>SignatureDoesNotMatch</Code></Error>'
+            self.send_response(403)
+        else:
+            S3Stub.stored[self.path] = body
+            reply = b''
+            self.send_response(200)
+        self.send_header('Content-Length', str(len(reply)))
+        self.end_headers()
+        self.wfile.write(reply)
+
+    def log_message(self, *args):
+        pass
+
+
+@needs_gpg
+def test_new_backups_are_uploaded_to_s3_and_a_failure_does_not_fail_the_backup(remote):
+    admin, manager, tmp = remote
+    S3Stub.stored, S3Stub.reject = {}, False
+    server = HTTPServer(('127.0.0.1', 0), S3Stub)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        plain = admin.after_backup(admin.create_backup(manager))
+        assert 'uploaded' not in plain, 'nothing is configured yet'
+        admin.backup_encryption_set({'passphrase': 'remote test passphrase 1'})
+        admin.backup_remote_set({**S3, 'endpoint': f'http://127.0.0.1:{server.server_port}'})
+        assert admin.backup_remote_test()['file'] == 'awg31-connection-test.txt'
+        result = admin.after_backup(admin.create_backup(manager))
+        assert result['uploaded'] is True
+        key = f"/my-backups/vpn/{result['name']}"
+        assert S3Stub.stored[key] == (tmp / 'full' / result['name']).read_bytes() and b'PANEL-SECRET' not in S3Stub.stored[key]
+        with pytest.raises(ValueError, match='encrypted'):
+            admin.upload_backup(plain['name'])
+        assert not any(plain['name'] in path for path in S3Stub.stored), 'a plain archive never leaves the server'
+        S3Stub.reject = True
+        time.sleep(1.1)
+        failed = admin.after_backup(admin.create_backup(manager))
+        assert failed['ok'] is True and failed['uploaded'] is False and 'SignatureDoesNotMatch' in failed['upload_error']
+        assert (tmp / 'full' / failed['name']).is_file(), 'the local backup is kept'
+        events = [json.loads(line) for line in (tmp / 'audit.jsonl').read_text().splitlines()]
+        assert [e['event'] for e in events if e['event'].startswith('backup_upload')] == ['backup_uploaded', 'backup_upload_failed']
+        assert events[-1]['target'].startswith(failed['name'] + ': S3 answered 403')
+        assert 'very-secret' not in (tmp / 'audit.jsonl').read_text()
+    finally:
+        server.shutdown()
+
+
+@needs_gpg
+def test_sftp_upload_uses_its_own_key_and_pins_the_host_key(remote, monkeypatch):
+    admin, manager, tmp = remote
+    if shutil.which('ssh-keygen') is None:
+        pytest.skip('OpenSSH client is not installed')
+    monkeypatch.setattr(admin, 'shutil_which', lambda name: '/usr/bin/' + name)
+    admin.backup_encryption_set({'passphrase': 'remote test passphrase 1'})
+    reply = admin.backup_remote_set({'type': 'sftp', 'host': 'backup.example.net', 'port': '2222', 'user': 'vpnbackup', 'path': '/srv/backups/'})
+    assert reply['public_key'].startswith('ssh-ed25519 ') and reply['target'] == 'sftp://vpnbackup@backup.example.net:2222/srv/backups/'
+    key = tmp / 'etc' / 'backup-remote.key'
+    assert key.stat().st_mode & 0o777 == 0o600
+    again = admin.backup_remote_set({'type': 'sftp', 'host': 'backup.example.net', 'user': 'vpnbackup', 'path': '/srv/backups'})
+    assert again['public_key'] == reply['public_key'], 'the key is kept when the settings change'
+    name = admin.create_backup(manager)['name']
+    seen = {}
+    real_run = subprocess.run
+
+    def fake_run(argv, **kwargs):
+        if argv[0] != 'sftp':
+            return real_run(argv, **kwargs)
+        seen.update(argv=argv, batch=kwargs['input'])
+        return type('P', (), {'returncode': seen.get('rc', 0), 'stdout': '', 'stderr': 'Permission denied (publickey).\n'})()
+    monkeypatch.setattr(admin.subprocess, 'run', fake_run)
+    admin.upload_backup(name)
+    argv = seen['argv']
+    assert argv[-1] == 'vpnbackup@backup.example.net' and argv[argv.index('-P') + 1] == '22' and argv[argv.index('-i') + 1] == str(key)
+    for option in ('BatchMode=yes', 'IdentitiesOnly=yes', 'StrictHostKeyChecking=accept-new',
+                   f'UserKnownHostsFile={tmp / "etc" / "backup-remote.known_hosts"}'):
+        assert option in argv
+    assert seen['batch'] == f'put "{tmp / "full" / name}" "/srv/backups/{name}"\n'
+    seen['rc'] = 1
+    with pytest.raises(ValueError, match='Permission denied'):
+        admin.upload_backup(name)
+
+
+def test_kernel_check_reports_a_new_kernel_without_the_module(tmp_path):
+    modules, fake = tmp_path / 'modules', tmp_path / 'bin'
+    fake.mkdir()
+    for version in ('6.8.0-40-generic', '6.8.0-51-generic'):
+        (modules / version / 'kernel').mkdir(parents=True)
+    (fake / 'uname').write_text('#!/bin/sh\necho 6.8.0-40-generic\n')
+    (fake / 'modinfo').write_text(f'#!/bin/sh\n[ -e "{tmp_path}/built-$2" ] && echo 1.0.0 || exit 1\n')
+    (fake / 'dkms').write_text(f'#!/bin/sh\necho "$@" >> {tmp_path}/dkms.log\n[ -e {tmp_path}/dkms-works ] && [ "$1" = install ] && touch "{tmp_path}/built-$7"\nexit 0\n')
+    (fake / 'lsmod').write_text('#!/bin/sh\necho "amneziawg 1 0"\n')
+    (fake / 'mokutil').write_text('#!/bin/sh\nexit 1\n')
+    for tool in fake.iterdir():
+        tool.chmod(0o755)
+    (tmp_path / 'built-6.8.0-40-generic').touch()
+    state = tmp_path / 'next-kernel'
+    env = {'PATH': f'{fake}:/usr/bin:/bin', 'AWG31_NEXT_KERNEL': str(state), 'AWG31_MODULES_DIR': str(modules)}
+
+    def check():
+        return subprocess.run(['bash', str(ROOT / 'scripts/kernel-check.sh')], env=env, capture_output=True, text=True)
+    run = check()
+    assert run.returncode == 1 and state.read_text() == 'missing 6.8.0-51-generic\n' and 'will not start' in run.stderr
+    assert 'install -m amneziawg -v 1.0.0 -k 6.8.0-51-generic' in (tmp_path / 'dkms.log').read_text(), 'one rebuild is attempted'
+    admin = load_admin('admin_next_kernel')
+    os.environ['AWG31_NEXT_KERNEL'] = str(state)
+    try:
+        assert admin.next_kernel_state() == {'ok': False, 'output': '6.8.0-51-generic'}
+        (tmp_path / 'dkms-works').touch()                       # this time DKMS builds the module
+        run = check()
+        assert run.returncode == 0 and state.read_text() == 'ok 6.8.0-51-generic\n'
+        assert admin.next_kernel_state() == {'ok': True, 'output': '6.8.0-51-generic'}
+        (fake / 'uname').write_text('#!/bin/sh\necho 6.8.0-51-generic\n')      # rebooted into the new kernel
+        assert check().returncode == 0 and state.read_text() == '\n'
+        assert admin.next_kernel_state() == {'ok': True, 'output': ''}
+        state.write_text('missing ../../etc; rm -rf /\n')
+        assert admin.next_kernel_state()['ok'] is True, 'only a plain version string is believed'
+    finally:
+        del os.environ['AWG31_NEXT_KERNEL']
+
+
+def test_bot_warns_once_about_a_kernel_without_the_module_and_about_failed_uploads(env):
+    bot, api, controller, _ = env
+    upcoming = {'ok': True, 'output': ''}
+    real = controller.__class__.__call__
+
+    def fake(command, data=None):
+        reply = real(controller, command, data)
+        if command == 'diagnostics':
+            reply['next_kernel'] = dict(upcoming)
+        return reply
+    bot.ctl = fake
+    bot.tick()
+    assert notifications(api, 0) == []
+    upcoming.update(ok=False, output='7.0.0-50-generic')
+    bot.tick()
+    bot.tick()
+    sent = notifications(api, 0)
+    assert len(sent) == 2 and all('7.0.0-50-generic' in text and 'sudo awg31 update' in text for text in sent), 'admin and viewer, once'
+    bot.handle_update(message('/status'))
+    assert '7.0.0-50-generic' in api.texts()[-1]
+    upcoming.update(ok=True, output='7.0.0-50-generic')
+    start = len(api.calls)
+    bot.tick()
+    assert all('can be rebooted' in text for text in notifications(api, start)) and len(notifications(api, start)) == 2
+    start = len(api.calls)
+    controller.audit.append({'timestamp': controller.stamp(), 'event': 'backup_upload_failed', 'target': 'awg31-x.tar.gz.gpg: S3 answered 403'})
+    controller.audit.append({'timestamp': controller.stamp(), 'event': 'backup_uploaded', 'target': 'awg31-y.tar.gz.gpg'})
+    bot.tick()
+    sent = notifications(api, start)
+    assert len(sent) == 2 and all('S3 answered 403' in text for text in sent), 'success is silent, failure is reported'
+
+
+def test_backups_page_shows_the_remote_storage_and_the_kernel_warning(ui):
+    app, client, calls = ui
+    assert 'sudo awg31 backup-remote s3' in client.get('/maintenance?tab=backups').text
+    original = app.ctl
+
+    def fake(op, data=None):
+        if op == 'backup-remote':
+            return {'configured': True, 'type': 's3', 'target': 's3://my-backups/vpn/ (https://s3.example.com)'}
+        reply = original(op, data)
+        if op == 'diagnostics':
+            reply['next_kernel'] = {'ok': False, 'output': '7.0.0-50-generic'}
+        return reply
+    app.ctl = fake
+    assert 's3://my-backups/vpn/' in client.get('/maintenance?tab=backups').text
+    system = client.get('/maintenance?tab=system').text
+    assert '7.0.0-50-generic' in system and 'sudo awg31 update' in system
+
+
+def test_batch_form_is_marked_for_the_download_script():
+    assert 'data-batch-download' in (ROOT / 'src/web.py').read_text() and 'form[data-batch-download]' in (ROOT / 'src/panel.js').read_text()

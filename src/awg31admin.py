@@ -21,7 +21,8 @@ VALID_AUDIT = {'login_success', 'login_failed', 'password_changed', 'client_adde
                'server_settings_changed', 'profile_imported', 'backup_created',
                'backup_downloaded', 'backup_deleted', 'backup_policy_changed', 'backup_pruned',
                'backup_failed', 'client_config_sent', 'totp_enabled', 'totp_disabled',
-               'telegram_changed', 'backup_encryption_changed'}
+               'telegram_changed', 'backup_encryption_changed', 'backup_uploaded', 'backup_upload_failed',
+               'backup_remote_changed'}
 
 
 def _host_uplink():
@@ -509,12 +510,7 @@ def backup_encryption_set(data):
         audit({'event':'backup_encryption_changed','target':'off'})
         return {'ok':True,'enabled':False}
     if not shutil_which('gpg'): raise ValueError('gpg is not installed: install the gnupg package first')
-    passphrase=str(data.get('passphrase','') or '')
-    generated=not passphrase
-    if generated:
-        passphrase='-'.join(secrets.token_hex(3) for _ in range(6))
-    if len(passphrase)<16 or len(passphrase)>200 or any(ord(c)<32 for c in passphrase):
-        raise ValueError('Passphrase: 16-200 characters, one line')
+    passphrase,generated=_new_passphrase(data)
     file.parent.mkdir(parents=True,exist_ok=True)
     _atomic_private_file(file,passphrase+'\n')
     os.chown(file,0,0)
@@ -527,13 +523,204 @@ def shutil_which(name):
     return shutil.which(name)
 
 
-def _gpg(args, *, input=None):
+def _gpg(args, *, input=None, key=None):
     """gpg with a throw-away home: the panel's sandbox hides /root."""
     with tempfile.TemporaryDirectory(prefix='awg31-gpg-') as home:
         cp=subprocess.run(['gpg','--homedir',home,'--batch','--yes','--quiet','--no-tty','--pinentry-mode','loopback',
-                           '--passphrase-file',str(backup_key_file()),*args],input=input,capture_output=True,timeout=120,check=False)
+                           '--passphrase-file',str(key or backup_key_file()),*args],input=input,capture_output=True,timeout=120,check=False)
     if cp.returncode: raise ValueError('gpg failed: '+cp.stderr.decode('utf-8','replace').strip()[-200:])
     return cp.stdout
+
+
+def _new_passphrase(data):
+    passphrase=str(data.get('passphrase','') or '')
+    generated=not passphrase
+    if generated:
+        passphrase='-'.join(secrets.token_hex(3) for _ in range(6))
+    if len(passphrase)<16 or len(passphrase)>200 or any(ord(c)<32 for c in passphrase):
+        raise ValueError('Passphrase: 16-200 characters, one line')
+    return passphrase,generated
+
+
+def backup_encryption_change(data):
+    """Root console only: a new passphrase, and every archive the current one opens is re-encrypted with it.
+
+    Nothing is replaced until every archive has been re-encrypted, so a failure
+    half-way leaves the old passphrase and the old archives fully intact.
+    """
+    file=backup_key_file()
+    if not file.is_file(): raise ValueError('Backup encryption is off: use "backup-encryption on"')
+    passphrase,generated=_new_passphrase(data)
+    directory=backup_dir()
+    archives=sorted(p for p in directory.glob('awg31-*.tar.gz.gpg') if VALID_BACKUP.fullmatch(p.name)) if directory.is_dir() else []
+    new_key=file.with_name(file.name+'.new')
+    _atomic_private_file(new_key,passphrase+'\n')
+    ready,skipped=[],[]
+    try:
+        for archive in archives:
+            try: plain=_gpg(['--decrypt',str(archive)])
+            except ValueError:
+                skipped.append(archive.name)          # sealed with some earlier passphrase: left as it is
+                continue
+            target=archive.with_name(archive.name+'.new')
+            _gpg(['--symmetric','--cipher-algo','AES256','--output',str(target),'-'],input=plain,key=new_key)
+            os.chmod(target,0o600)
+            ready.append((target,archive))
+        for target,archive in ready: os.replace(target,archive)
+        os.replace(new_key,file)
+    except Exception:
+        for target,_ in ready: target.unlink(missing_ok=True)
+        new_key.unlink(missing_ok=True)
+        raise
+    audit({'event':'backup_encryption_changed','target':f'passphrase changed, {len(ready)} re-encrypted'})
+    return {'ok':True,'reencrypted':len(ready),'skipped':skipped,'passphrase':passphrase if generated else None}
+
+
+# ---- Copies outside the server: S3-compatible storage or SFTP. Encrypted archives only. ----
+def remote_file():
+    return Path(os.environ.get('AWG31_BACKUP_REMOTE','/etc/awg31-panel/backup-remote.json'))
+
+
+def _remote():
+    file=remote_file()
+    if not file.is_file(): return None
+    return json.loads(file.read_text())
+
+
+def _remote_target(remote):
+    if remote['type']=='s3': return f"s3://{remote['bucket']}/{remote.get('prefix','')} ({remote['endpoint']})"
+    return f"sftp://{remote['user']}@{remote['host']}:{remote['port']}{remote['path']}"
+
+
+def backup_remote_status():
+    remote=_remote()
+    if not remote: return {'configured':False}
+    return {'configured':True,'type':remote['type'],'target':_remote_target(remote)}      # never the keys
+
+
+def backup_remote_set(data):
+    """Root console only. S3 keys and the SFTP private key never leave the server."""
+    file=remote_file()
+    if data.get('off') is True:
+        file.unlink(missing_ok=True)
+        audit({'event':'backup_remote_changed','target':'off'})
+        return {'ok':True,'configured':False}
+    if not backup_key_file().is_file():
+        raise ValueError('Turn on backup encryption first (backup-encryption on): only encrypted archives leave the server')
+    kind=str(data.get('type',''))
+    def field(name,pattern,default=None):
+        value=str(data.get(name,default if default is not None else '')).strip()
+        if not re.fullmatch(pattern,value): raise ValueError(f'Invalid value: {name}')
+        return value
+    if kind=='s3':
+        remote={'type':'s3','endpoint':field('endpoint',r'https?://[A-Za-z0-9.-]{1,253}(?::[0-9]{1,5})?').rstrip('/'),
+                'region':field('region',r'[a-z0-9-]{1,40}','us-east-1'),'bucket':field('bucket',r'[a-z0-9][a-z0-9.-]{1,62}'),
+                'prefix':field('prefix',r'(?:[A-Za-z0-9._-]+/)*',''),
+                'access_key':field('access_key',r'[A-Za-z0-9+/=_-]{3,128}'),'secret_key':field('secret_key',r'[\x21-\x7e]{8,256}')}
+        result={'ok':True,'configured':True}
+    elif kind=='sftp':
+        if not shutil_which('sftp') or not shutil_which('ssh-keygen'): raise ValueError('The OpenSSH client is not installed')
+        remote={'type':'sftp','host':field('host',r'[A-Za-z0-9][A-Za-z0-9.:-]{0,252}'),'port':int(field('port',r'[0-9]{1,5}','22')),
+                'user':field('user',r'[a-z_][a-z0-9_.-]{0,31}'),'path':field('path',r'/(?:[A-Za-z0-9._-]+/?)*','/')}
+        if not 1<=remote['port']<=65535: raise ValueError('Invalid value: port')
+        key=file.with_name('backup-remote.key')
+        if not key.is_file():
+            cp=subprocess.run(['ssh-keygen','-q','-t','ed25519','-N','','-C','awg31-backup','-f',str(key)],capture_output=True,text=True,timeout=30)
+            if cp.returncode: raise ValueError('ssh-keygen failed: '+cp.stderr.strip()[-200:])
+            os.chmod(key,0o600)
+        result={'ok':True,'configured':True,'public_key':key.with_name(key.name+'.pub').read_text().strip()}
+    else:
+        raise ValueError('Storage type: s3 or sftp')
+    _atomic_private_file(file,json.dumps(remote,indent=1)+'\n')
+    audit({'event':'backup_remote_changed','target':_remote_target(remote)[:110]})
+    result['target']=_remote_target(remote)
+    return result
+
+
+def s3_authorization(method,host,path,headers,payload_hash,region,access_key,secret_key,amz_date):
+    """AWS Signature Version 4 for one S3 request without a query string. Returns the Authorization header."""
+    import hmac
+    signed=dict(sorted((k.lower(),' '.join(str(v).split())) for k,v in headers.items()))
+    canonical='\n'.join([method,path,'',''.join(f'{k}:{v}\n' for k,v in signed.items()),';'.join(signed),payload_hash])
+    scope=f'{amz_date[:8]}/{region}/s3/aws4_request'
+    to_sign='\n'.join(['AWS4-HMAC-SHA256',amz_date,scope,hashlib.sha256(canonical.encode()).hexdigest()])
+    key=('AWS4'+secret_key).encode()
+    for part in (amz_date[:8],region,'s3','aws4_request'):
+        key=hmac.new(key,part.encode(),hashlib.sha256).digest()
+    signature=hmac.new(key,to_sign.encode(),hashlib.sha256).hexdigest()
+    return f'AWS4-HMAC-SHA256 Credential={access_key}/{scope},SignedHeaders={";".join(signed)},Signature={signature}'
+
+
+def _s3_put(remote,name,body):
+    import urllib.error,urllib.parse,urllib.request
+    host=urllib.parse.urlsplit(remote['endpoint']).netloc
+    path='/'+remote['bucket']+'/'+urllib.parse.quote(remote.get('prefix','')+name,safe='/-_.~')      # path-style: works everywhere
+    amz_date=datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')
+    payload_hash=hashlib.sha256(body).hexdigest()
+    headers={'Host':host,'x-amz-content-sha256':payload_hash,'x-amz-date':amz_date}
+    headers['Authorization']=s3_authorization('PUT',host,path,headers,payload_hash,remote['region'],
+                                              remote['access_key'],remote['secret_key'],amz_date)
+    request=urllib.request.Request(remote['endpoint']+path,data=body,method='PUT',headers=headers)
+    try:
+        with urllib.request.urlopen(request,timeout=60) as reply: reply.read()
+    except urllib.error.HTTPError as exc:
+        detail=re.search(r'<Code>([^<]{1,60})</Code>',exc.read(2000).decode('utf-8','replace'))
+        raise ValueError(f'S3 answered {exc.code}'+(f' {detail.group(1)}' if detail else '')) from None
+    except (urllib.error.URLError,OSError) as exc:
+        raise ValueError(f'S3 is unreachable: {getattr(exc,"reason",exc)}'[:150]) from None
+
+
+def _sftp_put(remote,source,name):
+    base=remote_file()
+    batch=f'put "{source}" "{remote["path"].rstrip("/")}/{name}"\n'
+    cp=subprocess.run(['sftp','-q','-b','-','-i',str(base.with_name('backup-remote.key')),'-P',str(remote['port']),
+                       '-o','BatchMode=yes','-o','IdentitiesOnly=yes','-o','ConnectTimeout=15',
+                       # The host key is remembered at the first connection and must not change afterwards.
+                       '-o','StrictHostKeyChecking=accept-new','-o',f'UserKnownHostsFile={base.with_name("backup-remote.known_hosts")}',
+                       f'{remote["user"]}@{remote["host"]}'],input=batch,capture_output=True,text=True,timeout=90,check=False)
+    if cp.returncode:
+        lines=[l for l in (cp.stderr or cp.stdout).strip().splitlines() if l.strip()]
+        raise ValueError('SFTP failed: '+(lines[-1] if lines else 'unknown error')[:150])
+
+
+def upload_backup(name):
+    """Send one encrypted archive to the configured storage. Raises ValueError with a short reason."""
+    remote=_remote()
+    if not remote: raise ValueError('Remote storage is not configured')
+    if not VALID_BACKUP.fullmatch(str(name)) or not str(name).endswith('.gpg'): raise ValueError('Only encrypted backups are uploaded')
+    source=backup_dir()/name
+    if not source.is_file(): raise ValueError('Backup not found')
+    if remote['type']=='s3': _s3_put(remote,name,source.read_bytes())
+    else: _sftp_put(remote,source,name)
+    return {'ok':True,'target':_remote_target(remote)}
+
+
+def backup_remote_test():
+    """Root console only: prove that the storage accepts a file, without sending a backup."""
+    remote=_remote()
+    if not remote: raise ValueError('Remote storage is not configured')
+    name='awg31-connection-test.txt'
+    body=f'AmneziaWG 3.1 Console backup storage test, {datetime.now(timezone.utc).isoformat()}\n'.encode()
+    if remote['type']=='s3': _s3_put(remote,name,body)
+    else:
+        with tempfile.TemporaryDirectory(prefix='awg31-remote-') as tmp:
+            probe=Path(tmp)/name; probe.write_bytes(body)
+            _sftp_put(remote,probe,name)
+    return {'ok':True,'target':_remote_target(remote),'file':name}
+
+
+def after_backup(result):
+    """Called after every new backup: upload it when a storage is set up. Never fails the backup itself."""
+    if not result.get('encrypted') or not _remote(): return result
+    try:
+        upload_backup(result['name'])
+        audit({'event':'backup_uploaded','target':result['name']})
+        result['uploaded']=True
+    except (ValueError,OSError,subprocess.TimeoutExpired) as exc:
+        reason=''.join(c for c in str(exc) if ord(c)>=32)[:60]
+        audit({'event':'backup_upload_failed','target':f"{result['name']}: {reason}"})
+        result['uploaded']=False; result['upload_error']=reason
+    return result
 
 
 def _check_new_password(new):
@@ -669,4 +856,14 @@ def diagnose(manager,iface):
             'forwarding':command(['sysctl','-n','net.ipv4.ip_forward']),
             'service':command(['systemctl','is-active',f'awg-quick@{iface}.service']),
             'secure_boot':command(['mokutil','--sb-state']),
-            'panel':command(['systemctl','is-active','awg31-panel.service'])}
+            'panel':command(['systemctl','is-active','awg31-panel.service']),
+            'next_kernel':next_kernel_state()}
+
+
+def next_kernel_state():
+    """What kernel-check.sh found for a newer installed kernel that is not running yet."""
+    file=Path(os.environ.get('AWG31_NEXT_KERNEL','/var/lib/awg31-panel/next-kernel'))
+    try: state,_,version=file.read_text().strip().partition(' ')
+    except OSError: return {'ok':True,'output':''}
+    if state=='missing' and re.fullmatch(r'[A-Za-z0-9._+~-]{1,100}',version): return {'ok':False,'output':version}
+    return {'ok':True,'output':version if state=='ok' else ''}

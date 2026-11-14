@@ -231,6 +231,71 @@ echo 'a wrong passphrase 123456' >/etc/awg31-panel/backup-passphrase
 if awg31 restore-check "$sealed" 2>/dev/null; then fail 'a wrong passphrase opened the backup'; fi
 mv -f /root/passphrase.keep /etc/awg31-panel/backup-passphrase
 
+step 'New backup passphrase re-encrypts the existing archives'
+AWG31_BACKUP_PASSPHRASE='smoke NEW passphrase 2027' awg31 backup-encryption change
+opens(){ gpg --batch --quiet --pinentry-mode loopback --passphrase "$1" -d "/var/backups/awg31-panel/full/$sealed" 2>/dev/null | tar tz 2>/dev/null | grep -qx manifest.json; }
+opens 'smoke NEW passphrase 2027' || fail 'the archive does not open with the new passphrase'
+if opens 'smoke test passphrase 2026'; then fail 'the archive still opens with the old passphrase'; fi
+awg31 restore-check "$sealed"
+if ls /var/backups/awg31-panel/full/ /etc/awg31-panel/ | grep -q '\.new$'; then fail 'temporary files left after the passphrase change'; fi
+
+step 'Backups are uploaded over SFTP'
+if systemctl is-active --quiet ssh || systemctl is-active --quiet sshd; then
+    id awgbackup >/dev/null 2>&1 || useradd -m -s /bin/bash awgbackup
+    install -d -o awgbackup -g awgbackup -m 700 /home/awgbackup/.ssh /home/awgbackup/in
+    AWG31_UNATTENDED=1 AWG31_REMOTE_HOST=127.0.0.1 AWG31_REMOTE_PORT=22 AWG31_REMOTE_USER=awgbackup AWG31_REMOTE_PATH=/home/awgbackup/in \
+        awg31 backup-remote sftp </dev/null && fail 'the upload worked before the key was authorised' || :
+    install -o awgbackup -g awgbackup -m 600 /etc/awg31-panel/backup-remote.key.pub /home/awgbackup/.ssh/authorized_keys
+    restorecon -R /home/awgbackup 2>/dev/null || :
+    awg31 backup-remote test
+    [[ -f /home/awgbackup/in/awg31-connection-test.txt ]] || fail 'the SFTP test file did not arrive'
+    reply="$("$MGR" backup-create)"
+    sent="$(python3 -c 'import json,sys; r=json.load(sys.stdin); assert r["uploaded"] is True, r; print(r["name"])' <<<"$reply")"
+    cmp "/var/backups/awg31-panel/full/$sent" "/home/awgbackup/in/$sent" || fail 'the uploaded archive differs from the local one'
+    grep -q "backup_uploaded.*$sent" /var/log/awg31-panel/audit.jsonl || fail 'the upload is not in the audit log'
+    [[ "$(stat -c '%U %a' /etc/awg31-panel/backup-remote.key)" == 'root 600' ]] || fail 'the SFTP key is readable by others'
+    if runuser -u awgpanel -- cat /etc/awg31-panel/backup-remote.json >/dev/null 2>&1; then fail 'the panel user can read the storage settings'; fi
+    # A storage that stops accepting files must not break the backup itself.
+    rm -f /home/awgbackup/.ssh/authorized_keys
+    "$MGR" backup-create | python3 -c 'import json,sys; r=json.load(sys.stdin); assert r["ok"] and r["uploaded"] is False and r["upload_error"], r'
+    grep -q 'backup_upload_failed' /var/log/awg31-panel/audit.jsonl || fail 'the failed upload is not in the audit log'
+    awg31 backup-remote off
+    userdel -r awgbackup >/dev/null 2>&1 || :
+else
+    echo 'SKIPPED: no SSH server on this machine'
+fi
+
+step 'Backups are uploaded to S3-compatible storage (MinIO)'
+if command -v docker >/dev/null 2>&1 && docker pull -q minio/minio >/dev/null 2>&1; then
+    docker rm -f awg31-minio >/dev/null 2>&1 || :
+    docker run -d --name awg31-minio -p 127.0.0.1:19000:9000 -e MINIO_ROOT_USER=smokeaccess -e MINIO_ROOT_PASSWORD=smokesecret123 \
+        minio/minio server /data >/dev/null
+    for attempt in $(seq 1 30); do curl --noproxy '*' -fsS -o /dev/null http://127.0.0.1:19000/minio/health/live && break; sleep 1; done
+    docker exec awg31-minio mkdir -p /data/awg31-smoke
+    s3_setup(){ AWG31_UNATTENDED=1 AWG31_REMOTE_ENDPOINT=http://127.0.0.1:19000 AWG31_REMOTE_REGION=us-east-1 AWG31_REMOTE_BUCKET=awg31-smoke \
+        AWG31_REMOTE_PREFIX=vpn/ AWG31_REMOTE_ACCESS_KEY=smokeaccess AWG31_REMOTE_SECRET_KEY="$1" awg31 backup-remote s3 </dev/null; }
+    if s3_setup 'a-wrong-secret-key'; then fail 'MinIO accepted a wrong secret key: the signature is not really checked'; fi
+    s3_setup smokesecret123 || fail 'MinIO refused a correctly signed upload'
+    awg31 backup-remote status | grep -q 's3://awg31-smoke/vpn/' || fail 'status does not show the storage'
+    if awg31 backup-remote status | grep -q smokesecret123; then fail 'status prints the secret key'; fi
+    sent="$("$MGR" backup-create | python3 -c 'import json,sys; r=json.load(sys.stdin); assert r["uploaded"] is True, r; print(r["name"])')"
+    docker exec awg31-minio ls /data/awg31-smoke/vpn/ | grep -qx "$sent" || fail 'the backup is not in the bucket'
+    awg31 backup-remote off
+    docker rm -f awg31-minio >/dev/null
+else
+    echo 'SKIPPED: Docker or the MinIO image is not available on this machine'
+fi
+
+step 'A new kernel without the module is noticed before the reboot'
+bash /usr/local/libexec/awg31/scripts/kernel-check.sh >/dev/null || fail 'kernel check fails on a healthy system'
+mkdir -p /lib/modules/99.0.0-awg31smoke/kernel
+if bash /usr/local/libexec/awg31/scripts/kernel-check.sh >/dev/null 2>&1; then fail 'a kernel without the module was not noticed'; fi
+grep -qx 'missing 99.0.0-awg31smoke' /var/lib/awg31-panel/next-kernel || fail 'the finding was not recorded'
+echo '{"interface":"awg0"}' | "$MGR" diagnostics | python3 -c 'import json,sys; n=json.load(sys.stdin)["next_kernel"]; assert n == {"ok": False, "output": "99.0.0-awg31smoke"}, n'
+rm -rf /lib/modules/99.0.0-awg31smoke
+bash /usr/local/libexec/awg31/scripts/kernel-check.sh >/dev/null || fail 'kernel check did not recover'
+echo '{"interface":"awg0"}' | "$MGR" diagnostics | python3 -c 'import json,sys; assert json.load(sys.stdin)["next_kernel"]["ok"] is True'
+
 step 'Telegram bot: narrow sudo rule, commands, notifications'
 TG=http://127.0.0.1:18443
 python3 "$ROOT/tests/smoke/fake_telegram.py" 18443 &

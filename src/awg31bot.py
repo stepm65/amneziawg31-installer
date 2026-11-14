@@ -99,6 +99,9 @@ TEXT = {
                                               'Последнее соединение: {seen}\nДействует до: {expiry}'),
         'my_hint': 'По вопросам доступа обратитесь к администратору.',
         'read_only': 'У вас доступ только для просмотра.',
+        'n_next_kernel_bad': '⚠️ Установлено новое ядро <b>{version}</b>, но модуль AmneziaWG для него не собран. После перезагрузки VPN не запустится. До перезагрузки выполните на сервере: <code>sudo awg31 update</code>',
+        'n_next_kernel_ok': '🟢 Модуль AmneziaWG для нового ядра собран: перезагружать сервер можно.',
+        'n_upload_failed': '⚠️ Резервная копия не отправлена во внешнее хранилище: {target}',
         'speed': '\nСкорость: до {n} Мбит/с', 'monthly': ' в месяц', 'b_speed': '🚦 Скорость', 'b_nospeed': 'Без ограничения',
         'b_mbit': '{n} Мбит/с', 'ask_speed': 'Ограничение скорости <b>{name}</b> (в обе стороны).',
         'b_renew': '🙏 Продлить {name}', 'renew_sent': 'Запрос на продление <b>{name}</b> отправлен администратору.',
@@ -180,6 +183,9 @@ TEXT = {
                                                'Last handshake: {seen}\nValid until: {expiry}'),
         'my_hint': 'For access questions contact the administrator.',
         'read_only': 'You have read-only access.',
+        'n_next_kernel_bad': '⚠️ A new kernel <b>{version}</b> is installed, but the AmneziaWG module is not built for it. After a reboot the VPN will not start. Before rebooting run on the server: <code>sudo awg31 update</code>',
+        'n_next_kernel_ok': '🟢 The AmneziaWG module for the new kernel is built: the server can be rebooted.',
+        'n_upload_failed': '⚠️ The backup was not sent to the remote storage: {target}',
         'speed': '\nSpeed: up to {n} Mbit/s', 'monthly': ' per month', 'b_speed': '🚦 Speed', 'b_nospeed': 'Unlimited',
         'b_mbit': '{n} Mbit/s', 'ask_speed': 'Speed limit of <b>{name}</b> (both directions).',
         'b_renew': '🙏 Extend {name}', 'renew_sent': 'The request to extend <b>{name}</b> was sent to the administrator.',
@@ -493,6 +499,8 @@ class Bot:
                 lines.append(self.t('st_kernel', value=(diag.get('kernel') or {}).get('output', '—')))
                 lines.append(self.t('st_module', value=(diag.get('loaded_module') or {}).get('output', '—')))
                 lines.append(self.t('st_panel', value=(diag.get('panel') or {}).get('output', '—')))
+                if not (diag.get('next_kernel') or {}).get('ok', True):
+                    lines.append(self.t('n_next_kernel_bad', version=diag['next_kernel'].get('output') or '?'))
             except BotError:
                 pass
         else:
@@ -965,6 +973,8 @@ class Bot:
                 self.notify(self.t('n_backup', target=target))
             elif event == 'backup_failed' and notify['backups']:
                 self.notify(self.t('n_backup_failed', target=target))
+            elif event == 'backup_upload_failed' and notify['backups']:
+                self.notify(self.t('n_upload_failed', target=target))
 
     def check_servers(self, notify):
         servers = self.servers()
@@ -987,6 +997,12 @@ class Bot:
                 self.state[key] = healthy
                 if before is not None and before != healthy:
                     self.notify(self.t(ok_text) if healthy else self.t(bad_text, detail=item.get('output') or 'not loaded'))
+            # A newer kernel is installed but the module is not built for it: said once, before the reboot.
+            upcoming = diag.get('next_kernel') or {}
+            problem = '' if upcoming.get('ok', True) else str(upcoming.get('output') or '?')
+            if problem != self.state.get('next_kernel_problem', ''):
+                self.state['next_kernel_problem'] = problem
+                self.notify(self.t('n_next_kernel_bad', version=problem) if problem else self.t('n_next_kernel_ok'))
         warned = self.state.setdefault('expiry_warned', {})
         quota_warned = self.state.setdefault('quota_warned', {})
         now = datetime.fromtimestamp(self.clock(), timezone.utc)

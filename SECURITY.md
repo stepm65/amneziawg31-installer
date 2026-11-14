@@ -29,4 +29,4 @@
 - **Viewers** of the Telegram bot have no action buttons, and every action is refused for them in the handler as well.
 - **Bot settings in the panel** edit administrators, viewers and notifications; the token is never returned to the panel.
 - **Host protection.** A per-server switch drops what clients send to the server itself, except replies, ping and DNS.
-
+- **Remote backup storage.** Only encrypted archives are uploaded. S3 keys (`/etc/awg31-panel/backup-remote.json`) and the SFTP private key are readable by root only and are set from the root console; the panel sees only the storage address. SFTP pins the host key at the first connection.

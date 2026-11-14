@@ -602,7 +602,7 @@ def controller_message(lang, message):
 # that needs the server list three times asks the controller once. A change made
 # in the same request forgets everything read so far.
 READ_ONLY_OPS = frozenset({'servers', 'list', 'status', 'diagnostics', 'history', 'host-history', 'backup-list',
-                           'backup-policy', 'backup-encryption', 'telegram-status', 'audit-list'})
+                           'backup-policy', 'backup-encryption', 'backup-remote', 'telegram-status', 'audit-list'})
 _REQUEST_CACHE = contextvars.ContextVar('awg31_ctl_cache', default=None)
 
 
@@ -1362,7 +1362,7 @@ TEXT['ru'].update({
     'quota_monthly':'Сбрасывать счётчик трафика каждый месяц (UTC)',
     'batch_title':'Создать несколько клиентов', 'batch_prefix':'Префикс имени', 'batch_count':'Сколько (1–50)',
     'batch_start':'Начать с номера', 'batch_create':'Создать и скачать ZIP',
-    'batch_hint':'Имена вида префикс-01, префикс-02… Срок, лимит и скорость общие. В ответ придёт ZIP с конфигурациями; после скачивания обновите страницу.',
+    'batch_hint':'Имена вида префикс-01, префикс-02… Срок, лимит и скорость общие. В ответ придёт ZIP с конфигурациями, после чего список клиентов обновится.',
     'totp_code':'Код из приложения-аутентификатора', 'totp_title':'Двухфакторный вход (TOTP)',
     'totp_on':'Включён: при входе нужен пароль и код из приложения.',
     'totp_off_hint':'Отсканируйте QR-код приложением-аутентификатором (Aegis, Google Authenticator, 2FAS и т. п.) или введите ключ вручную, затем подтвердите паролем и кодом.',
@@ -1376,6 +1376,9 @@ TEXT['ru'].update({
     'tg_n_server':'Сервер, модуль ядра, панель', 'tg_n_clients':'Клиенты: срок и лимит', 'tg_n_security':'Входы в панель, пароль, выдача конфигураций',
     'tg_n_backups':'Резервные копии (зашифрованная копия приходит файлом)',
     'tg_d_off':'Не присылать', 'tg_d_daily':'Каждый день', 'tg_d_weekly':'По понедельникам', 'tg_save':'Сохранить настройки бота',
+    'remote_on':'Каждая новая зашифрованная копия отправляется во внешнее хранилище:',
+    'remote_off':'Внешнее хранилище не настроено. Настроить: sudo awg31 backup-remote s3 (или sftp)',
+    'next_kernel_bad':'Установлено новое ядро {version}, но модуль AmneziaWG для него не собран: после перезагрузки VPN не запустится. До перезагрузки выполните на сервере: sudo awg31 update',
     'enc_on':'Шифрование копий включено: архивы .gpg защищены паролем и могут приходить в Telegram.',
     'enc_off':'Копии не шифруются и содержат все ключи открытым текстом. Включить: sudo awg31 backup-encryption on',
 })
@@ -1388,7 +1391,7 @@ TEXT['en'].update({
     'quota_monthly':'Reset the traffic counter every month (UTC)',
     'batch_title':'Create several clients', 'batch_prefix':'Name prefix', 'batch_count':'How many (1–50)',
     'batch_start':'First number', 'batch_create':'Create and download ZIP',
-    'batch_hint':'Names look like prefix-01, prefix-02… Expiry, quota and speed are shared. The reply is a ZIP with the configurations; reload the page after the download.',
+    'batch_hint':'Names look like prefix-01, prefix-02… Expiry, quota and speed are shared. The reply is a ZIP with the configurations, after which the client list refreshes.',
     'totp_code':'Code from the authenticator app', 'totp_title':'Two-factor sign-in (TOTP)',
     'totp_on':'Enabled: signing in needs the password and a code from the app.',
     'totp_off_hint':'Scan the QR code with an authenticator app (Aegis, Google Authenticator, 2FAS…) or type the key by hand, then confirm with the password and a code.',
@@ -1402,6 +1405,9 @@ TEXT['en'].update({
     'tg_n_server':'Server, kernel module, panel', 'tg_n_clients':'Clients: expiry and quota', 'tg_n_security':'Panel sign-ins, password, configuration downloads',
     'tg_n_backups':'Backups (an encrypted backup arrives as a file)',
     'tg_d_off':'Do not send', 'tg_d_daily':'Every day', 'tg_d_weekly':'On Mondays', 'tg_save':'Save bot settings',
+    'remote_on':'Every new encrypted backup is uploaded to the remote storage:',
+    'remote_off':'No remote storage is set up. Set up: sudo awg31 backup-remote s3 (or sftp)',
+    'next_kernel_bad':'A new kernel {version} is installed, but the AmneziaWG module is not built for it: after a reboot the VPN will not start. Before rebooting run on the server: sudo awg31 update',
     'enc_on':'Backup encryption is on: .gpg archives are protected by a passphrase and may be sent to Telegram.',
     'enc_off':'Backups are not encrypted and contain every key in plain text. Turn on: sudo awg31 backup-encryption on',
 })
@@ -1662,7 +1668,7 @@ def server_content(request: Request, section: str = 'overview'):
         <button class="btn btn-primary" type="submit">{icon('plus',16)}{h(t('create'))}</button>
         </form>
         <details class="cps-details"><summary>{icon('users',16)}{h(t('batch_title'))}</summary>
-        <form class="add-client-form" method="post" action="/servers/{h(state['interface'])}/clients/batch">{csrf(request)}
+        <form class="add-client-form" data-batch-download method="post" action="/servers/{h(state['interface'])}/clients/batch">{csrf(request)}
         <p class="info-line">{h(t('batch_hint'))}</p>
         <div class="fields-grid">
           <label class="field" for="batch-prefix"><span>{h(t('batch_prefix'))}</span>
@@ -2327,6 +2333,9 @@ def maintenance(request: Request, tab: str = 'diagnostics'):
                     {checks}'''
             else:
                 core=''.join(diagnostic_card(lang,k,diag[k]) for k in ('kernel','installed_module','loaded_module','dkms') if k in diag)
+                upcoming=diag.get('next_kernel') or {}
+                if upcoming.get('ok') is False:
+                    body+=f'<p class="error-message" role="alert">{h(t("next_kernel_bad").format(version=upcoming.get("output") or "?"))}</p>'
                 body+=f'''<div class="health-grid health-grid-compact">{core}</div>
                  <section class="maint-command-box"><h3>{icon('terminal',18)}{h(t('maint_system_cmds'))}</h3>
                  <p>{h(t('maint_system_hint_vpn'))}</p>
@@ -2336,6 +2345,7 @@ def maintenance(request: Request, tab: str = 'diagnostics'):
             backups=ctl('backup-list',{}).get('backups',[])
             if tab=='backups':
                 policy_reply=ctl('backup-policy',{})
+                remote=ctl('backup-remote',{})
                 policy=policy_reply.get('policy') or {'frequency':'off','hour':3,'minute':0,'weekday':0,
                        'retention_days':30,'max_copies':20}
                 cards=''.join(f'''<article class="backup-item"><div class="backup-icon">{icon('archive',20)}</div>
@@ -2356,6 +2366,7 @@ def maintenance(request: Request, tab: str = 'diagnostics'):
                   <form method="post" action="/maintenance/backup">{csrf(request)}
                   <button class="btn btn-primary" type="submit">{icon('plus',19)}{h(t('backup_make'))}</button></form></section>
                   <p class="info-line">{h(t('enc_on' if ctl('backup-encryption',{}).get('enabled') else 'enc_off'))}</p>
+                  <p class="info-line">{h(t('remote_on') + ' ' + str(remote.get('target','')) if remote.get('configured') else t('remote_off'))}</p>
                   <div class="backup-list">{cards or '<p class="empty-state">'+h(t('maint_no_backups'))+'</p>'}</div>
                   <section class="backup-policy-card"><div class="section-title"><h3>{icon('clock',20)}{h(t('backup_policy_title'))}</h3></div>
                    <p class="info-line">{h(t('backup_policy_note'))}</p>

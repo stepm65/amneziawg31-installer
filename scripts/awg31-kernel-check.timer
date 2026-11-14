@@ -1,9 +1,9 @@
 [Unit]
-Description=Check AWG31 kernel module after reboot and daily
+Description=Check AWG31 kernel module after reboot and every six hours
 
 [Timer]
 OnBootSec=2min
-OnUnitActiveSec=24h
+OnUnitActiveSec=6h
 Unit=awg31-kernel-check.service
 
 [Install]
