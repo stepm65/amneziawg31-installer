@@ -120,6 +120,16 @@ tg_push "$(tg_text '/status' 4242)"
 tg_wait 30 'Kernel module' || fail 'bot did not answer /status'
 if "$MGR" list <<<'{"interface":"awg0"}' | grep -q intruder; then fail 'a stranger created a client'; fi
 if tg_calls | grep -q '"chat_id": 666'; then fail 'the bot answered a stranger'; fi
+# A client owner (Telegram ID stored on the client) sees their own status, read only.
+echo '{"interface":"awg0","name":"tg-client","telegram_id":"777000111"}' | "$MGR" client-policy >/dev/null
+"$MGR" list <<<'{"interface":"awg0"}' | grep -q '"telegram_id": "777000111"' || fail 'owner ID was not saved'
+sleep 61    # the list of owners is cached for a minute
+tg_push "$(tg_text '/start' 777000111)"
+tg_wait 30 'Your VPN' || fail 'client owner got no status'
+tg_push "$(tg_text '/add by-owner' 777000111)"
+sleep 5
+if "$MGR" list <<<'{"interface":"awg0"}' | grep -q by-owner; then fail 'a client owner created a client'; fi
+if echo '{"interface":"awg0","name":"tg-client","telegram_id":"@name"}' | "$MGR" client-policy >/dev/null 2>&1; then fail 'a non-numeric Telegram ID was accepted'; fi
 curl --noproxy '*' -s -o /dev/null --max-time 10 -d 'password=wrong-password-456' http://127.0.0.1:18081/login || :
 tg_wait 100 'Failed sign-in attempts' || fail 'no notification about a failed sign-in'
 awg31 telegram status

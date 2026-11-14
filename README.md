@@ -181,7 +181,13 @@ sudo awg31 telegram off      # stop the bot and delete the token from the server
 
 Notifications (each group can be turned off during setup): a server went down or came back, the kernel module is not loaded, the panel service stopped; a client was disabled by expiry or quota, a client expires within three days; sign-in to the panel, failed sign-in attempts, password change; a backup was created or the scheduled backup failed.
 
-Only the numeric Telegram IDs you list are served, and only in a private chat with the bot; everybody else gets no answer. Deleting a client and stopping a server ask for confirmation. Everything done through the bot is written to the audit log with the Telegram ID.
+Only the numeric Telegram IDs you list are administrators, and only in a private chat with the bot; apart from client owners (below) everybody else gets no answer. Deleting a client and stopping a server ask for confirmation. Everything done through the bot is written to the audit log with the Telegram ID.
+
+### Client owners
+
+A client can carry the numeric Telegram ID of the person who uses it: the field **Owner’s Telegram ID** in the new-client form and on the client page, or the **Telegram ID** button in the bot. That person writes to the same bot and sees a single read-only screen with their own clients: enabled or disabled (and why), traffic used and the quota, last handshake, expiry date. They get a message three days before the expiry date. One ID may be set on several clients, also on different servers.
+
+An owner cannot download a configuration, change anything, or see other clients, servers and addresses. The person finds their numeric ID with any “user info” bot in Telegram, and has to press **Start** in your bot once: Telegram does not let a bot write first.
 
 Unattended: `AWG31_TELEGRAM_TOKEN` and `AWG31_TELEGRAM_ADMINS` (IDs separated by commas), optionally `AWG31_TELEGRAM_LANG` (`ru`/`en`) and `AWG31_TELEGRAM_NOTIFY` (`all`, `none` or a list of `server,clients,security,backups`). They work both with the installer and with `sudo -E awg31 telegram`.
 

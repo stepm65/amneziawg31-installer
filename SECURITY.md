@@ -11,6 +11,6 @@
 
 - The bot is a separate service running as the user `awgbot`. Its `sudo` rule (`/etc/sudoers.d/awg31-bot`) lists fewer commands than the panel's: it cannot delete or create a server, change settings, restore, download or delete a backup, or change the panel password. The limit is enforced by `sudo`, not by the bot's own code.
 - `awgbot` cannot read the panel secrets (`/etc/awg31-panel`), and the panel user cannot read the bot token (`/etc/awg31-bot/telegram.json`, mode 0640 `root:awgbot`).
-- Only the listed numeric Telegram IDs are served, in private chats only. The bot uses long polling: no webhook and no inbound port.
+- Only the listed numeric Telegram IDs are administrators, in private chats only. A Telegram ID stored on a client gives that person one read-only status screen for that client: no configuration, no actions, no other clients. Requests from such owners are rate limited, and unknown users cost one cached lookup per minute at most. The bot uses long polling: no webhook and no inbound port.
 - Client configurations sent by the bot contain private keys and are stored by Telegram. An administrator's Telegram account is therefore as sensitive as the panel password for client management.
 - Backup archives are never sent to Telegram.

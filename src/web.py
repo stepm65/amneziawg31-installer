@@ -227,6 +227,7 @@ TEXT['en'].update({
 TEXT['ru'].update({
     'policy':'Политика доступа', 'comment':'Комментарий', 'expires':'Дата отключения (UTC)',
     'quota':'Лимит трафика (ГиБ; 0 = без лимита)', 'usage':'Использовано',
+    'telegram_id':'Telegram ID владельца', 'telegram_id_hint':'Числовой ID. Этот человек увидит состояние клиента в Telegram-боте (только просмотр). Пусто — никто.',
     'save_policy':'Сохранить ограничения', 'history':'История трафика',
     'history_note':'Данные собираются системным таймером раз в минуту, даже когда панель закрыта.',
     'maintenance':'Обслуживание и безопасность', 'diagnostics':'Диагностика системы',
@@ -248,6 +249,7 @@ TEXT['ru'].update({
 TEXT['en'].update({
     'policy':'Access policy', 'comment':'Comment', 'expires':'Expiry date (UTC)',
     'quota':'Traffic quota (GiB; 0 = unlimited)', 'usage':'Used',
+    'telegram_id':'Owner’s Telegram ID', 'telegram_id_hint':'Numeric ID. This person sees the state of the client in the Telegram bot (read only). Empty: nobody.',
     'save_policy':'Save access limits', 'history':'Traffic history',
     'history_note':'Samples are collected by a systemd timer each minute, even when the panel is closed.',
     'maintenance':'Maintenance and security', 'diagnostics':'System diagnostics',
@@ -1296,7 +1298,7 @@ def switch_field(field_id, name, text_prefix, state, lang, order=('on', 'off')):
 
 
 def form_field(name, val, label, help='', required=True, field_id=None):
-    extra = ' inputmode="numeric"' if name in ('port', 'mtu') else ''
+    extra = ' inputmode="numeric"' if name in ('port', 'mtu', 'telegram_id') else ''
     field_id = field_id or name
     req = " required" if required else ""
     return (f'<label class="field" for="{field_id}"><span>{h(label)}</span>'
@@ -1500,6 +1502,7 @@ def server_content(request: Request, section: str = 'overview'):
             {form_field('comment','',t('comment'),required=False,field_id='new-comment')}
             {expiry_field('', 'new-expires', lang)}
             {form_field('quota_gib','0',t('quota'),required=False,field_id='new-quota')}
+            {form_field('telegram_id','',t('telegram_id'),t('telegram_id_hint'),required=False,field_id='new-telegram')}
           </div>
           {cps_block('new', {}, False, lang)}
         </div>
@@ -1794,6 +1797,7 @@ async def create(request: Request, interface: str = ''):
                'comment':str(data.get('comment','')),
                'expires_at':str(data.get('expires_at','')),
                'traffic_limit_bytes':gib_bytes(data.get('quota_gib','0')),
+               'telegram_id':str(data.get('telegram_id','')).strip(),
                'routed_subnets':str(data.get('routed_subnets','')),
                'i_enabled':'1' if data.get('i_enabled')=='1' else '0',
                **{f'i{n}':str(data.get(f'i{n}','')) for n in range(1,6)}}
@@ -1905,6 +1909,7 @@ def detail(request: Request, name: str, interface: str = ''):
         {form_field('comment',obj.get('comment',''),t('comment'),required=False,field_id='policy-comment')}
         {expiry_field(obj.get('expires_at') or '', 'policy-expires', lang)}
         {form_field('quota_gib',gib_format(obj.get('traffic_limit_bytes',0)),t('quota'),required=False,field_id='policy-quota')}
+        {form_field('telegram_id',obj.get('telegram_id') or '',t('telegram_id'),t('telegram_id_hint'),required=False,field_id='policy-telegram')}
       </div><button class="btn btn-primary" type="submit">{h(t('save_policy'))}</button>
       </form></section>'''
     return page(t('client') + ' ' + name,
@@ -1934,7 +1939,8 @@ async def policy_update(request: Request, name: str, interface: str = ''):
     require_csrf(request,form.get('csrf',''))
     payload={'name':name,'comment':str(form.get('comment','')),
              'expires_at':str(form.get('expires_at','')),
-             'traffic_limit_bytes':gib_bytes(form.get('quota_gib','0'))}
+             'traffic_limit_bytes':gib_bytes(form.get('quota_gib','0')),
+             'telegram_id':str(form.get('telegram_id','')).strip()}
     try: control(request,'client-policy',payload)
     except RuntimeError as exc: return error_page(request,tr(lang_of(request),'error'),exc)
     audit_event('client_modified',f'{selected_server(request)}/{name}')

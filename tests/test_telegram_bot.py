@@ -62,7 +62,7 @@ class FakeController:
     @staticmethod
     def new_client(ip):
         return {'ip': ip, 'enabled': True, 'expires_at': '', 'traffic_limit_bytes': 0, 'used_bytes': 0,
-                'disabled_reason': '', 'comment': '', 'config_stale': False,
+                'disabled_reason': '', 'comment': '', 'config_stale': False, 'telegram_id': '',
                 'stats': {'handshake': 0, 'received': 0, 'sent': 0}}
 
     def __call__(self, command, data=None):
@@ -136,14 +136,16 @@ def press(data, user=ADMIN, chat_type='private'):
                                                'message': {'message_id': 7, 'chat': {'id': user, 'type': chat_type}}}}
 
 
-def test_strangers_and_group_chats_get_no_answer_and_no_controller_call(env):
+def test_strangers_and_group_chats_get_no_answer_and_change_nothing(env):
     bot, api, controller, _ = env
     bot.handle_update(message('/start', user=STRANGER))
     bot.handle_update(press('s', user=STRANGER))
     bot.handle_update(press('cy:awg0:alice:del', user=STRANGER))
     bot.handle_update(message('/status', chat_type='group'))
     bot.handle_update(press('m', chat_type='supergroup'))
-    assert api.calls == [] and api.files == [] and controller.log == []
+    assert api.calls == [] and api.files == []
+    # The only cost of a stranger is one cached, read-only lookup of client owners.
+    assert controller.commands() in ([], ['servers', 'list'])
     assert 'alice' in controller.clients['awg0']
 
 
@@ -463,3 +465,76 @@ def test_failed_scheduled_backup_leaves_an_audit_record(tmp_path):
     assert run.returncode == 1
     records = [json.loads(line) for line in (tmp_path / 'audit.jsonl').read_text().splitlines()]
     assert records[-1]['event'] == 'backup_failed' and records[-1]['target']
+
+
+OWNER = 555666777
+
+
+def test_owner_sees_only_their_own_clients_and_nothing_else(env):
+    bot, api, controller, now = env
+    controller.clients['awg0']['alice'].update(telegram_id=str(OWNER), used_bytes=3 * 1024 ** 3,
+                                               traffic_limit_bytes=10 * 1024 ** 3, expires_at='2030-05-01T23:59:59+00:00')
+    controller.clients['awg0']['secret-boss'] = controller.new_client('10.8.0.7')
+    bot.handle_update(message('/start', user=OWNER))
+    text = api.texts()[-1]
+    assert 'Your VPN' in text and 'alice' in text and '3.0 GiB of 10.0 GiB' in text and '2030-05-01' in text
+    assert 'secret-boss' not in text and '10.8.0' not in text and 'awg0' not in text
+    assert api.buttons() == ['me'] and api.files == []
+    # Nothing an administrator can do is reachable for an owner, whatever they send.
+    before = len(controller.log)
+    now[0] += 10
+    for update in [press('cy:awg0:alice:del', user=OWNER), message('/add evil', user=OWNER), press('sy:awg0:stop', user=OWNER),
+                   press('ca:awg0:alice:conf', user=OWNER), press('cq:awg0:alice:0', user=OWNER), press('bky', user=OWNER)]:
+        now[0] += 10
+        bot.handle_update(update)
+    assert set(c for c, _ in controller.log[before:]) <= {'servers', 'list'}
+    assert 'alice' in controller.clients['awg0'] and controller.running['awg0'] and api.files == []
+    assert controller.clients['awg0']['alice']['traffic_limit_bytes'] == 10 * 1024 ** 3
+    assert all(p.get('chat_id') == OWNER for m, p in api.calls if m in ('sendMessage', 'editMessageText'))
+
+
+def test_owner_requests_are_rate_limited_and_strangers_stay_cheap(env):
+    bot, api, controller, now = env
+    controller.clients['awg0']['alice']['telegram_id'] = str(OWNER)
+    bot.handle_update(message('hi', user=OWNER))
+    answers = len(api.calls)
+    for _ in range(20):
+        bot.handle_update(message('hi', user=OWNER))
+    assert len(api.calls) == answers, 'a flood from one owner is answered once'
+    calls = len(controller.log)
+    for n in range(50):
+        bot.handle_update(message('/start', user=STRANGER + n))
+    assert len(controller.log) == calls and len(api.calls) == answers, 'strangers cause no controller calls and get no reply'
+    bot.handle_update(message('hi', user=OWNER, chat_type='group'))
+    assert len(api.calls) == answers
+
+
+def test_admin_sets_and_clears_the_owner_from_the_bot(env):
+    bot, api, controller, now = env
+    bot.handle_update(press('ca:awg0:alice:tg'))
+    bot.handle_update(message('@username'))
+    assert controller.clients['awg0']['alice']['telegram_id'] == '' and 'numeric ID' in api.texts()[-1]
+    bot.handle_update(message(str(OWNER)))
+    assert controller.clients['awg0']['alice']['telegram_id'] == str(OWNER)
+    assert f'Owner (Telegram ID): {OWNER}' in api.texts()[-1]
+    bot.handle_update(message('/start', user=OWNER))
+    assert 'Your VPN' in api.texts()[-1], 'the new owner is served at once, not after the cache expires'
+    bot.handle_update(press('ca:awg0:alice:tg'))
+    bot.handle_update(message('0'))
+    assert controller.clients['awg0']['alice']['telegram_id'] == ''
+    now[0] += 10
+    count = len(api.calls)
+    bot.handle_update(message('/start', user=OWNER))
+    assert len(api.calls) == count, 'a removed owner gets no answer any more'
+
+
+def test_owner_is_warned_about_expiry_even_when_admin_notifications_are_off(env):
+    bot, api, controller, now = env
+    from datetime import datetime, timedelta, timezone
+    bot.config['notify'] = {'server': False, 'clients': False, 'security': False, 'backups': False}
+    soon = (datetime.fromtimestamp(now[0], timezone.utc) + timedelta(hours=20)).isoformat()
+    controller.clients['awg0']['alice'].update(telegram_id=str(OWNER), expires_at=soon)
+    bot.tick()
+    bot.tick()
+    sent = [p for m, p in api.calls if m == 'sendMessage']
+    assert len(sent) == 1 and sent[0]['chat_id'] == OWNER and 'alice' in sent[0]['text'] and 'awg0' not in sent[0]['text']
