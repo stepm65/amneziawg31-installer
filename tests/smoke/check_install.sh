@@ -266,20 +266,27 @@ else
     echo 'SKIPPED: no SSH server on this machine'
 fi
 
-step 'Backups are uploaded to S3-compatible storage (MinIO)'
-# The single MinIO binary: no Docker needed, works the same on the runner and in the VMs.
-minio_ok=0
-if curl -fsSL --retry 3 --max-time 180 -o /usr/local/bin/awg31-smoke-minio https://dl.min.io/server/minio/release/linux-amd64/minio; then
-    chmod 755 /usr/local/bin/awg31-smoke-minio
-    rm -rf /tmp/awg31-minio && mkdir -p /tmp/awg31-minio
-    MINIO_ROOT_USER=smokeaccess MINIO_ROOT_PASSWORD=smokesecret123 \
-        nohup /usr/local/bin/awg31-smoke-minio server /tmp/awg31-minio --address 127.0.0.1:19000 --console-address 127.0.0.1:19001 \
-        >/tmp/awg31-minio.log 2>&1 &
-    minio_pid=$!
-    for attempt in $(seq 1 60); do curl --noproxy '*' -fsS -o /dev/null http://127.0.0.1:19000/minio/health/live && minio_ok=1 && break; sleep 1; done
-    [[ $minio_ok == 1 ]] || { tail -n 20 /tmp/awg31-minio.log; kill "$minio_pid" 2>/dev/null || :; }
+step 'Backups are uploaded to S3-compatible storage'
+# versitygw: an S3 gateway in one binary that checks SigV4 signatures and keeps
+# objects as plain files (MinIO no longer publishes binaries or images).
+s3_ok=0
+s3_url="$(curl -fsSL --retry 3 https://api.github.com/repos/versity/versitygw/releases/latest 2>/dev/null \
+          | grep -oiE '"browser_download_url": *"[^"]*linux[^"]*(x86_64|amd64)[^"]*\.tar\.gz"' | head -n1 | sed -E 's/.*"(https[^"]+)"$/\1/')"
+if [[ -n "$s3_url" ]] && rm -rf /tmp/awg31-s3gw && mkdir -p /tmp/awg31-s3gw/data && curl -fsSL --retry 3 --max-time 180 "$s3_url" | tar xz -C /tmp/awg31-s3gw; then
+    s3_bin="$(find /tmp/awg31-s3gw -type f -name versitygw | head -n1)"
+    if [[ -n "$s3_bin" ]]; then
+        chmod 755 "$s3_bin"
+        "$s3_bin" --version || :
+        nohup "$s3_bin" --access smokeaccess --secret smokesecret123 --port 127.0.0.1:19000 posix /tmp/awg31-s3gw/data >/tmp/awg31-s3gw.log 2>&1 &
+        s3_pid=$!
+        for attempt in $(seq 1 30); do
+            curl --noproxy '*' -s -o /dev/null http://127.0.0.1:19000/ && s3_ok=1 && break
+            sleep 1
+        done
+        [[ $s3_ok == 1 ]] || { tail -n 20 /tmp/awg31-s3gw.log; kill "$s3_pid" 2>/dev/null || :; }
+    fi
 fi
-if [[ $minio_ok == 1 ]]; then
+if [[ $s3_ok == 1 ]]; then
     # Create the bucket through the S3 API, signed by the console's own SigV4 code.
     python3 - <<'PY' || fail 'cannot create the test bucket'
 import hashlib, importlib.util, urllib.request
@@ -295,18 +302,18 @@ opener.open(urllib.request.Request('http://' + host + '/awg31-smoke', data=b'', 
 PY
     s3_setup(){ AWG31_UNATTENDED=1 AWG31_REMOTE_ENDPOINT=http://127.0.0.1:19000 AWG31_REMOTE_REGION=us-east-1 AWG31_REMOTE_BUCKET=awg31-smoke \
         AWG31_REMOTE_PREFIX=vpn/ AWG31_REMOTE_ACCESS_KEY=smokeaccess AWG31_REMOTE_SECRET_KEY="$1" awg31 backup-remote s3 </dev/null; }
-    if s3_setup 'a-wrong-secret-key'; then fail 'MinIO accepted a wrong secret key: the signature is not really checked'; fi
-    s3_setup smokesecret123 || fail 'MinIO refused a correctly signed upload'
+    if s3_setup 'a-wrong-secret-key'; then fail 'the S3 server accepted a wrong secret key: the signature is not really checked'; fi
+    s3_setup smokesecret123 || fail 'the S3 server refused a correctly signed upload'
     awg31 backup-remote status | grep -q 's3://awg31-smoke/vpn/' || fail 'status does not show the storage'
     if awg31 backup-remote status | grep -q smokesecret123; then fail 'status prints the secret key'; fi
     sent="$("$MGR" backup-create | python3 -c 'import json,sys; r=json.load(sys.stdin); assert r["uploaded"] is True, r; print(r["name"])')"
-    [[ -e "/tmp/awg31-minio/awg31-smoke/vpn/$sent" ]] || fail 'the backup is not in the bucket'
+    cmp "/var/backups/awg31-panel/full/$sent" "/tmp/awg31-s3gw/data/awg31-smoke/vpn/$sent" || fail 'the object in the bucket differs from the local backup'
     awg31 backup-remote off
-    kill "$minio_pid" 2>/dev/null || :
-    rm -rf /tmp/awg31-minio /usr/local/bin/awg31-smoke-minio
+    kill "$s3_pid" 2>/dev/null || :
+    rm -rf /tmp/awg31-s3gw
 else
-    [[ "${CI:-}" != true ]] || fail 'MinIO could not be started: the S3 upload was not checked'
-    echo 'SKIPPED: MinIO is not available on this machine'
+    [[ "${CI:-}" != true ]] || fail 'no S3 test server could be started: the S3 upload was not checked'
+    echo 'SKIPPED: no S3 test server on this machine'
 fi
 
 step 'A new kernel without the module is noticed before the reboot'

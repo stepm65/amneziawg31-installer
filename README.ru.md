@@ -124,6 +124,10 @@ curl -Ls https://raw.githubusercontent.com/stepm65/amneziawg31-installer/main/in
 |---|---|
 | ![Редактор I1–I5](docs/screenshots/ru-i1-i5.png) | ![Резервные копии](docs/screenshots/ru-backups.png) |
 
+| Двухфакторный вход | Telegram-бот |
+|---|---|
+| ![Двухфакторный вход](docs/screenshots/ru-security.png) | ![Telegram-бот](docs/screenshots/ru-telegram.png) |
+
 На скриншотах демонстрационные данные.
 
 ### Шаблоны I1–I5

@@ -124,6 +124,10 @@ curl -Ls https://raw.githubusercontent.com/stepm65/amneziawg31-installer/main/in
 |---|---|
 | ![I1–I5 editor](docs/screenshots/en-i1-i5.png) | ![Backups](docs/screenshots/en-backups.png) |
 
+| Two-factor sign-in | Telegram bot |
+|---|---|
+| ![Two-factor sign-in](docs/screenshots/en-security.png) | ![Telegram bot](docs/screenshots/en-telegram.png) |
+
 Screenshots show demo data.
 
 ### I1–I5 templates
