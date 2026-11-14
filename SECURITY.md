@@ -14,3 +14,12 @@
 - Only the listed numeric Telegram IDs are administrators, in private chats only. A Telegram ID stored on a client gives that person one read-only status screen for that client: no actions, no other clients, and no configuration unless the administrator turns on the per-client export switch (off by default, reset when the owner changes, every download audited and reported). Requests from such owners are rate limited, and unknown users cost one cached lookup per minute at most. The bot uses long polling: no webhook and no inbound port.
 - Client configurations sent by the bot contain private keys and are stored by Telegram. An administrator's Telegram account is therefore as sensitive as the panel password for client management.
 - Backup archives are never sent to Telegram.
+
+## Added in 0.10
+
+- **Two-factor sign-in.** TOTP (RFC 6238). Turning it on or off needs the password and a valid code; a code is accepted once. Console recovery: `sudo awg31 totp-off` (root only, not reachable from the panel or the bot).
+- **Backup encryption.** OpenPGP symmetric encryption (AES-256) with one passphrase stored in `/etc/awg31-panel/backup-passphrase` (root only; the panel user cannot read it). It can be set and removed only from the root console. The bot may fetch an archive only if it is encrypted.
+- **Viewers** of the Telegram bot have no action buttons, and every action is refused for them in the handler as well.
+- **Bot settings in the panel** edit administrators, viewers and notifications; the token is never returned to the panel.
+- **Host protection.** A per-server switch drops what clients send to the server itself, except replies, ping and DNS.
+

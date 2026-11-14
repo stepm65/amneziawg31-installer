@@ -6,6 +6,9 @@
 #   sudo awg31 telegram test      send a test message to the administrators
 #   sudo awg31 telegram off       stop the bot and delete its token
 #
+# Viewers (read-only), the digest and notification groups are edited in the panel:
+# Maintenance -> Telegram bot.
+#
 # Unattended: AWG31_TELEGRAM_TOKEN and AWG31_TELEGRAM_ADMINS (numeric IDs,
 # comma-separated); optional AWG31_TELEGRAM_LANG (ru|en) and
 # AWG31_TELEGRAM_NOTIFY (all, none or a list of server,clients,security,backups).
@@ -36,6 +39,8 @@ show_status() {
 import json, sys
 c = json.load(open(sys.argv[1]))
 print('  Администраторы (Telegram ID):', ', '.join(str(x) for x in c.get('admins', [])))
+print('  Наблюдатели (только просмотр):', ', '.join(str(x) for x in c.get('viewers', [])) or 'нет')
+print('  Сводка:', c.get('digest', 'off'))
 print('  Язык:', c.get('lang', 'ru'))
 print('  Уведомления:', ', '.join(k for k, v in c.get('notify', {}).items() if v) or 'выключены')
 PY
@@ -59,6 +64,10 @@ TOKEN="${AWG31_TELEGRAM_TOKEN:-}"
 ADMINS="${AWG31_TELEGRAM_ADMINS:-}"
 BOT_LANG="${AWG31_TELEGRAM_LANG:-}"
 NOTIFY="${AWG31_TELEGRAM_NOTIFY:-}"
+VIEWERS="${AWG31_TELEGRAM_VIEWERS:-}"; VIEWERS="${VIEWERS// /}"
+DIGEST="${AWG31_TELEGRAM_DIGEST:-off}"
+[[ -z "$VIEWERS" || "$VIEWERS" =~ ^[0-9]{3,15}(,[0-9]{3,15}){0,19}$ ]] || die 'AWG31_TELEGRAM_VIEWERS: числа через запятую'
+[[ "$DIGEST" =~ ^(off|daily|weekly)$ ]] || die 'AWG31_TELEGRAM_DIGEST: off, daily или weekly'
 [[ -n "$TOKEN" && -n "$ADMINS" ]] && UNATTENDED=1
 
 if [[ "$UNATTENDED" != 1 ]]; then
@@ -119,6 +128,7 @@ install -d -o root -g awgbot -m 750 "$CONFIG_DIR"
 candidate="$(mktemp "$CONFIG_DIR/.telegram.XXXXXX")"
 trap 'rm -f -- "$candidate"' EXIT
 AWG31_T="$TOKEN" AWG31_A="$ADMINS" AWG31_L="$BOT_LANG" AWG31_N="$NOTIFY" AWG31_B="${AWG31_TELEGRAM_API:-}" \
+AWG31_V="$VIEWERS" AWG31_D="$DIGEST" AWG31_OLD="$CONFIG" \
 python3 - "$candidate" <<'PY'
 import json, os, sys
 groups = ('server', 'clients', 'security', 'backups')
@@ -126,6 +136,15 @@ chosen = os.environ['AWG31_N']
 enabled = set(groups) if chosen == 'all' else set() if chosen == 'none' else set(chosen.split(','))
 config = {'token': os.environ['AWG31_T'], 'admins': sorted({int(x) for x in os.environ['AWG31_A'].split(',')}),
           'lang': os.environ['AWG31_L'], 'notify': {g: g in enabled for g in groups}}
+# Viewers and the digest are edited in the panel: a reconnect keeps them unless variables say otherwise.
+try:
+    old = json.load(open(os.environ['AWG31_OLD']))
+except (OSError, ValueError):
+    old = {}
+viewers = os.environ.get('AWG31_V', '')
+config['viewers'] = sorted({int(x) for x in viewers.split(',')} - set(config['admins'])) if viewers else \
+    [x for x in old.get('viewers', []) if x not in config['admins']]
+config['digest'] = os.environ['AWG31_D'] if os.environ.get('AWG31_D', 'off') != 'off' else old.get('digest', 'off')
 if os.environ.get('AWG31_B'):
     config['api_base'] = os.environ['AWG31_B']          # tests only
 with open(sys.argv[1], 'w') as handle:

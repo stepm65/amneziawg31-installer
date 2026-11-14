@@ -1208,6 +1208,10 @@ def change_language(request: Request, language: str, next: str = '/'):
 def login_form(request, error='', next_path='/'):
     lang = lang_of(request)
     msg = f'<p class="error-message" role="alert">{h(error)}</p>' if error else ''
+    try: second = bool(read_auth().get('totp_secret'))
+    except (OSError, ValueError): second = False
+    totp_field = (f'<label class="field" for="code"><span>{h(tr(lang,"totp_code"))}</span>'
+                  '<input id="code" name="code" inputmode="numeric" pattern="[0-9 ]{6,7}" maxlength="7" required autocomplete="one-time-code"></label>') if second else ''
     return page(tr(lang, 'sign_in'), f'''<section class="card login-card">
         <div class="login-mark">{icon('lock',28)}</div>
         <div class="login-card-kicker">AMNEZIAWG 3.1 / ACCESS</div>
@@ -1217,6 +1221,7 @@ def login_form(request, error='', next_path='/'):
         <input type="hidden" name="next" value="{h(safe_next(next_path))}">
         <label class="field" for="password"><span>{h(tr(lang,'password'))}</span>
         <input id="password" type="password" name="password" required autocomplete="current-password" autofocus></label>
+        {totp_field}
         <button class="btn btn-primary full-width" type="submit">{h(tr(lang,'login'))}{icon('arrow',18)}</button>
         </form></section>''', request)
 
@@ -1233,7 +1238,7 @@ def login_get(request: Request, next: str = '/'):
 
 
 @app.post('/login')
-def login_post(request: Request, password: str = Form(...), next: str = Form('/')):
+def login_post(request: Request, password: str = Form(...), next: str = Form('/'), code: str = Form('')):
     lang = lang_of(request)
     target = safe_next(next)
     now = time.monotonic()
@@ -1255,6 +1260,11 @@ def login_post(request: Request, password: str = Form(...), next: str = Form('/'
         candidate=hashlib.scrypt(password.encode('utf-8'),salt=bytes.fromhex(auth['salt']),
                                  n=2**14,r=8,p=1,dklen=32)
         valid=hmac.compare_digest(candidate.hex(),auth['password_hash'])
+        if valid and auth.get('totp_secret'):
+            # Second factor; a code is accepted once, so a watched code cannot be replayed.
+            step=totp_step(auth['totp_secret'],code)
+            valid=step is not None and step>LAST_TOTP_STEP[0]
+            if valid: LAST_TOTP_STEP[0]=step
     except (ValueError,OverflowError,OSError): valid=False
     if not valid:
         attempts.append(now)
@@ -1289,6 +1299,92 @@ def human_size(value):
         n /= 1024
 
 
+# Texts of the features added in 0.10.
+TEXT['ru'].update({
+    'host_label':'Доступ клиентов к службам самого сервера',
+    'host_on':'Разрешён: клиенты достают до SSH, панели и других служб по VPN-адресу сервера',
+    'host_off':'Запрещён: с VPN-адресов до сервера проходят только ответы, ping и DNS',
+    'host_hint':'«Запрещён» закрывает от клиентов всё, что слушает сам сервер. Панель по VPN-адресу тоже перестанет открываться.',
+    'speed':'Ограничение скорости (Мбит/с; 0 = без ограничения)',
+    'quota_monthly':'Сбрасывать счётчик трафика каждый месяц (UTC)',
+    'batch_title':'Создать несколько клиентов', 'batch_prefix':'Префикс имени', 'batch_count':'Сколько (1–50)',
+    'batch_start':'Начать с номера', 'batch_create':'Создать и скачать ZIP',
+    'batch_hint':'Имена вида префикс-01, префикс-02… Срок, лимит и скорость общие. В ответ придёт ZIP с конфигурациями; после скачивания обновите страницу.',
+    'totp_code':'Код из приложения-аутентификатора', 'totp_title':'Двухфакторный вход (TOTP)',
+    'totp_on':'Включён: при входе нужен пароль и код из приложения.',
+    'totp_off_hint':'Отсканируйте QR-код приложением-аутентификатором (Aegis, Google Authenticator, 2FAS и т. п.) или введите ключ вручную, затем подтвердите паролем и кодом.',
+    'totp_secret':'Ключ', 'totp_enable':'Включить двухфакторный вход', 'totp_disable':'Отключить двухфакторный вход',
+    'totp_lost':'Потеряли телефон: на сервере выполните sudo awg31 totp-off',
+    'maint_telegram':'Telegram-бот',
+    'maint_telegram_hint':'Кому отвечает бот и о чём сообщает. Токен хранится на сервере и здесь не показывается.',
+    'tg_missing':'Бот не подключён. На сервере выполните:', 'tg_state':'Служба бота',
+    'tg_admins':'Администраторы (Telegram ID через запятую)', 'tg_viewers':'Наблюдатели: только просмотр и уведомления (ID через запятую)',
+    'tg_lang':'Язык бота', 'tg_notify':'Уведомления', 'tg_digest':'Сводка',
+    'tg_n_server':'Сервер, модуль ядра, панель', 'tg_n_clients':'Клиенты: срок и лимит', 'tg_n_security':'Входы в панель, пароль, выдача конфигураций',
+    'tg_n_backups':'Резервные копии (зашифрованная копия приходит файлом)',
+    'tg_d_off':'Не присылать', 'tg_d_daily':'Каждый день', 'tg_d_weekly':'По понедельникам', 'tg_save':'Сохранить настройки бота',
+    'enc_on':'Шифрование копий включено: архивы .gpg защищены паролем и могут приходить в Telegram.',
+    'enc_off':'Копии не шифруются и содержат все ключи открытым текстом. Включить: sudo awg31 backup-encryption on',
+})
+TEXT['en'].update({
+    'host_label':'Client access to services of the server itself',
+    'host_on':'Allowed: clients reach SSH, the panel and other services on the VPN address of the server',
+    'host_off':'Denied: only replies, ping and DNS pass from VPN addresses to the server',
+    'host_hint':'“Denied” closes everything the server itself listens on to clients. The panel stops opening on the VPN address too.',
+    'speed':'Speed limit (Mbit/s; 0 = unlimited)',
+    'quota_monthly':'Reset the traffic counter every month (UTC)',
+    'batch_title':'Create several clients', 'batch_prefix':'Name prefix', 'batch_count':'How many (1–50)',
+    'batch_start':'First number', 'batch_create':'Create and download ZIP',
+    'batch_hint':'Names look like prefix-01, prefix-02… Expiry, quota and speed are shared. The reply is a ZIP with the configurations; reload the page after the download.',
+    'totp_code':'Code from the authenticator app', 'totp_title':'Two-factor sign-in (TOTP)',
+    'totp_on':'Enabled: signing in needs the password and a code from the app.',
+    'totp_off_hint':'Scan the QR code with an authenticator app (Aegis, Google Authenticator, 2FAS…) or type the key by hand, then confirm with the password and a code.',
+    'totp_secret':'Key', 'totp_enable':'Enable two-factor sign-in', 'totp_disable':'Disable two-factor sign-in',
+    'totp_lost':'Lost the phone: run sudo awg31 totp-off on the server',
+    'maint_telegram':'Telegram bot',
+    'maint_telegram_hint':'Whom the bot answers and what it reports. The token stays on the server and is not shown here.',
+    'tg_missing':'The bot is not connected. On the server run:', 'tg_state':'Bot service',
+    'tg_admins':'Administrators (Telegram IDs, comma-separated)', 'tg_viewers':'Viewers: read-only access and notifications (IDs, comma-separated)',
+    'tg_lang':'Bot language', 'tg_notify':'Notifications', 'tg_digest':'Digest',
+    'tg_n_server':'Server, kernel module, panel', 'tg_n_clients':'Clients: expiry and quota', 'tg_n_security':'Panel sign-ins, password, configuration downloads',
+    'tg_n_backups':'Backups (an encrypted backup arrives as a file)',
+    'tg_d_off':'Do not send', 'tg_d_daily':'Every day', 'tg_d_weekly':'On Mondays', 'tg_save':'Save bot settings',
+    'enc_on':'Backup encryption is on: .gpg archives are protected by a passphrase and may be sent to Telegram.',
+    'enc_off':'Backups are not encrypted and contain every key in plain text. Turn on: sudo awg31 backup-encryption on',
+})
+
+
+LAST_TOTP_STEP = [0]
+
+
+def totp_step(secret, code):
+    """RFC 6238 check with one step of clock drift; returns the matching time step or None."""
+    code = str(code).strip().replace(' ', '')
+    if not re.fullmatch(r'[0-9]{6}', code): return None
+    try: key = base64.b32decode(secret, casefold=True)
+    except ValueError: return None
+    now = int(time.time() // 30)
+    for step in (now, now - 1, now + 1):
+        digest = hmac.new(key, step.to_bytes(8, 'big'), hashlib.sha1).digest()
+        offset = digest[-1] & 15
+        value = (int.from_bytes(digest[offset:offset + 4], 'big') & 0x7fffffff) % 1000000
+        if hmac.compare_digest(f'{value:06d}', code): return step
+    return None
+
+
+def policy_extras(form):
+    try: speed = int(str(form.get('speed_limit_mbit', '0')).strip() or 0)
+    except ValueError: raise HTTPException(422, detail='Invalid speed limit') from None
+    if not 0 <= speed <= 10000: raise HTTPException(422, detail='Invalid speed limit')
+    return {'speed_limit_mbit': speed, 'quota_period': 'monthly' if form.get('quota_monthly') == '1' else ''}
+
+
+def policy_extra_fields(obj, prefix):
+    return (form_field('speed_limit_mbit', str(int(obj.get('speed_limit_mbit') or 0)), tr(obj['_lang'], 'speed'), required=False, field_id=prefix + '-speed')
+            + f'<label class="check-field"><input type="checkbox" name="quota_monthly" value="1"'
+              f'{" checked" if obj.get("quota_period") == "monthly" else ""}><span>{h(tr(obj["_lang"], "quota_monthly"))}</span></label>')
+
+
 def switch_field(field_id, name, text_prefix, state, lang, order=('on', 'off')):
     """An on/off server switch as a labelled select with a one-line explanation."""
     current = state.get(name, order[0])
@@ -1300,7 +1396,7 @@ def switch_field(field_id, name, text_prefix, state, lang, order=('on', 'off')):
 
 
 def form_field(name, val, label, help='', required=True, field_id=None):
-    extra = ' inputmode="numeric"' if name in ('port', 'mtu', 'telegram_id') else ''
+    extra = ' inputmode="numeric"' if name in ('port', 'mtu', 'telegram_id', 'speed_limit_mbit', 'count', 'start') else ''
     field_id = field_id or name
     req = " required" if required else ""
     return (f'<label class="field" for="{field_id}"><span>{h(label)}</span>'
@@ -1505,12 +1601,27 @@ def server_content(request: Request, section: str = 'overview'):
             {expiry_field('', 'new-expires', lang)}
             {form_field('quota_gib','0',t('quota'),required=False,field_id='new-quota')}
             {form_field('telegram_id','',t('telegram_id'),t('telegram_id_hint'),required=False,field_id='new-telegram')}
+            {policy_extra_fields({'_lang':lang}, 'new')}
           </div>
           <label class="check-field"><input type="checkbox" name="owner_export" value="1"><span>{h(t('owner_export'))}</span></label>
           {cps_block('new', {}, False, lang)}
         </div>
         <button class="btn btn-primary" type="submit">{icon('plus',16)}{h(t('create'))}</button>
-        </form></div></section>'''
+        </form>
+        <details class="cps-details"><summary>{icon('users',16)}{h(t('batch_title'))}</summary>
+        <form class="add-client-form" method="post" action="/servers/{h(state['interface'])}/clients/batch">{csrf(request)}
+        <p class="info-line">{h(t('batch_hint'))}</p>
+        <div class="fields-grid">
+          <label class="field" for="batch-prefix"><span>{h(t('batch_prefix'))}</span>
+          <input id="batch-prefix" name="prefix" pattern="[A-Za-z0-9][A-Za-z0-9_-]*" maxlength="27" required></label>
+          {form_field('count','5',t('batch_count'),field_id='batch-count')}
+          {form_field('start','1',t('batch_start'),field_id='batch-start')}
+          {expiry_field('', 'batch-expires', lang)}
+          {form_field('quota_gib','0',t('quota'),required=False,field_id='batch-quota')}
+          {policy_extra_fields({'_lang':lang}, 'batch')}
+        </div>
+        <button class="btn btn-secondary" type="submit">{icon('download',16)}{h(t('batch_create'))}</button>
+        </form></details></div></section>'''
     current=selected_server(request)
     options=''.join(f'<div class="instance-item {"instance-active" if x["interface"]==current else ""}">'
         f'<div><strong>{h(x["interface"])}</strong><small class="mono">{h(x["subnet"])} · UDP {h(x["port"])}'
@@ -1554,6 +1665,7 @@ def server_content(request: Request, section: str = 'overview'):
         form_field('mtu', state['mtu'], t('mtu_label')),
         form_field('dns', state['dns'], t('client_dns')),
         switch_field('client-to-client', 'client_to_client', 'c2c', state, lang),
+        switch_field('host-access', 'host_access', 'host', state, lang),
         *([switch_field('private-access', 'private_access', 'private', state, lang),
            switch_field('ipv6-block', 'ipv6_block', 'ipv6', state, lang, order=('off', 'on'))]
           if state.get('mode') == 'full' else []),
@@ -1782,7 +1894,7 @@ async def settings(request: Request, interface: str = ''):
     form=await request.form()
     require_csrf(request,form.get('csrf',''))
     lang=lang_of(request)
-    payload={k: str(form[k]) for k in ('endpoint','port','mtu','dns','client_to_client','private_access','ipv6_block') if k in form}
+    payload={k: str(form[k]) for k in ('endpoint','port','mtu','dns','client_to_client','private_access','ipv6_block','host_access') if k in form}
     payload.update({k: str(form[k]) for k in OBF_EDIT_FIELDS if k in form})
     try:
         control(request,'settings',payload)
@@ -1802,6 +1914,7 @@ async def create(request: Request, interface: str = ''):
                'traffic_limit_bytes':gib_bytes(data.get('quota_gib','0')),
                'telegram_id':str(data.get('telegram_id','')).strip(),
                'owner_export':data.get('owner_export')=='1',
+               **policy_extras(data),
                'routed_subnets':str(data.get('routed_subnets','')),
                'i_enabled':'1' if data.get('i_enabled')=='1' else '0',
                **{f'i{n}':str(data.get(f'i{n}','')) for n in range(1,6)}}
@@ -1811,6 +1924,27 @@ async def create(request: Request, interface: str = ''):
         return error_page(request, tr(lang_of(request), 'create_error'), exc)
     audit_event('client_added',f"{selected_server(request)}/{result['name']}")
     return RedirectResponse(scoped_client(request, result['name']), status_code=303)
+
+
+@app.post('/servers/{interface}/clients/batch')
+async def create_batch(request: Request, interface: str = ''):
+    data = await request.form()
+    require_csrf(request, data.get('csrf',''))
+    payload = {'prefix':str(data.get('prefix','')).strip(), 'count':str(data.get('count','')), 'start':str(data.get('start','1')),
+               'expires_at':str(data.get('expires_at','')), 'traffic_limit_bytes':gib_bytes(data.get('quota_gib','0')),
+               **policy_extras(data)}
+    try: result = control(request, 'add-batch', payload)
+    except RuntimeError as exc: return error_page(request, tr(lang_of(request), 'create_error'), exc)
+    created = result['clients']
+    audit_event('client_added', f"{selected_server(request)}/{created[0]['name']}..{created[-1]['name']} ({len(created)})")
+    import zipfile
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, 'w', zipfile.ZIP_DEFLATED) as archive:
+        for item in created:
+            archive.writestr(item['name'] + '.conf', item['config'])
+    return Response(buffer.getvalue(), media_type='application/zip', headers={
+        'Content-Disposition': f'attachment; filename="{payload["prefix"]}-{len(created)}-clients.zip"',
+        'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff'})
 
 
 def gib_bytes(raw):
@@ -1914,6 +2048,7 @@ def detail(request: Request, name: str, interface: str = ''):
         {expiry_field(obj.get('expires_at') or '', 'policy-expires', lang)}
         {form_field('quota_gib',gib_format(obj.get('traffic_limit_bytes',0)),t('quota'),required=False,field_id='policy-quota')}
         {form_field('telegram_id',obj.get('telegram_id') or '',t('telegram_id'),t('telegram_id_hint'),required=False,field_id='policy-telegram')}
+        {policy_extra_fields({**obj,'_lang':lang}, 'policy')}
       </div><label class="check-field"><input type="checkbox" name="owner_export" value="1"{' checked' if obj.get('owner_export') else ''}><span>{h(t('owner_export'))}</span></label><button class="btn btn-primary" type="submit">{h(t('save_policy'))}</button>
       </form></section>'''
     return page(t('client') + ' ' + name,
@@ -1945,7 +2080,7 @@ async def policy_update(request: Request, name: str, interface: str = ''):
              'expires_at':str(form.get('expires_at','')),
              'traffic_limit_bytes':gib_bytes(form.get('quota_gib','0')),
              'telegram_id':str(form.get('telegram_id','')).strip(),
-             'owner_export':form.get('owner_export')=='1'}
+             'owner_export':form.get('owner_export')=='1', **policy_extras(form)}
     try: control(request,'client-policy',payload)
     except RuntimeError as exc: return error_page(request,tr(lang_of(request),'error'),exc)
     audit_event('client_modified',f'{selected_server(request)}/{name}')
@@ -2054,6 +2189,7 @@ MAINTENANCE_TABS = (
     ('restore', 'maint_restore', 'restart'),
     ('profiles', 'maint_profiles', 'file'),
     ('security', 'maint_security', 'lock'),
+    ('telegram', 'maint_telegram', 'radio'),
     ('audit', 'maint_audit', 'list'),
     ('system', 'maint_system', 'terminal'),
 )
@@ -2106,6 +2242,7 @@ def maintenance(request: Request, tab: str = 'diagnostics'):
     info_key={
         'diagnostics':'maint_diagnostics_hint','backups':'maint_backups_hint','restore':'maint_restore_hint',
         'profiles':'maint_profile_hint','security':'maint_security_hint','audit':'maint_audit_hint',
+        'telegram':'maint_telegram_hint',
         'system':'maint_system_hint'}
     section_title=next(t(label) for key,label,_ in MAINTENANCE_TABS if key==tab)
     body=f'''<div class="maint-workspace"><nav class="maint-tabs" aria-label="{h(t('maint_choose'))}">
@@ -2165,6 +2302,7 @@ def maintenance(request: Request, tab: str = 'diagnostics'):
                   <p>{h(t('backup_global_note'))}</p><p>{h(t('backup_secret'))}</p>
                   <form method="post" action="/maintenance/backup">{csrf(request)}
                   <button class="btn btn-primary" type="submit">{icon('plus',19)}{h(t('backup_make'))}</button></form></section>
+                  <p class="info-line">{h(t('enc_on' if ctl('backup-encryption',{}).get('enabled') else 'enc_off'))}</p>
                   <div class="backup-list">{cards or '<p class="empty-state">'+h(t('maint_no_backups'))+'</p>'}</div>
                   <section class="backup-policy-card"><div class="section-title"><h3>{icon('clock',20)}{h(t('backup_policy_title'))}</h3></div>
                    <p class="info-line">{h(t('backup_policy_note'))}</p>
@@ -2218,6 +2356,49 @@ def maintenance(request: Request, tab: str = 'diagnostics'):
                 <input type="password" name="confirm" minlength="12" required autocomplete="new-password"></label></div>
                 <button class="btn btn-primary" type="submit">{icon('lock',18)}{h(t('password_change'))}</button></form>
                 </section>'''
+            if read_auth().get('totp_secret'):
+                body+=f'''<section class="maint-form-panel"><h3>{icon('shield',19)}{h(t('totp_title'))}</h3>
+                <p class="info-line">{h(t('totp_on'))} {h(t('totp_lost'))}</p>
+                <form method="post" action="/maintenance/totp/disable">{csrf(request)}
+                <div class="fields-grid"><label class="field"><span>{h(t('password'))}</span>
+                <input type="password" name="password" required autocomplete="current-password"></label>
+                <label class="field"><span>{h(t('totp_code'))}</span>
+                <input name="code" inputmode="numeric" maxlength="7" required autocomplete="one-time-code"></label></div>
+                <button class="btn btn-danger" type="submit">{h(t('totp_disable'))}</button></form></section>'''
+            else:
+                secret=base64.b32encode(secrets.token_bytes(20)).decode()
+                uri='otpauth://totp/AWG31%20Console:admin?secret='+secret+'&issuer=AWG31%20Console'
+                picture=io.BytesIO(); qrcode.make(uri).save(picture,format='PNG')
+                body+=f'''<section class="maint-form-panel"><h3>{icon('shield',19)}{h(t('totp_title'))}</h3>
+                <p class="info-line">{h(t('totp_off_hint'))}</p>
+                <p><img class="totp-qr" width="220" height="220" alt="TOTP QR" src="data:image/png;base64,{base64.b64encode(picture.getvalue()).decode()}"></p>
+                <p>{h(t('totp_secret'))}: <code>{secret}</code></p>
+                <form method="post" action="/maintenance/totp/enable">{csrf(request)}
+                <input type="hidden" name="secret" value="{secret}">
+                <div class="fields-grid"><label class="field"><span>{h(t('password'))}</span>
+                <input type="password" name="password" required autocomplete="current-password"></label>
+                <label class="field"><span>{h(t('totp_code'))}</span>
+                <input name="code" inputmode="numeric" maxlength="7" required autocomplete="one-time-code"></label></div>
+                <button class="btn btn-primary" type="submit">{icon('shield',18)}{h(t('totp_enable'))}</button></form></section>'''
+        elif tab=='telegram':
+            bot=ctl('telegram-status',{})
+            if not bot.get('configured'):
+                body+=f'''<section class="maint-command-box"><p>{h(t('tg_missing'))}</p><code>sudo awg31 telegram</code></section>'''
+            else:
+                def options(current, values, prefix=''):
+                    return ''.join(f'<option value="{v}"{" selected" if current==v else ""}>{h(t(prefix+v) if prefix else v)}</option>' for v in values)
+                checks=''.join(f'<label class="check-field"><input type="checkbox" name="notify_{g}" value="1"'
+                               f'{" checked" if bot["notify"].get(g) else ""}><span>{h(t("tg_n_"+g))}</span></label>'
+                               for g in ('server','clients','security','backups'))
+                body+=f'''<section class="maint-form-panel"><p>{h(t('tg_state'))}: <strong>{h(bot.get('active',''))}</strong></p>
+                <form method="post" action="/maintenance/telegram">{csrf(request)}
+                <div class="fields-grid">
+                {form_field('admins',', '.join(str(x) for x in bot['admins']),t('tg_admins'),field_id='tg-admins')}
+                {form_field('viewers',', '.join(str(x) for x in bot['viewers']),t('tg_viewers'),required=False,field_id='tg-viewers')}
+                <label class="field" for="tg-lang"><span>{h(t('tg_lang'))}</span><select id="tg-lang" name="lang">{options(bot['lang'],('ru','en'))}</select></label>
+                <label class="field" for="tg-digest"><span>{h(t('tg_digest'))}</span><select id="tg-digest" name="digest">{options(bot['digest'],('off','daily','weekly'),'tg_d_')}</select></label>
+                </div><p>{h(t('tg_notify'))}</p>{checks}
+                <button class="btn btn-primary" type="submit">{icon('check',18)}{h(t('tg_save'))}</button></form></section>'''
         elif tab=='audit':
             entries=ctl('audit-list',{}).get('entries',[])
             rows=''.join(f'''<li class="audit-entry"><span class="audit-time">{h(item.get('timestamp',''))}</span>
@@ -2302,7 +2483,7 @@ async def restore_backup(request: Request):
 @app.get('/maintenance/backup/{name}')
 def download_backup(request: Request, name: str):
     require_auth(request)
-    if not re.fullmatch(r'awg31-[0-9]{8}T[0-9]{6}Z-[0-9a-f]{10}\.tar\.gz',name):
+    if not re.fullmatch(r'awg31-[0-9]{8}T[0-9]{6}Z-[0-9a-f]{10}\.tar\.gz(?:\.gpg)?',name):
         raise HTTPException(404)
     try: value=ctl('backup-export',{'name':name})
     except RuntimeError: raise HTTPException(404)
@@ -2310,6 +2491,31 @@ def download_backup(request: Request, name: str):
                     media_type='application/octet-stream',headers={
          'Content-Disposition':f'attachment; filename="{name}"',
          'Cache-Control':'no-store','X-Content-Type-Options':'nosniff'})
+
+
+@app.post('/maintenance/totp/{action}')
+async def totp_change(request: Request, action: str):
+    form=await request.form()
+    require_csrf(request,form.get('csrf',''))
+    if action not in ('enable','disable'): raise HTTPException(404)
+    payload={'password':str(form.get('password','')),'code':str(form.get('code',''))}
+    if action=='enable': payload['secret']=str(form.get('secret',''))
+    try: ctl('totp-enable' if action=='enable' else 'totp-disable',payload)
+    except RuntimeError as exc: return error_page(request,tr(lang_of(request),'maintenance_error'),exc)
+    request.session.clear()            # every session ended: sign in again, now with the new rule
+    return RedirectResponse('/login',status_code=303)
+
+
+@app.post('/maintenance/telegram')
+async def telegram_update(request: Request):
+    form=await request.form()
+    require_csrf(request,form.get('csrf',''))
+    payload={'admins':str(form.get('admins','')),'viewers':str(form.get('viewers','')),'lang':str(form.get('lang','ru')),
+             'digest':str(form.get('digest','off')),
+             'notify':{g:form.get('notify_'+g)=='1' for g in ('server','clients','security','backups')}}
+    try: ctl('telegram-set',payload)
+    except RuntimeError as exc: return error_page(request,tr(lang_of(request),'maintenance_error'),exc)
+    return RedirectResponse('/maintenance?tab=telegram',status_code=303)
 
 
 @app.get('/maintenance/profile')

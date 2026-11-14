@@ -4,7 +4,7 @@
 
 An installer and a web console for running **AmneziaWG 3.1** on your own server: a kernel module built with DKMS, an interactive setup wizard and a bilingual (EN/RU) panel for servers, clients, traffic and backups. No Docker, no control plane in the cloud, nothing loaded from a CDN.
 
-Version **0.9.9** · MIT licence · not affiliated with the AmneziaVPN developers.
+Version **0.10.0** · MIT licence · not affiliated with the AmneziaVPN developers.
 
 ![Infrastructure overview](docs/screenshots/en-dashboard.png)
 
@@ -13,12 +13,13 @@ Version **0.9.9** · MIT licence · not affiliated with the AmneziaVPN developer
 - **AmneziaWG 3.1 only.** The wizard builds the official kernel module (pinned commit) and tools (pinned tag) and refuses to continue with any other version.
 - **Random obfuscation per server.** `S1–S4`, `H1–H4`, `Jc`, `HeaderProtectionKey` are generated for every server, including the first one, and can be regenerated in the panel.
 - **Several independent servers** (`awg0`, `awg1`, … up to 8), each with its own keys, subnet, UDP port and clients.
-- **Clients:** `.conf` download, QR code, `vpn://` link for AmneziaVPN, comment, expiry date, traffic quota, networks behind a client (site-to-site), bulk delete.
-- **Per-server traffic switches:** clients may reach each other or are isolated (also from clients of the other servers); access to the private networks behind the server can be closed; client IPv6 can be routed into the tunnel and dropped. The cloud metadata address range is always closed to clients. Networks behind a client keep working in every state.
+- **Clients:** `.conf` download, QR code, `vpn://` link for AmneziaVPN, comment, expiry date, traffic quota (lifetime or reset every month), speed limit, networks behind a client (site-to-site), creating up to 50 numbered clients at once with a ZIP of configurations, bulk delete.
+- **Per-server traffic switches:** clients may reach each other or are isolated (also from clients of the other servers); access to the private networks behind the server can be closed; the server's own services (SSH, the panel) can be closed to clients; client IPv6 can be routed into the tunnel and dropped. The cloud metadata address range is always closed to clients. Networks behind a client keep working in every state.
 - **Stale-configuration badge:** the client list shows who needs a new file after settings changed.
 - **I1–I5 packets:** a Generate button for each field and ready-made templates for `I1` (random bytes, DNS query, STUN binding request, QUIC-shaped packet). Enabling them with empty fields creates `I1` automatically.
 - **Monitoring:** host CPU, RAM, swap, disk and uplink traffic, per-server traffic charts, 30 days of history collected by a systemd timer.
-- **Backups:** full archives with checksums, download, schedule (daily or weekly), retention, restore with a safety snapshot.
+- **Backups:** full archives with checksums, download, schedule (daily or weekly), retention, restore with a safety snapshot; optional passphrase encryption (OpenPGP), after which the bot delivers every new backup to Telegram.
+- **Two-factor sign-in:** TOTP codes from any authenticator app in addition to the password.
 - **Security by layout:** the panel runs as an unprivileged user on `127.0.0.1`; root actions go through one narrow `sudo` allowlist; strict CSP, CSRF tokens, scrypt password hash, audit log.
 - **Telegram bot (optional):** clients, configurations with QR codes, server start and stop, backups and notifications, through its own narrower `sudo` allowlist.
 - **Optional Nginx** reverse proxy with a self-signed or your own certificate.
@@ -152,6 +153,8 @@ sudo awg31 backups          list backups
 sudo awg31 restore-check N  verify a backup
 sudo awg31 restore N        restore a backup (VPN restarts)
 sudo awg31 reset-password   set a new panel password
+sudo awg31 totp-off         turn off two-factor sign-in (lost authenticator)
+sudo awg31 backup-encryption on|off|status   encrypt backups with a passphrase
 sudo awg31 port N           change the local TCP port of the panel
 sudo awg31 uninstall        remove the console; --purge also deletes VPN data
 sudo awg31 nginx            configure the Nginx HTTPS proxy
@@ -183,11 +186,19 @@ Notifications (each group can be turned off during setup): a server went down or
 
 Only the numeric Telegram IDs you list are administrators, and only in a private chat with the bot; apart from client owners (below) everybody else gets no answer. Deleting a client and stopping a server ask for confirmation. Everything done through the bot is written to the audit log with the Telegram ID.
 
+### Roles, digest and settings in the panel
+
+**Maintenance → Telegram bot** in the panel shows whether the bot runs and edits who may use it and what it reports; the token is never shown there. Besides administrators there are **viewers**: they see the same screens and get the notifications, but have no action buttons and cannot change anything. A **digest** can be sent every day or every Monday after 09:00 server time: servers, clients online, traffic since the previous digest, the most active clients, who expires within a week and who has not connected for a month.
+
+When backup encryption is on (`sudo awg31 backup-encryption on`), every new backup is sent to the administrators as a `.gpg` file. Unencrypted archives are never sent.
+
 ### Client owners
 
 A client can carry the numeric Telegram ID of the person who uses it: the field **Owner’s Telegram ID** in the new-client form and on the client page, or the **Telegram ID** button in the bot. That person writes to the same bot and sees a single read-only screen with their own clients: enabled or disabled (and why), traffic used and the quota, last handshake, expiry date. They get a message three days before the expiry date. One ID may be set on several clients, also on different servers.
 
-An owner cannot change anything or see other clients, servers and addresses. By default they cannot download the configuration either. The switch **The owner may get the configuration and QR code from the Telegram bot** (next to the ID field; in the bot — the button under the client) allows it for that one client: the owner then gets **Config** and **QR** buttons while the client is enabled. Each download is written to the audit log and reported to the administrators (group `security`). The switch turns off by itself when the owner's ID is changed or removed. The person finds their numeric ID with any “user info” bot in Telegram, and has to press **Start** in your bot once: Telegram does not let a bot write first.
+An owner cannot change anything or see other clients, servers and addresses. By default they cannot download the configuration either. The switch **The owner may get the configuration and QR code from the Telegram bot** (next to the ID field; in the bot — the button under the client) allows it for that one client: the owner then gets **Config** and **QR** buttons while the client is enabled. Each download is written to the audit log and reported to the administrators (group `security`). The switch turns off by itself when the owner's ID is changed or removed.
+
+An owner of a client with an expiry date has an **Extend** button: the administrators get the request with ready answers (+7, +30, +90 days, refuse), and the owner is told the result. One request per client a day. The owner is also told when 80 % of the quota is used, when the client is disabled by expiry or quota, and when a monthly quota starts again. The person finds their numeric ID with any “user info” bot in Telegram, and has to press **Start** in your bot once: Telegram does not let a bot write first.
 
 Unattended: `AWG31_TELEGRAM_TOKEN` and `AWG31_TELEGRAM_ADMINS` (IDs separated by commas), optionally `AWG31_TELEGRAM_LANG` (`ru`/`en`) and `AWG31_TELEGRAM_NOTIFY` (`all`, `none` or a list of `server,clients,security,backups`). They work both with the installer and with `sudo -E awg31 telegram`.
 
@@ -229,13 +240,15 @@ sudo bash amneziawg31-installer/scripts/resume-panel.sh
 ## Security notes
 
 - A client `.conf`, `vpn://` link or QR code contains a private key. Whoever has it can connect.
-- Backups are **not encrypted** and contain every private key and the panel credentials. Copy them off the server over a secure channel and store them encrypted.
+- Backups contain every private key and the panel credentials and are **not encrypted by default**. Turn encryption on with `sudo awg31 backup-encryption on` and keep the passphrase away from the server: without it an encrypted backup cannot be restored elsewhere (`gpg -d file.tar.gz.gpg` opens it on any machine). The passphrase itself is stored on the server, readable by root only, so encryption protects archives that leave the server, not a compromised server.
+- Two-factor sign-in is set up in **Maintenance → Security**. A lost authenticator is reset from the console with `sudo awg31 totp-off`.
+- A speed limit applies to both directions of a client and is enforced with `tc` on the VPN interface. A monthly quota resets on the first day of the month, UTC.
 - Do not expose the panel without HTTPS. The generated Nginx site sends HSTS, limits sign-in attempts per address and can restrict access to the addresses you list (`sudo awg31 nginx`).
 - The Telegram bot sends client configurations (private keys) into your chat with it; they stay in the Telegram cloud. Whoever controls an administrator's Telegram account can create and delete clients and stop servers, so protect that account with two-step verification. The bot token is removed by `sudo awg31 telegram off` and by uninstalling.
 - Signing out ends every session of the panel, including a copied cookie.
 - Restoring a backup keeps the current administrator password; the one in the archive is used only when none exists.
 - In full mode only IPv4 goes through the tunnel. Turn on “Client IPv6: block” in the server settings (clients then need a new configuration), or disable IPv6 on the clients; otherwise IPv6 traffic bypasses the VPN.
-- VPN clients can reach services of the server itself on its VPN address (for example SSH). The console does not manage the host's INPUT rules.
+- By default VPN clients can reach services of the server itself on its VPN address (for example SSH). The server setting “Client access to services of the server itself → Denied” closes them: only replies, ping and DNS (when the server is the clients' DNS) pass. Other INPUT rules of the host are not managed by the console.
 - After a kernel update, run `sudo awg31 doctor`: the module is rebuilt by DKMS only if headers for the new kernel are installed.
 
 More in [SECURITY.md](SECURITY.md).

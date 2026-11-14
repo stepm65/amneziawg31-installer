@@ -41,7 +41,7 @@ awg31_install_packages() {
     DEBIAN_FRONTEND=readline apt-get -o Acquire::ForceIPv4=true install -y --no-install-recommends \
       git curl ca-certificates build-essential make gcc dkms mokutil \
       "linux-headers-$(uname -r)" python3 python3-venv python3-pip \
-      iproute2 iptables sudo
+      iproute2 iptables sudo gnupg
     # The line above covers only the running kernel. The meta package of the same
     # flavour (generic, virtual, aws, azure...) brings headers for every future
     # kernel, so DKMS can rebuild the module after an update. Best effort.
@@ -57,7 +57,7 @@ awg31_install_packages() {
     # leave DKMS compiling for a different kernel without user noticing.
     dnf -y install "kernel-devel-$(uname -r)" || awg31_die 'Matching kernel-devel unavailable: update kernel packages, reboot, then retry'
     dnf -y install git curl ca-certificates gcc make dkms mokutil \
-      python3 python3-pip iproute iptables sudo
+      python3 python3-pip iproute iproute-tc iptables sudo gnupg2 tar
   fi
   [[ -d "/lib/modules/$(uname -r)/build" ]] || awg31_die "Missing build tree for running kernel $(uname -r). Reboot after installing the matching kernel-devel package."
   python3 -c 'import venv, ensurepip' || awg31_die 'Python venv/ensurepip unavailable on this OS image'

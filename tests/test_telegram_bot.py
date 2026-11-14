@@ -217,7 +217,8 @@ def test_the_bot_cannot_do_what_the_sudo_rule_withholds(env):
     panel = sudo_list('AWG31_SUDO_COMMANDS')
     withheld = {'server-delete', 'server-create', 'backup-restore', 'backup-export', 'backup-delete', 'password-change',
                 'settings', 'profile-import', 'session-revoke', 'backup-policy-set', 'delete-batch', 'client-network'}
-    assert BOT_ALLOWED < panel and not BOT_ALLOWED & withheld
+    # The one command only the bot has hands out archives that are already encrypted.
+    assert BOT_ALLOWED - panel == {'backup-export-encrypted'} and not BOT_ALLOWED & withheld
     rule = subprocess.run(['bash', '-c', f'. {ROOT}/scripts/sudoers.sh; awg31_render_bot_sudoers'],
                           capture_output=True, text=True, check=True).stdout
     assert rule.startswith('awgbot ALL=(root) NOPASSWD: /usr/local/sbin/awg31mgr servers,')
@@ -479,7 +480,7 @@ def test_owner_sees_only_their_own_clients_and_nothing_else(env):
     text = api.texts()[-1]
     assert 'Your VPN' in text and 'alice' in text and '3.0 GiB of 10.0 GiB' in text and '2030-05-01' in text
     assert 'secret-boss' not in text and '10.8.0' not in text and 'awg0' not in text
-    assert api.buttons() == ['me'] and api.files == []
+    assert api.buttons() == ['mr:awg0:alice', 'me'] and api.files == []
     # Nothing an administrator can do is reachable for an owner, whatever they send.
     before = len(controller.log)
     now[0] += 10

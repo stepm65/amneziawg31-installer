@@ -74,13 +74,111 @@ if forward | grep -q -- '-i awg0 -o awg0 -j ACCEPT'; then fail 'allow rule survi
 echo '{"interface":"awg0","client_to_client":"on","private_access":"on"}' | "$MGR" settings
 if forward | grep -q -- '-o awg+ -j DROP'; then fail 'isolation rule survived'; fi
 
+step 'Server services closed to clients; client IPv6 blocked'
+echo '{"interface":"awg0","host_access":"off","ipv6_block":"on"}' | "$MGR" settings >/dev/null
+iptables -w -S INPUT | grep awg0
+first="$(iptables -w -S INPUT | grep -n -- '-i awg0' | head -n1)"
+last="$(iptables -w -S INPUT | grep -n -- '-i awg0' | tail -n1)"
+grep -q 'ESTABLISHED' <<<"$first" || fail 'replies to the server are not allowed first'
+grep -q -- '-i awg0 -j DROP' <<<"$last" || fail 'the DROP rule for clients is not last'
+echo '{"interface":"awg0","name":"ci-client"}' | "$MGR" download | grep -q 'AllowedIPs = 0.0.0.0/0, ::/0' || fail 'IPv6 is not routed into the tunnel'
+awg show awg0 >/dev/null || fail 'awg0 went down after the switches'
+echo '{"interface":"awg0","host_access":"on","ipv6_block":"off"}' | "$MGR" settings >/dev/null
+if iptables -w -S INPUT | grep -q -- '-i awg0'; then fail 'INPUT rules survived host_access=on'; fi
+
+step 'Speed limit of one client'
+echo '{"interface":"awg0","name":"ci-client","speed_limit_mbit":10}' | "$MGR" client-policy >/dev/null
+tc -s qdisc show dev awg0
+tc class show dev awg0 | grep -qi 'rate 10Mbit' || fail 'no HTB class for the limited client'
+tc filter show dev awg0 parent ffff: | grep -qi 'police' || fail 'no upload policer for the limited client'
+echo '{"interface":"awg0"}' | "$MGR" server-restart >/dev/null
+awg show awg0 >/dev/null || fail 'awg0 did not come back with a speed limit configured'
+tc class show dev awg0 | grep -qi 'rate 10Mbit' || fail 'the limit is lost after a restart'
+echo '{"interface":"awg0","name":"ci-client","speed_limit_mbit":0}' | "$MGR" client-policy >/dev/null
+if tc qdisc show dev awg0 | grep -q htb; then fail 'shaping stays after the limit was removed'; fi
+
+step 'Several clients at once'
+echo '{"interface":"awg0","prefix":"team","count":3,"quota_period":"monthly","traffic_limit_bytes":1073741824}' | "$MGR" add-batch \
+  | python3 -c 'import json,sys; c=json.load(sys.stdin)["clients"]; assert [x["name"] for x in c]==["team-01","team-02","team-03"] and all("PrivateKey" in x["config"] for x in c)'
+awg show awg0 | grep -c '^peer' | grep -qx 5 || fail 'expected five peers after the batch'
+
+step 'Second server next to the first one'
+uplink="$(ip -4 route show default | awk '{print $5; exit}')"
+echo "{\"interface\":\"awg1\",\"subnet\":\"10.88.0.0/24\",\"port\":\"51999\",\"mtu\":\"1280\",\"endpoint\":\"203.0.113.10\",\"dns\":\"1.1.1.1\",\"mode\":\"split\",\"uplink\":\"$uplink\"}" | "$MGR" server-create >/dev/null
+awg show awg1 >/dev/null || fail 'awg1 is not up'
+echo '{"interface":"awg1","name":"second"}' | "$MGR" add | grep -q '10.88.0.' || fail 'client of awg1 has no address from its subnet'
+grep -q '^H1 = ' /etc/amnezia/amneziawg/awg1.conf
+[[ "$(grep '^H1 = ' /etc/amnezia/amneziawg/awg1.conf)" != "$(grep '^H1 = ' "$CONF")" ]] || fail 'both servers share H1'
+"$MGR" servers | grep -q '"awg1"' || fail 'awg1 is not listed'
+echo '{"interface":"awg1","confirm":"awg1"}' | "$MGR" server-delete >/dev/null
+if ip link show awg1 >/dev/null 2>&1; then fail 'awg1 still exists after deletion'; fi
+awg show awg0 >/dev/null || fail 'deleting awg1 hurt awg0'
+
 step 'Change the panel port'
 awg31 port 18081
 panel 18081 || fail 'panel does not answer on the new port'
 
+step 'Two-factor sign-in and its console reset'
+python3 - <<'PY'
+import base64, hashlib, hmac, json, os, subprocess, time, urllib.parse, urllib.request
+password = open('/root/awg31-initial-password.txt').read().strip()
+secret = base64.b32encode(os.urandom(20)).decode()
+def code(shift=0):
+    step = int(time.time() // 30) + shift
+    digest = hmac.new(base64.b32decode(secret), step.to_bytes(8, 'big'), hashlib.sha1).digest()
+    offset = digest[-1] & 15
+    return f'{(int.from_bytes(digest[offset:offset+4], "big") & 0x7fffffff) % 1000000:06d}'
+def manager(op, payload):
+    return subprocess.run(['/usr/local/sbin/awg31mgr', op], input=json.dumps(payload), text=True, capture_output=True)
+assert manager('totp-enable', {'password': 'wrong-password-1', 'secret': secret, 'code': code()}).returncode != 0
+assert manager('totp-enable', {'password': password, 'secret': secret, 'code': '000000'}).returncode != 0
+assert manager('totp-enable', {'password': password, 'secret': secret, 'code': code()}).returncode == 0
+class Stay(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, *args, **kwargs): return None
+def signed_in(**fields):
+    opener = urllib.request.build_opener(Stay)
+    try:
+        opener.open('http://127.0.0.1:18081/login', urllib.parse.urlencode({'password': password, **fields}).encode(), timeout=30)
+        return False                     # 200 = the form again
+    except urllib.error.HTTPError as reply:
+        return reply.code == 303
+assert 'name="code"' in urllib.request.urlopen('http://127.0.0.1:18081/login', timeout=30).read().decode()
+assert not signed_in(), 'password alone must not be enough'
+assert signed_in(code=code(1)), 'password and code must work'
+subprocess.run(['awg31', 'totp-off'], check=True)
+assert signed_in(), 'console reset must bring back password-only sign-in'
+print('two-factor checks passed')
+PY
+
 step 'Backup and verification'
 name="$("$MGR" backup-create | python3 -c 'import json,sys; print(json.load(sys.stdin)["name"])')"
 awg31 restore-check "$name"
+
+step 'Encrypted backup, restore from it'
+AWG31_BACKUP_PASSPHRASE='smoke test passphrase 2026' awg31 backup-encryption on
+sealed="$("$MGR" backup-create | python3 -c 'import json,sys; print(json.load(sys.stdin)["name"])')"
+[[ "$sealed" == *.tar.gz.gpg ]] || fail "backup is not encrypted: $sealed"
+if ls /var/backups/awg31-panel/full/ | grep -qx "${sealed%.gpg}"; then fail 'a plain copy of the encrypted backup was left'; fi
+if grep -aq 'manifest.json' "/var/backups/awg31-panel/full/$sealed"; then fail 'archive content is readable without the passphrase'; fi
+gpg --batch --quiet --pinentry-mode loopback --passphrase 'smoke test passphrase 2026' -d "/var/backups/awg31-panel/full/$sealed" | tar tz | grep -qx manifest.json \
+  || fail 'stock gpg cannot open the backup'
+awg31 restore-check "$sealed"
+key_before="$(grep '^PrivateKey' "$CONF")"
+echo '{"interface":"awg0","name":"smoke"}' | "$MGR" delete >/dev/null
+echo '{"interface":"awg0","name":"after-backup"}' | "$MGR" add >/dev/null
+python3 /usr/local/libexec/awg31/scripts/restore-backup.py --apply "$sealed"
+for attempt in $(seq 1 30); do panel 18081 2>/dev/null && break; sleep 1; done
+panel 18081 || fail 'panel is down after the restore'
+awg show awg0 >/dev/null || fail 'awg0 is down after the restore'
+clients="$("$MGR" list <<<'{"interface":"awg0"}')"
+grep -q '"smoke"' <<<"$clients" || fail 'the restore did not bring back a deleted client'
+if grep -q '"after-backup"' <<<"$clients"; then fail 'the restore kept a client created after the backup'; fi
+[[ "$(grep '^PrivateKey' "$CONF")" == "$key_before" ]] || fail 'server key changed by the restore'
+awg show awg0 | grep -c '^peer' | grep -qx 5 || fail 'peers of the running interface do not match the restored state'
+mv /etc/awg31-panel/backup-passphrase /root/passphrase.keep
+echo 'a wrong passphrase 123456' >/etc/awg31-panel/backup-passphrase
+if awg31 restore-check "$sealed" 2>/dev/null; then fail 'a wrong passphrase opened the backup'; fi
+mv -f /root/passphrase.keep /etc/awg31-panel/backup-passphrase
 
 step 'Telegram bot: narrow sudo rule, commands, notifications'
 TG=http://127.0.0.1:18443
@@ -144,6 +242,9 @@ echo '{"interface":"awg0","name":"tg-client","telegram_id":"777000222"}' | "$MGR
 if echo '{"interface":"awg0","name":"tg-client","telegram_id":"@name"}' | "$MGR" client-policy >/dev/null 2>&1; then fail 'a non-numeric Telegram ID was accepted'; fi
 curl --noproxy '*' -s -o /dev/null --max-time 10 -d 'password=wrong-password-456' http://127.0.0.1:18081/login || :
 tg_wait 100 'Failed sign-in attempts' || fail 'no notification about a failed sign-in'
+# An encrypted backup reaches the administrator as a file.
+"$MGR" backup-create >/dev/null
+tg_wait 100 'filename=\\"awg31-[0-9TZ-]*-[0-9a-f]*.tar.gz.gpg\\"' || fail 'the encrypted backup was not sent to Telegram'
 awg31 telegram status
 
 step 'Running the installer again updates in place'

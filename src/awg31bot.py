@@ -11,6 +11,7 @@ never receives a backup archive.
 Only the numeric Telegram user IDs listed in the configuration are served, and
 only in a private chat. Everybody else gets no answer at all.
 """
+import base64
 import html
 import io
 import json
@@ -33,6 +34,10 @@ IFACE_RE = re.compile(r'awg(?:0|[1-9][0-9]?)')
 TOKEN_RE = re.compile(r'[0-9]{5,14}:[A-Za-z0-9_-]{30,60}')
 PAGE = 8
 PENDING_SECONDS = 300
+READ_KINDS = {'m', 'h', 's', 'cl', 'c', 'st', 'bk'}     # buttons a viewer may press: screens only
+QUOTA_WARNING = 0.8
+RENEW_INTERVAL = 86400
+DIGEST_HOUR = 9          # server local time
 OWNERS_TTL = 60          # how long the list of client owners is trusted
 OWNER_INTERVAL = 3       # seconds between answers to one client owner
 EXPIRY_WARNING = timedelta(hours=72)
@@ -51,7 +56,7 @@ TEXT = {
         'server': '<b>{iface}</b> — {state}\nПодсеть: <code>{subnet}</code>\nUDP-порт: <code>{port}</code>\nРежим: {mode}\nКлиентов: {clients}',
         'clients': '<b>Клиенты {iface}</b> — {count}', 'no_clients': 'Клиентов пока нет.',
         'client': ('<b>{name}</b> · {iface}\nСостояние: {state}\nVPN-адрес: <code>{ip}</code>\n'
-                   'Трафик: ↓ {rx} · ↑ {tx}\nИспользовано: {used}{quota}\nПоследнее соединение: {seen}\nСрок: {expiry}{comment}{owner}{stale}'),
+                   'Трафик: ↓ {rx} · ↑ {tx}\nИспользовано: {used}{quota}\nПоследнее соединение: {seen}\nСрок: {expiry}{speed}{comment}{owner}{stale}'),
         'enabled': 'включён', 'disabled': 'отключён', 'reason_expired': ' (истёк срок)', 'reason_quota': ' (лимит трафика)',
         'never': 'не было', 'no_expiry': 'без срока', 'of_quota': ' из {quota}', 'comment': '\nКомментарий: {text}',
         'stale': '\n⚠️ Настройки изменились: клиенту нужна новая конфигурация.',
@@ -91,6 +96,26 @@ TEXT = {
         'my': '<b>Ваш VPN</b>', 'my_client': ('<b>{name}</b>\nСостояние: {state}\nИспользовано: {used}{quota}\n'
                                               'Последнее соединение: {seen}\nДействует до: {expiry}'),
         'my_hint': 'По вопросам доступа обратитесь к администратору.',
+        'read_only': 'У вас доступ только для просмотра.',
+        'speed': '\nСкорость: до {n} Мбит/с', 'monthly': ' в месяц', 'b_speed': '🚦 Скорость', 'b_nospeed': 'Без ограничения',
+        'b_mbit': '{n} Мбит/с', 'ask_speed': 'Ограничение скорости <b>{name}</b> (в обе стороны).',
+        'b_renew': '🙏 Продлить {name}', 'renew_sent': 'Запрос на продление <b>{name}</b> отправлен администратору.',
+        'renew_wait': 'Запрос по <b>{name}</b> уже отправлен. Повторить можно через сутки.',
+        'renew_ask': '🙏 Владелец клиента <b>{name}</b> ({iface}, Telegram ID {owner}) просит продлить доступ.\nСейчас: {expiry}',
+        'b_refuse': '✖️ Отказать', 'renew_done': '✅ <b>{name}</b> продлён до {when}.', 'renew_refused': '✖️ В продлении <b>{name}</b> отказано.',
+        'n_user_renewed': '✅ Ваш VPN-доступ <b>{name}</b> продлён до {when}.',
+        'n_user_refused': 'В продлении VPN-доступа <b>{name}</b> отказано. Обратитесь к администратору.',
+        'n_user_disabled': '⏸ Ваш VPN-доступ <b>{name}</b> отключён: {reason}.', 'why_expired': 'истёк срок', 'why_quota': 'израсходован лимит трафика',
+        'n_user_enabled': '▶️ Ваш VPN-доступ <b>{name}</b> снова работает: начался новый месяц, счётчик трафика сброшен.',
+        'n_user_quota': '📊 По VPN-доступу <b>{name}</b> израсходовано {percent}% лимита ({used} из {quota}).',
+        'n_quota': '📊 Клиент <b>{name}</b> ({iface}) израсходовал {percent}% лимита ({used} из {quota}).',
+        'n_enabled': '▶️ Клиент <b>{target}</b> включён автоматически: новый месяц, счётчик трафика сброшен.',
+        'n_backup_file': 'Зашифрованная резервная копия. Для расшифровки нужен пароль шифрования копий.',
+        'dg_title': '📊 <b>Сводка {period}</b>', 'dg_day': 'за сутки', 'dg_week': 'за неделю',
+        'dg_server': '{icon} <b>{iface}</b>: клиентов {clients}, на связи {online}, отключено {off}',
+        'dg_traffic': 'Трафик клиентов: {total}', 'dg_top': 'Самые активные:', 'dg_top_row': '• {name} ({iface}) — {used}',
+        'dg_expiring': 'Срок истекает в течение 7 дней: {names}', 'dg_idle': 'Не подключались более 30 дней: {names}',
+        'dg_first': 'Трафик за период появится в следующей сводке.',
         'b_tg_export_on': '🔓 Разрешить владельцу конфиг', 'b_tg_export_off': '🔒 Запретить владельцу конфиг',
         'owner_export': ' · может получить конфиг', 'my_conf_caption': 'Конфигурация {name}. В файле приватный ключ: никому его не пересылайте.',
         'my_qr_caption': 'QR-код {name} для приложения AmneziaWG. Никому его не показывайте.',
@@ -112,7 +137,7 @@ TEXT = {
         'server': '<b>{iface}</b> — {state}\nSubnet: <code>{subnet}</code>\nUDP port: <code>{port}</code>\nMode: {mode}\nClients: {clients}',
         'clients': '<b>Clients of {iface}</b> — {count}', 'no_clients': 'No clients yet.',
         'client': ('<b>{name}</b> · {iface}\nState: {state}\nVPN address: <code>{ip}</code>\n'
-                   'Traffic: ↓ {rx} · ↑ {tx}\nUsed: {used}{quota}\nLast handshake: {seen}\nExpiry: {expiry}{comment}{owner}{stale}'),
+                   'Traffic: ↓ {rx} · ↑ {tx}\nUsed: {used}{quota}\nLast handshake: {seen}\nExpiry: {expiry}{speed}{comment}{owner}{stale}'),
         'enabled': 'enabled', 'disabled': 'disabled', 'reason_expired': ' (expired)', 'reason_quota': ' (traffic quota)',
         'never': 'never', 'no_expiry': 'none', 'of_quota': ' of {quota}', 'comment': '\nComment: {text}',
         'stale': '\n⚠️ Settings changed: this client needs a new configuration.',
@@ -152,6 +177,26 @@ TEXT = {
         'my': '<b>Your VPN</b>', 'my_client': ('<b>{name}</b>\nState: {state}\nUsed: {used}{quota}\n'
                                                'Last handshake: {seen}\nValid until: {expiry}'),
         'my_hint': 'For access questions contact the administrator.',
+        'read_only': 'You have read-only access.',
+        'speed': '\nSpeed: up to {n} Mbit/s', 'monthly': ' per month', 'b_speed': '🚦 Speed', 'b_nospeed': 'Unlimited',
+        'b_mbit': '{n} Mbit/s', 'ask_speed': 'Speed limit of <b>{name}</b> (both directions).',
+        'b_renew': '🙏 Extend {name}', 'renew_sent': 'The request to extend <b>{name}</b> was sent to the administrator.',
+        'renew_wait': 'A request for <b>{name}</b> was already sent. You can repeat it in a day.',
+        'renew_ask': '🙏 The owner of client <b>{name}</b> ({iface}, Telegram ID {owner}) asks to extend the access.\nNow: {expiry}',
+        'b_refuse': '✖️ Refuse', 'renew_done': '✅ <b>{name}</b> extended until {when}.', 'renew_refused': '✖️ Extension of <b>{name}</b> refused.',
+        'n_user_renewed': '✅ Your VPN access <b>{name}</b> was extended until {when}.',
+        'n_user_refused': 'The extension of VPN access <b>{name}</b> was refused. Contact the administrator.',
+        'n_user_disabled': '⏸ Your VPN access <b>{name}</b> was disabled: {reason}.', 'why_expired': 'it expired', 'why_quota': 'the traffic quota is used up',
+        'n_user_enabled': '▶️ Your VPN access <b>{name}</b> works again: a new month started and the traffic counter was reset.',
+        'n_user_quota': '📊 VPN access <b>{name}</b> has used {percent}% of its quota ({used} of {quota}).',
+        'n_quota': '📊 Client <b>{name}</b> ({iface}) has used {percent}% of its quota ({used} of {quota}).',
+        'n_enabled': '▶️ Client <b>{target}</b> was enabled automatically: a new month, the traffic counter was reset.',
+        'n_backup_file': 'Encrypted backup. Decrypting it needs the backup passphrase.',
+        'dg_title': '📊 <b>Digest {period}</b>', 'dg_day': 'for the last day', 'dg_week': 'for the last week',
+        'dg_server': '{icon} <b>{iface}</b>: {clients} clients, {online} online, {off} disabled',
+        'dg_traffic': 'Client traffic: {total}', 'dg_top': 'Most active:', 'dg_top_row': '• {name} ({iface}) — {used}',
+        'dg_expiring': 'Expire within 7 days: {names}', 'dg_idle': 'No connection for over 30 days: {names}',
+        'dg_first': 'Traffic for the period appears in the next digest.',
         'b_tg_export_on': '🔓 Let the owner get the config', 'b_tg_export_off': '🔒 Stop config for the owner',
         'owner_export': ' · may get the config', 'my_conf_caption': 'Configuration of {name}. The file contains a private key: do not forward it to anybody.',
         'my_qr_caption': 'QR code of {name} for the AmneziaWG app. Do not show it to anybody.',
@@ -252,6 +297,9 @@ def load_config(path=CONFIG):
     lang = data.get('lang', 'ru')
     notify = {key: bool(data.get('notify', {}).get(key, True)) for key in ('server', 'clients', 'security', 'backups')}
     return {'token': str(data['token']), 'admins': admins, 'lang': lang if lang in TEXT else 'ru', 'notify': notify,
+            # Viewers see the menus and get notifications but cannot change anything.
+            'viewers': {int(item) for item in data.get('viewers', [])} - admins,
+            'digest': data.get('digest') if data.get('digest') in ('daily', 'weekly') else 'off',
             'api_base': str(data.get('api_base') or 'https://api.telegram.org')}
 
 
@@ -282,6 +330,7 @@ class Bot:
         self.next_tick = 0
         self.owners_map, self.owners_at = {}, None    # Telegram ID -> [(iface, client)], refreshed at most every OWNERS_TTL
         self.owner_seen = {}                          # Telegram ID -> time of the last answered request
+        self.viewing = False                          # the update being handled comes from a viewer
 
     # ------------------------------------------------------------ helpers
     def t(self, key, **values):
@@ -317,6 +366,9 @@ class Bot:
         return {'inline_keyboard': [[{'text': text, 'callback_data': data} for text, data in row] for row in rows]}
 
     def show(self, chat, text, rows=None, message_id=None):
+        if self.viewing and rows:
+            rows = [[button for button in row if button[1].split(':')[0] in READ_KINDS] for row in rows]
+            rows = [row for row in rows if row]
         markup = self.keyboard(rows) if rows else None
         if message_id:
             try:
@@ -401,8 +453,10 @@ class Bot:
         text = self.t('client', name=name, iface=iface, state=state, ip=c.get('ip', ''),
                       rx=human_size(stats.get('received', 0)), tx=human_size(stats.get('sent', 0)),
                       used=human_size(c.get('used_bytes', 0)),
-                      quota=self.plain('of_quota', quota=human_size(limit)) if limit else '', seen=seen,
+                      quota=(self.plain('of_quota', quota=human_size(limit))
+                             + (self.plain('monthly') if c.get('quota_period') == 'monthly' else '')) if limit else '', seen=seen,
                       expiry=(c.get('expires_at') or '')[:10] or self.plain('no_expiry'),
+                      speed=self.plain('speed', n=int(c['speed_limit_mbit'])) if c.get('speed_limit_mbit') else '',
                       comment=self.plain('comment', text=c['comment']) if c.get('comment') else '',
                       owner=(self.plain('owner', id=c['telegram_id']) + (self.plain('owner_export') if c.get('owner_export') else ''))
                       if c.get('telegram_id') else '',
@@ -410,7 +464,8 @@ class Bot:
         toggle = (self.t('b_off'), f'ca:{iface}:{name}:off') if enabled else (self.t('b_on'), f'ca:{iface}:{name}:on')
         rows = [[(self.t('b_conf'), f'ca:{iface}:{name}:conf'), (self.t('b_qr'), f'ca:{iface}:{name}:qr')],
                 [toggle, (self.t('b_exp'), f'ca:{iface}:{name}:exp'), (self.t('b_quota'), f'ca:{iface}:{name}:quota')],
-                [(self.t('b_tg'), f'ca:{iface}:{name}:tg'), (self.t('b_del'), f'ca:{iface}:{name}:del'),
+                [(self.t('b_speed'), f'ca:{iface}:{name}:speed'), (self.t('b_tg'), f'ca:{iface}:{name}:tg'),
+                 (self.t('b_del'), f'ca:{iface}:{name}:del'),
                  (self.t('b_refresh'), f'c:{iface}:{name}')]]
         if c.get('telegram_id'):
             rows.append([(self.t('b_tg_export_off'), f'ca:{iface}:{name}:xoff')] if c.get('owner_export')
@@ -489,7 +544,11 @@ class Bot:
 
     # ------------------------------------------------------------ updates
     def authorized(self, user, chat):
-        return bool(user) and int(user.get('id', 0)) in self.config['admins'] and (chat or {}).get('type') == 'private'
+        if not user or (chat or {}).get('type') != 'private':
+            return False
+        user_id = int(user.get('id', 0))
+        self.viewing = user_id in self.config.get('viewers', ())
+        return user_id in self.config['admins'] or self.viewing
 
     # A client owner is somebody whose Telegram ID the administrator put on a
     # client. They get one read-only screen with their own clients and nothing else.
@@ -536,6 +595,11 @@ class Bot:
                         except BotError:
                             pass
                         return
+            if len(wanted) == 3 and wanted[0] == 'mr':
+                for iface, c in mine:
+                    if (iface, c['name']) == (wanted[1], wanted[2]) and c.get('expires_at'):
+                        self.ask_renewal(chat['id'], user_id, iface, c)
+                        return
             parts = [self.t('my')]
             rows = []
             for iface, c in mine:
@@ -552,10 +616,73 @@ class Bot:
                 if c.get('owner_export') and enabled:
                     rows.append([(f"{self.t('b_conf')} {c['name']}", f"mc:{iface}:{c['name']}"),
                                  (f"{self.t('b_qr')} {c['name']}", f"mq:{iface}:{c['name']}")])
+                if c.get('expires_at') and (enabled or c.get('disabled_reason') == 'expired'):
+                    rows.append([(self.t('b_renew', name=c['name']), f"mr:{iface}:{c['name']}")])
             parts.append(self.t('my_hint'))
             self.show(chat['id'], '\n\n'.join(parts), rows + [[(self.t('b_refresh'), 'me')]], message_id)
         except BotError as exc:
             log(f'owner request failed: {exc}')
+
+    def ask_renewal(self, chat, owner, iface, c):
+        """An owner asks for more time: administrators get the request with ready answers."""
+        asked = self.state.setdefault('renew_asked', {})
+        key = f"{iface}/{c['name']}"
+        if self.clock() - asked.get(key, 0) < RENEW_INTERVAL:
+            self.show(chat, self.t('renew_wait', name=c['name']))
+            return
+        asked[key] = self.clock()
+        text = self.t('renew_ask', name=c['name'], iface=iface, owner=owner, expiry=(c.get('expires_at') or '')[:10])
+        buttons = self.keyboard([[(self.t('b_days', n=n), f"rn:{iface}:{c['name']}:{n}") for n in (7, 30, 90)],
+                                 [(self.t('b_refuse'), f"rn:{iface}:{c['name']}:0")]])
+        for admin in sorted(self.config['admins']):             # viewers cannot grant it
+            try:
+                self.api.call('sendMessage', chat_id=admin, text=text, parse_mode='HTML', reply_markup=buttons)
+            except BotError as exc:
+                log(f'cannot notify {admin}: {exc}')
+        self.show(chat, self.t('renew_sent', name=c['name']))
+        self._save_state()
+
+    def renew(self, chat, admin, iface, name, days, message_id):
+        c = self.client(iface, name)
+        self.state.setdefault('renew_asked', {}).pop(f'{iface}/{name}', None)
+        if not days:
+            self.show(chat, self.t('renew_refused', name=name), message_id=message_id)
+            self.tell_owner(c, self.t('n_user_refused', name=name))
+            return
+        now = datetime.fromtimestamp(self.clock(), timezone.utc)
+        try:
+            current = datetime.fromisoformat(c.get('expires_at') or '')
+            if current.tzinfo is None:
+                current = current.replace(tzinfo=timezone.utc)
+        except ValueError:
+            current = now
+        when = (max(current, now) + timedelta(days=days)).date().isoformat()
+        self.set_policy(admin, iface, name, expires_at=when)
+        if not c.get('enabled') and c.get('disabled_reason') == 'expired':
+            self.ctl('enable', {'interface': iface, 'name': name})
+            self.audit('client_enabled', f'{iface}/{name}', admin)
+        self.show(chat, self.t('renew_done', name=name, when=when), [[(self.t('b_clients'), f'c:{iface}:{name}')]], message_id)
+        self.tell_owner(c, self.t('n_user_renewed', name=name, when=when))
+
+    def tell_owner(self, c, text):
+        """A message to the person whose Telegram ID is on the client; never fatal."""
+        owner = str(c.get('telegram_id') or '')
+        if not owner.isdigit() or int(owner) in self.config['admins']:
+            return
+        try:
+            self.api.call('sendMessage', chat_id=int(owner), parse_mode='HTML', text=text)
+        except BotError as exc:                 # usually: the owner never started the bot
+            log(f'cannot write to the owner of {c.get("name")}: {exc}')
+
+    def find_client(self, target):
+        """'awg0/name ...' from an audit record -> (iface, client) or None."""
+        match = re.match(r'(awg[0-9]{1,2})/([A-Za-z0-9_-]{1,32})', target)
+        if not match:
+            return None
+        try:
+            return match.group(1), self.client(match.group(1), match.group(2))
+        except BotError:
+            return None
 
     def handle_update(self, update):
         if 'callback_query' in update:
@@ -612,6 +739,8 @@ class Bot:
             elif command == '/backup':
                 self.show(chat, *self.screen_backup())
             elif command == '/add' and argument:
+                if self.viewing:
+                    raise BotError(self.plain('read_only'))
                 self.add_client(chat, admin, self.default_server(), argument)
             else:
                 self.show(chat, self.t('help'), [[(self.t('b_menu'), 'm')]])
@@ -657,11 +786,13 @@ class Bot:
         self.pending.pop(admin, None)
         parts = data.split(':')
         kind = parts[0]
+        if self.viewing and kind not in READ_KINDS:
+            raise BotError(self.plain('read_only'))
         iface = parts[1] if len(parts) > 1 else ''
         if iface and not IFACE_RE.fullmatch(iface):
             raise BotError('bad request')
         name = parts[2] if len(parts) > 2 else ''
-        if kind in ('c', 'ca', 'cy', 'ce', 'cq') and not NAME_RE.fullmatch(name):
+        if kind in ('c', 'ca', 'cy', 'ce', 'cq', 'cs', 'rn') and not NAME_RE.fullmatch(name):
             raise BotError('bad request')
         value = parts[3] if len(parts) > 3 else ''
         if kind == 'm':
@@ -701,6 +832,11 @@ class Bot:
         elif kind == 'cq' and value in ('0', '10', '50', '100', '500'):
             self.set_policy(admin, iface, name, traffic_limit_bytes=int(value) * 1024 ** 3)
             self.show(chat, *self.screen_client(iface, name), message_id=message_id)
+        elif kind == 'cs' and value in ('0', '5', '10', '20', '50', '100'):
+            self.set_policy(admin, iface, name, speed_limit_mbit=int(value))
+            self.show(chat, *self.screen_client(iface, name), message_id=message_id)
+        elif kind == 'rn' and value in ('0', '7', '30', '90'):
+            self.renew(chat, admin, iface, name, int(value), message_id)
         elif kind == 'st':
             self.show(chat, *self.screen_status(), message_id=message_id)
         elif kind == 'bk':
@@ -734,6 +870,11 @@ class Bot:
             self.show(chat, self.t('ask_exp', name=name),
                       [[(self.t('b_days', n=n), f'ce:{iface}:{name}:{n}') for n in (7, 30, 90)],
                        [(self.t('b_noexp'), f'ce:{iface}:{name}:0'), (self.t('b_no'), f'c:{iface}:{name}')]], message_id)
+        elif action == 'speed':
+            self.show(chat, self.t('ask_speed', name=name),
+                      [[(self.t('b_mbit', n=n), f'cs:{iface}:{name}:{n}') for n in (5, 10, 20)],
+                       [(self.t('b_mbit', n=n), f'cs:{iface}:{name}:{n}') for n in (50, 100)],
+                       [(self.t('b_nospeed'), f'cs:{iface}:{name}:0'), (self.t('b_no'), f'c:{iface}:{name}')]], message_id)
         elif action in ('xon', 'xoff'):
             self.set_policy(admin, iface, name, owner_export=action == 'xon')
             self.owners_at = None
@@ -751,7 +892,7 @@ class Bot:
 
     # ------------------------------------------------------------ notifications
     def notify(self, text):
-        for admin in sorted(self.config['admins']):
+        for admin in sorted(self.config['admins'] | self.config.get('viewers', set())):
             try:
                 self.api.call('sendMessage', chat_id=admin, text=text, parse_mode='HTML', disable_web_page_preview=True)
             except BotError as exc:
@@ -802,8 +943,23 @@ class Bot:
                 self.notify(self.t('n_login', target=target))
             elif event == 'password_changed' and notify['security']:
                 self.notify(self.t('n_password'))
-            elif event == 'client_disabled' and target.endswith('(auto)') and notify['clients']:
-                self.notify(self.t('n_disabled', target=target[:-len('(auto)')].strip()))
+            elif event in ('client_disabled', 'client_enabled') and target.endswith('(auto)'):
+                if notify['clients']:
+                    self.notify(self.t('n_disabled' if event == 'client_disabled' else 'n_enabled', target=target[:-len('(auto)')].strip()))
+                found = self.find_client(target)
+                if found and event == 'client_enabled':
+                    self.tell_owner(found[1], self.t('n_user_enabled', name=found[1]['name']))
+                elif found:
+                    reason = 'why_quota' if found[1].get('disabled_reason') == 'quota' else 'why_expired'
+                    self.tell_owner(found[1], self.t('n_user_disabled', name=found[1]['name'], reason=self.plain(reason)))
+            elif event == 'backup_created' and notify['backups'] and target.endswith('.gpg'):
+                # An encrypted archive is safe to keep in Telegram: it goes to the administrators as a file.
+                content = base64.b64decode(self.ctl('backup-export-encrypted', {'name': target})['content'])
+                for admin in sorted(self.config['admins']):
+                    try:
+                        self.api.send_file('sendDocument', 'document', admin, target, content, self.plain('n_backup_file'))
+                    except BotError as exc:
+                        log(f'cannot send the backup to {admin}: {exc}')
             elif event == 'backup_created' and notify['backups'] and not self.recently_own('backup:' + target, 600):
                 self.notify(self.t('n_backup', target=target))
             elif event == 'backup_failed' and notify['backups']:
@@ -831,10 +987,24 @@ class Bot:
                 if before is not None and before != healthy:
                     self.notify(self.t(ok_text) if healthy else self.t(bad_text, detail=item.get('output') or 'not loaded'))
         warned = self.state.setdefault('expiry_warned', {})
+        quota_warned = self.state.setdefault('quota_warned', {})
         now = datetime.fromtimestamp(self.clock(), timezone.utc)
         current = set()
+        snapshot = []
         for s in servers:
             for c in self.clients(s['interface']):
+                snapshot.append((s, c))
+                limit, used = int(c.get('traffic_limit_bytes') or 0), int(c.get('used_bytes') or 0)
+                quota_key = f"{s['interface']}/{c['name']}"
+                if limit and c.get('enabled') and used >= limit * QUOTA_WARNING:
+                    if quota_warned.get(quota_key) != limit:
+                        quota_warned[quota_key] = limit
+                        values = dict(name=c['name'], percent=int(used * 100 / limit), used=human_size(used), quota=human_size(limit))
+                        if notify['clients']:
+                            self.notify(self.t('n_quota', iface=s['interface'], **values))
+                        self.tell_owner(c, self.t('n_user_quota', **values))
+                elif used < limit * QUOTA_WARNING or not limit:
+                    quota_warned.pop(quota_key, None)       # a raised quota or a monthly reset re-arms the warning
                 expiry = c.get('expires_at')
                 if not expiry or not c.get('enabled'):
                     continue
@@ -850,15 +1020,50 @@ class Bot:
                     warned[key] = True
                     if notify['clients']:
                         self.notify(self.t('n_expiring', name=c['name'], iface=s['interface'], when=expiry[:10]))
-                    owner = str(c.get('telegram_id') or '')
-                    if owner.isdigit() and int(owner) not in self.config['admins']:
-                        try:
-                            self.api.call('sendMessage', chat_id=int(owner), parse_mode='HTML',
-                                          text=self.t('n_user_expiring', name=c['name'], when=expiry[:10]))
-                        except BotError as exc:     # usually: the owner never started the bot
-                            log(f'cannot warn the owner of {c["name"]}: {exc}')
+                    self.tell_owner(c, self.t('n_user_expiring', name=c['name'], when=expiry[:10]))
         for key in [k for k in warned if k not in current]:
             warned.pop(key)
+        self.maybe_digest(servers, snapshot)
+
+    def maybe_digest(self, servers, snapshot):
+        """Daily or weekly (Monday) summary, once, after DIGEST_HOUR server time."""
+        mode = self.config.get('digest', 'off')
+        local = time.localtime(self.clock())
+        today = time.strftime('%Y-%m-%d', local)
+        if mode == 'off' or local.tm_hour < DIGEST_HOUR or self.state.get('digest_day') == today:
+            return
+        if mode == 'weekly' and local.tm_wday != 0:
+            return
+        self.state['digest_day'] = today
+        before = self.state.get('digest_used')
+        self.state['digest_used'] = {f"{s['interface']}/{c['name']}": int(c.get('used_bytes') or 0) for s, c in snapshot}
+        now = self.clock()
+        lines = [self.t('dg_title', period=self.plain('dg_week' if mode == 'weekly' else 'dg_day'))]
+        for s in servers:
+            mine = [c for server, c in snapshot if server is s]
+            online = sum(1 for c in mine if c.get('enabled') and int((c.get('stats') or {}).get('handshake') or 0) > now - 180)
+            lines.append(self.t('dg_server', icon='🟢' if s.get('running') else '🔴', iface=s['interface'], clients=len(mine),
+                                online=online, off=sum(1 for c in mine if not c.get('enabled'))))
+        if before is None:
+            lines.append(self.t('dg_first'))
+        else:
+            deltas = []
+            for s, c in snapshot:
+                used = int(c.get('used_bytes') or 0)
+                earlier = int(before.get(f"{s['interface']}/{c['name']}", 0))
+                deltas.append((used - earlier if used >= earlier else used, c['name'], s['interface']))   # a reset counter starts from zero
+            lines.append(self.t('dg_traffic', total=human_size(sum(d for d, _, _ in deltas))))
+            top = [row for row in sorted(deltas, reverse=True)[:5] if row[0] > 0]
+            if top:
+                lines.append(self.t('dg_top'))
+                lines.extend(self.t('dg_top_row', name=name, iface=iface, used=human_size(delta)) for delta, name, iface in top)
+        horizon = datetime.fromtimestamp(now, timezone.utc) + timedelta(days=7)
+        expiring = [c['name'] for _, c in snapshot if c.get('enabled') and c.get('expires_at') and c['expires_at'][:10] <= horizon.date().isoformat()]
+        idle = [c['name'] for _, c in snapshot if c.get('enabled') and 0 < int((c.get('stats') or {}).get('handshake') or 0) < now - 30 * 86400]
+        for key, names in (('dg_expiring', expiring), ('dg_idle', idle)):
+            if names:
+                lines.append(self.t(key, names=', '.join(names[:10]) + (' …' if len(names) > 10 else '')))
+        self.notify('\n'.join(lines))
 
     # ------------------------------------------------------------ main loop
     def run(self):

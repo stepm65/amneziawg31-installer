@@ -14,13 +14,14 @@ import tarfile
 import tempfile
 from datetime import datetime, timezone, timedelta
 
-VALID_BACKUP = re.compile(r'^awg31-[0-9]{8}T[0-9]{6}Z-[0-9a-f]{10}\.tar\.gz$')
+VALID_BACKUP = re.compile(r'^awg31-[0-9]{8}T[0-9]{6}Z-[0-9a-f]{10}\.tar\.gz(?:\.gpg)?$')
 VALID_AUDIT = {'login_success', 'login_failed', 'password_changed', 'client_added',
                'client_modified', 'client_deleted', 'client_enabled', 'client_disabled',
                'server_created', 'server_started', 'server_stopped', 'server_restarted', 'server_deleted', 'logout',
                'server_settings_changed', 'profile_imported', 'backup_created',
                'backup_downloaded', 'backup_deleted', 'backup_policy_changed', 'backup_pruned',
-               'backup_failed', 'client_config_sent'}
+               'backup_failed', 'client_config_sent', 'totp_enabled', 'totp_disabled',
+               'telegram_changed', 'backup_encryption_changed'}
 
 
 def _host_uplink():
@@ -375,6 +376,166 @@ def _save_auth(auth, file):
         Path(path).unlink(missing_ok=True)
 
 
+def _password_ok(auth, password):
+    check=hashlib.scrypt(str(password).encode(), salt=bytes.fromhex(auth['salt']), n=2**14,r=8,p=1,dklen=32)
+    return secrets.compare_digest(check.hex(),auth['password_hash'])
+
+
+def totp_counter_for(secret, code, now=None):
+    """RFC 6238 (SHA-1, 30 s, 6 digits). Returns the matching time step or None; one step of clock drift is allowed."""
+    import hmac, struct, time
+    code=str(code).strip().replace(' ','')
+    if not re.fullmatch(r'[0-9]{6}',code): return None
+    key=base64.b32decode(secret,casefold=True)
+    step=int((time.time() if now is None else now)//30)
+    for counter in (step,step-1,step+1):
+        digest=hmac.new(key,struct.pack('>Q',counter),hashlib.sha1).digest()
+        offset=digest[-1]&15
+        value=(struct.unpack('>I',digest[offset:offset+4])[0]&0x7fffffff)%1000000
+        if secrets.compare_digest(f'{value:06d}',code): return counter
+    return None
+
+
+def totp_enable(data):
+    """Turn on the second factor: needs the password and a code from the new secret."""
+    secret=str(data.get('secret','')).strip().upper()
+    if not re.fullmatch(r'[A-Z2-7]{32}',secret): raise ValueError('Invalid TOTP secret')
+    file=auth_file(); auth=json.loads(file.read_text())
+    if not _password_ok(auth,data.get('password','')): raise ValueError('Incorrect password')
+    if totp_counter_for(secret,data.get('code','')) is None:
+        raise ValueError('The code does not match: check the clock of the server and of the phone')
+    auth['totp_secret']=secret
+    _save_auth(auth,file)
+    audit({'event':'totp_enabled'})
+    return {'ok':True}
+
+
+def totp_disable(data):
+    file=auth_file(); auth=json.loads(file.read_text())
+    if not auth.get('totp_secret'): return {'ok':True}
+    if not _password_ok(auth,data.get('password','')): raise ValueError('Incorrect password')
+    if totp_counter_for(auth['totp_secret'],data.get('code','')) is None: raise ValueError('Incorrect code')
+    auth.pop('totp_secret',None)
+    _save_auth(auth,file)
+    audit({'event':'totp_disabled'})
+    return {'ok':True}
+
+
+def totp_reset():
+    """Console recovery (`sudo awg31 totp-off`): root only, not in any sudoers list."""
+    file=auth_file(); auth=json.loads(file.read_text())
+    auth.pop('totp_secret',None)
+    _save_auth(auth,file)
+    audit({'event':'totp_disabled','target':'console reset'})
+    return {'ok':True}
+
+
+# ---- Telegram bot settings shown and edited in the panel (never the token) ----
+def bot_config_file():
+    return Path(os.environ.get('AWG31_BOT_CONFIG','/etc/awg31-bot/telegram.json'))
+
+
+NOTIFY_GROUPS=('server','clients','security','backups')
+
+
+def _id_list(value, limit):
+    if isinstance(value,str): value=[x for x in re.split(r'[\s,;]+',value) if x]
+    if not isinstance(value,list) or len(value)>limit: raise ValueError('Too many Telegram IDs')
+    result=[]
+    for item in value:
+        if not re.fullmatch(r'[1-9][0-9]{2,14}',str(item)): raise ValueError('Telegram ID: digits only (a numeric user ID, not a @name)')
+        if int(item) not in result: result.append(int(item))
+    return result
+
+
+def telegram_status():
+    file=bot_config_file()
+    if not file.is_file(): return {'configured':False}
+    config=json.loads(file.read_text())
+    try:
+        active=subprocess.run(['systemctl','is-active','awg31-bot.service'],capture_output=True,text=True,timeout=10).stdout.strip()
+    except (OSError,subprocess.TimeoutExpired): active='unknown'
+    notify=config.get('notify') or {}
+    return {'configured':True,'active':active,'admins':[int(x) for x in config.get('admins',[])],
+            'viewers':[int(x) for x in config.get('viewers',[])],'lang':config.get('lang','ru'),
+            'notify':{g:bool(notify.get(g,True)) for g in NOTIFY_GROUPS},
+            'digest':config.get('digest','off') if config.get('digest') in ('daily','weekly') else 'off'}
+
+
+def telegram_set(data):
+    file=bot_config_file()
+    if not file.is_file(): raise ValueError('The bot is not connected: run sudo awg31 telegram on the server')
+    config=json.loads(file.read_text())
+    admins=_id_list(data.get('admins',config.get('admins',[])),10)
+    if not admins: raise ValueError('At least one administrator is required')
+    viewers=[x for x in _id_list(data.get('viewers',config.get('viewers',[])),20) if x not in admins]
+    lang=str(data.get('lang',config.get('lang','ru')))
+    if lang not in ('ru','en'): raise ValueError('Language: ru or en')
+    digest=str(data.get('digest',config.get('digest','off')))
+    if digest not in ('off','daily','weekly'): raise ValueError('Digest: off, daily or weekly')
+    notify=data.get('notify',config.get('notify') or {})
+    if not isinstance(notify,dict): raise ValueError('Invalid notification settings')
+    config.update({'admins':admins,'viewers':viewers,'lang':lang,'digest':digest,
+                   'notify':{g:bool(notify.get(g,False)) for g in NOTIFY_GROUPS}})
+    original=file.stat()
+    fd,path=tempfile.mkstemp(prefix='.telegram-',dir=file.parent)
+    try:
+        with os.fdopen(fd,'w') as fp:
+            json.dump(config,fp,indent=1);fp.flush();os.fsync(fp.fileno())
+            os.fchmod(fp.fileno(),0o640)
+        os.chown(path,original.st_uid,original.st_gid)
+        os.replace(path,file)
+    finally:
+        Path(path).unlink(missing_ok=True)
+    subprocess.run(['systemctl','restart','awg31-bot.service'],capture_output=True,timeout=30,check=False)
+    audit({'event':'telegram_changed','target':f'{len(admins)} admin(s), {len(viewers)} viewer(s)'})
+    return {'ok':True}
+
+
+# ---- Backup encryption: one passphrase, standard OpenPGP symmetric encryption ----
+def backup_key_file():
+    return Path(os.environ.get('AWG31_BACKUP_KEY','/etc/awg31-panel/backup-passphrase'))
+
+
+def backup_encryption():
+    return {'enabled':backup_key_file().is_file()}
+
+
+def backup_encryption_set(data):
+    """Root console only. Returns a generated passphrase exactly once."""
+    file=backup_key_file()
+    if data.get('off') is True:
+        file.unlink(missing_ok=True)
+        audit({'event':'backup_encryption_changed','target':'off'})
+        return {'ok':True,'enabled':False}
+    if not shutil_which('gpg'): raise ValueError('gpg is not installed: install the gnupg package first')
+    passphrase=str(data.get('passphrase','') or '')
+    generated=not passphrase
+    if generated:
+        passphrase='-'.join(secrets.token_hex(3) for _ in range(6))
+    if len(passphrase)<16 or len(passphrase)>200 or any(ord(c)<32 for c in passphrase):
+        raise ValueError('Passphrase: 16-200 characters, one line')
+    file.parent.mkdir(parents=True,exist_ok=True)
+    _atomic_private_file(file,passphrase+'\n')
+    os.chown(file,0,0)
+    audit({'event':'backup_encryption_changed','target':'on'})
+    return {'ok':True,'enabled':True,'passphrase':passphrase if generated else None}
+
+
+def shutil_which(name):
+    import shutil
+    return shutil.which(name)
+
+
+def _gpg(args, *, input=None):
+    """gpg with a throw-away home: the panel's sandbox hides /root."""
+    with tempfile.TemporaryDirectory(prefix='awg31-gpg-') as home:
+        cp=subprocess.run(['gpg','--homedir',home,'--batch','--yes','--quiet','--no-tty','--pinentry-mode','loopback',
+                           '--passphrase-file',str(backup_key_file()),*args],input=input,capture_output=True,timeout=120,check=False)
+    if cp.returncode: raise ValueError('gpg failed: '+cp.stderr.decode('utf-8','replace').strip()[-200:])
+    return cp.stdout
+
+
 def _check_new_password(new):
     if len(new)<12 or len(new)>256: raise ValueError('Password must be 12-256 characters')
 
@@ -384,9 +545,7 @@ def password_change(data):
     new=str(data.get('new_password',''))
     _check_new_password(new)
     file=auth_file(); auth=json.loads(file.read_text())
-    check=hashlib.scrypt(old.encode(), salt=bytes.fromhex(auth['salt']),
-                        n=2**14,r=8,p=1,dklen=32)
-    if not secrets.compare_digest(check.hex(),auth['password_hash']):
+    if not _password_ok(auth,old):
         raise ValueError('Incorrect old password')
     _store_password(auth,new,file)
     audit({'event':'password_changed'})
@@ -454,10 +613,20 @@ def create_backup(manager, *, enforce_limit=True):
                     manifest['files'][key]=hashlib.sha256(content).hexdigest()
             _safe_add(tf,'manifest.json',json.dumps(manifest,sort_keys=True).encode())
         if archive.stat().st_size>20*1024*1024: raise ValueError('Archive exceeds 20 MiB limit')
+        if backup_key_file().is_file():
+            # The plain archive never outlives this function.
+            sealed=directory/(name+'.gpg')
+            try:
+                _gpg(['--symmetric','--cipher-algo','AES256','--output',str(sealed),str(archive)])
+                os.chmod(sealed,0o600)
+            except Exception:
+                sealed.unlink(missing_ok=True);raise
+            archive.unlink()
+            archive,name=sealed,name+'.gpg'
     except Exception:
         archive.unlink(missing_ok=True);raise
     audit({'event':'backup_created','target':name})
-    return {'ok':True,'name':name,'size':archive.stat().st_size}
+    return {'ok':True,'name':name,'size':archive.stat().st_size,'encrypted':name.endswith('.gpg')}
 
 
 def list_backups():
@@ -466,13 +635,15 @@ def list_backups():
     found=[]
     for p in directory.iterdir():
         if VALID_BACKUP.fullmatch(p.name) and p.is_file() and not p.is_symlink():
-            found.append({'name':p.name,'size':p.stat().st_size,'created_at':p.name[6:22]})
+            found.append({'name':p.name,'size':p.stat().st_size,'created_at':p.name[6:22],'encrypted':p.name.endswith('.gpg')})
     return {'backups':sorted(found,key=lambda x:x['name'],reverse=True)[:30]}
 
 
-def export_backup(data):
+def export_backup(data, *, encrypted_only=False):
     name=str(data.get('name',''))
     if not VALID_BACKUP.fullmatch(name): raise ValueError('Invalid backup name')
+    # The Telegram bot may fetch an archive only when it is encrypted.
+    if encrypted_only and not name.endswith('.gpg'): raise ValueError('Only encrypted backups can be sent')
     path=backup_dir()/name
     if not path.is_file() or path.is_symlink(): raise ValueError('Backup not found')
     size=path.stat().st_size

@@ -109,6 +109,52 @@ case "${1:-menu}" in
     unset first second
     echo 'Password changed. All existing panel sessions were signed out.'
     ;;
+  totp-off)
+    # Console-only recovery for a lost authenticator: not reachable from the panel.
+    /usr/local/sbin/awg31mgr totp-reset </dev/null >/dev/null
+    echo 'Two-factor sign-in is off. All panel sessions were signed out; the password is unchanged.'
+    ;;
+  backup-encryption)
+    case "${2:-status}" in
+      status) /usr/local/sbin/awg31mgr backup-encryption </dev/null ;;
+      off)
+        echo 'New backups will be stored unencrypted. Existing .gpg archives still need their passphrase.'
+        if [[ "${AWG31_UNATTENDED:-0}" != 1 ]]; then
+            read -r -p 'Type OFF to proceed: ' answer
+            [[ "$answer" == OFF ]] || { echo 'Canceled'; exit 1; }
+        fi
+        echo '{"off": true}' | /usr/local/sbin/awg31mgr backup-encryption-set >/dev/null
+        echo 'Backup encryption is off.'
+        ;;
+      on)
+        phrase="${AWG31_BACKUP_PASSPHRASE:-}"
+        if [[ -z "$phrase" && -t 0 ]]; then
+            echo 'Backups will be encrypted with a passphrase (OpenPGP, AES-256).'
+            echo 'To restore on another server you enter the same passphrase there with this command.'
+            IFS= read -r -s -p 'Passphrase, 16+ characters (Enter = generate one): ' phrase; echo
+            if [[ -n "$phrase" ]]; then
+                IFS= read -r -s -p 'Repeat the passphrase: ' again; echo
+                [[ "$phrase" == "$again" ]] || { echo 'Passphrases do not match; nothing changed' >&2; exit 1; }
+            fi
+        fi
+        # The passphrase travels over stdin only, never argv.
+        reply="$(printf '%s' "$phrase" | python3 -c 'import json,sys; print(json.dumps({"passphrase": sys.stdin.read()}))' \
+                 | /usr/local/sbin/awg31mgr backup-encryption-set)"
+        unset phrase again
+        generated="$(printf '%s' "$reply" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("passphrase") or "")')"
+        echo 'Backup encryption is on: new archives are .tar.gz.gpg.'
+        if [[ -n "$generated" ]]; then
+            echo
+            echo "  Passphrase:  $generated"
+            echo
+            echo 'Write it down NOW and keep it away from this server. It is not shown again,'
+            echo 'and without it an encrypted backup cannot be restored on a new server.'
+        fi
+        echo 'Decrypt anywhere:  gpg -d awg31-....tar.gz.gpg > backup.tar.gz'
+        ;;
+      *) echo 'Usage: awg31 backup-encryption [status|on|off]' >&2; exit 2 ;;
+    esac
+    ;;
   doctor) bash /usr/local/libexec/awg31/scripts/kernel-check.sh; /usr/local/sbin/awg31mgr diagnostics ;;
 
   *)
@@ -126,6 +172,8 @@ AmneziaWG 3.1 local management
   sudo awg31 update [VER]    Update panel and controller (latest release, vX.Y.Z or dev-latest)
   sudo awg31 version         Show the installed version
   sudo awg31 reset-password  Set a new panel password (forgotten password)
+  sudo awg31 totp-off        Turn off two-factor sign-in (lost authenticator)
+  sudo awg31 backup-encryption on|off|status  Encrypt backups with a passphrase
   sudo awg31 port NEW_PORT   Change the local TCP port of the panel
   sudo awg31 uninstall       Remove the console (add --purge to delete VPN data too)
   sudo awg31 restart-panel   Restart web panel only

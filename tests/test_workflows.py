@@ -89,7 +89,7 @@ def test_explicit_url_prevents_cookie_cross_server_writes(ui):
     res=c.post('/servers/awg1/clients',data={'csrf':token(clientpage),'name':'router'},follow_redirects=False)
     assert res.status_code==303
     assert res.headers['location']=='/servers/awg1/clients/router'
-    assert ('add',{'name':'router','comment':'','expires_at':'','traffic_limit_bytes':0,'telegram_id':'','owner_export':False,
+    assert ('add',{'name':'router','comment':'','expires_at':'','traffic_limit_bytes':0,'telegram_id':'','owner_export':False,'speed_limit_mbit':0,'quota_period':'',
                    'routed_subnets':'','i_enabled':'0','i1':'','i2':'','i3':'','i4':'','i5':'',
                    'interface':'awg1'}) in calls
     assert c.get('/servers/awg1/api/traffic').status_code==200

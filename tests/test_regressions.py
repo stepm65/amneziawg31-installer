@@ -911,7 +911,7 @@ def test_settings_show_the_right_switches_for_each_mode(ui):
 
 def test_profile_carries_the_switches_and_old_profiles_still_import():
     manager = (ROOT / 'src/awg31mgr').read_text()
-    assert "OPTIONAL_PROFILE = ('client_to_client', 'private_access', 'ipv6_block')" in manager
+    assert "OPTIONAL_PROFILE = ('client_to_client', 'private_access', 'ipv6_block', 'host_access')" in manager
     assert 'allowed <= set(settings) <= allowed|set(OPTIONAL_PROFILE)' in manager
     assert "'session-revoke'" in manager and "'obfuscation-generate'" in manager
 

@@ -183,7 +183,7 @@ def test_web_policy_history_maintenance_security(tmp_path,monkeypatch):
     assert 'id="new-expires" name="expires_at"' in clients
     assert 'class="expiry-calendar-button" data-expiry-open="new-expires"' in clients
     assert 'aria-label="Календарь"' in clients
-    assert clients.count('name="expires_at"') == 1
+    assert clients.count('name="expires_at"') == 2   # the single-client form and the batch form
     assert 'value="29.02.2028"' in module.expiry_field(
         '2028-02-29T23:59:59+00:00', 'policy-expires', 'ru')
     assert 'value="2028-02-29T22:30:00+00:00"' in module.expiry_field(

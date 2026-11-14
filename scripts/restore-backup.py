@@ -22,7 +22,7 @@ BACKUP_DIR=Path(os.environ.get('AWG31_BACKUP_DIR','/var/backups/awg31-panel/full
 BASE=Path(os.environ.get('AWG31_ROOT','/var/lib/awg31-panel'))
 CONF=Path(os.environ.get('AWG31_CONFIG_DIR','/etc/amnezia/amneziawg'))
 AUTH=Path(os.environ.get('AWG31_AUTH','/etc/awg31-panel/auth.json'))
-VALID_NAME=re.compile(r'^awg31-[0-9]{8}T[0-9]{6}Z-[0-9a-f]{10}\.tar\.gz$')
+VALID_NAME=re.compile(r'^awg31-[0-9]{8}T[0-9]{6}Z-[0-9a-f]{10}\.tar\.gz(?:\.gpg)?$')
 VALID_IFACE=re.compile(r'^awg(?:0|[1-9][0-9]?)$')
 MAX_ARCHIVE=20*1024*1024
 MAX_CONTENT=20*1024*1024
@@ -37,8 +37,20 @@ def validate(name):
     path=BACKUP_DIR/name
     if path.is_symlink() or not path.is_file() or path.stat().st_size>MAX_ARCHIVE:
         raise ValueError('Backup missing or oversized')
+    source={'name':str(path)}
+    if name.endswith('.gpg'):
+        # Encrypted with the passphrase from `sudo awg31 backup-encryption on`.
+        key=Path(os.environ.get('AWG31_BACKUP_KEY','/etc/awg31-panel/backup-passphrase'))
+        if not key.is_file():
+            raise ValueError('This backup is encrypted. Enter its passphrase first: sudo awg31 backup-encryption on')
+        with tempfile.TemporaryDirectory(prefix='awg31-gpg-') as home:
+            cp=subprocess.run(['gpg','--homedir',home,'--batch','--quiet','--no-tty','--pinentry-mode','loopback',
+                               '--passphrase-file',str(key),'--decrypt',str(path)],capture_output=True,timeout=120)
+        if cp.returncode or len(cp.stdout)>MAX_ARCHIVE:
+            raise ValueError('Cannot decrypt the backup: wrong passphrase or damaged file')
+        source={'fileobj':io.BytesIO(cp.stdout)}
     try:
-        with tarfile.open(path,'r:gz') as tf:
+        with tarfile.open(mode='r:gz',**source) as tf:
             members=tf.getmembers()
             if len(members)>210:raise ValueError('Too many files in backup')
             raw={}

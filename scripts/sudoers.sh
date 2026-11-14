@@ -4,7 +4,8 @@
 # the three installers can never drift apart again. Sourcing has no side effects.
 #
 # Every entry is one exact `awg31mgr <command>` pair: no wildcards, no arguments.
-# Root-only operations (init, sample-all, backup-run, password-reset) are
+# Root-only operations (init, sample-all, backup-run, password-reset, totp-reset,
+# backup-encryption-set) are
 # deliberately absent: they are started by systemd or from a root shell.
 AWG31_SUDO_COMMANDS=(
   servers server-create server-start server-stop server-restart server-delete
@@ -14,6 +15,7 @@ AWG31_SUDO_COMMANDS=(
   backup-create backup-list backup-export backup-delete backup-policy
   backup-policy-set backup-check backup-restore
   audit audit-list password-change session-revoke obfuscation-generate
+  add-batch totp-enable totp-disable telegram-status telegram-set backup-encryption
 )
 
 # The Telegram bot runs as its own user with a narrower list: it cannot delete
@@ -21,7 +23,7 @@ AWG31_SUDO_COMMANDS=(
 AWG31_BOT_SUDO_COMMANDS=(
   servers server-start server-stop server-restart
   list add download enable disable delete client-policy
-  diagnostics backup-create backup-list audit audit-list
+  diagnostics backup-create backup-list backup-export-encrypted audit audit-list
 )
 
 awg31_render_bot_sudoers() {
