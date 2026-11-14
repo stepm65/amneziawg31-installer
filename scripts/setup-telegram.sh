@@ -159,6 +159,8 @@ unset TOKEN AWG31_TELEGRAM_TOKEN
 awg31_install_bot_sudoers || die 'Не удалось установить правило sudo для бота'
 runuser -u awgbot -- sudo -n /usr/local/sbin/awg31mgr servers </dev/null >/dev/null || die 'Правило sudo для бота не работает'
 install -o root -g root -m 644 "$DIR/awg31-bot.service" "/etc/systemd/system/$UNIT"
+. "$DIR/os-support.sh"
+awg31_unit_compat "/etc/systemd/system/$UNIT"
 systemctl daemon-reload
 systemctl enable "$UNIT" >/dev/null 2>&1
 systemctl restart "$UNIT"

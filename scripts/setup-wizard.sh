@@ -293,6 +293,7 @@ RestrictAddressFamilies=AF_INET AF_UNIX AF_NETLINK
 [Install]
 WantedBy=multi-user.target
 EOF
+awg31_unit_compat /etc/systemd/system/awg31-panel.service
 systemctl daemon-reload
 systemctl enable awg31-panel.service
 # restart, not start: a panel left running by an earlier attempt must pick up this unit.

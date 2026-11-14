@@ -115,6 +115,7 @@ install -o root -g root -m 644 "$DIR/scripts/awg31-bot.service" /usr/local/libex
 if [[ -f /etc/awg31-bot/telegram.json ]] && id awgbot >/dev/null 2>&1; then
     chmod -R o+rX "$APP/.venv"
     install -o root -g root -m 644 "$DIR/scripts/awg31-bot.service" /etc/systemd/system/awg31-bot.service
+    awg31_unit_compat /etc/systemd/system/awg31-bot.service
     if awg31_install_bot_sudoers; then
         systemctl daemon-reload
         systemctl enable awg31-bot.service >/dev/null 2>&1 || :
@@ -131,6 +132,7 @@ install -o root -g root -m 755 "$DIR/scripts/kernel-check.sh" /usr/local/libexec
 for unit in awg31-sampler.service awg31-sampler.timer awg31-kernel-check.service awg31-kernel-check.timer awg31-backup.service; do
     install -o root -g root -m 644 "$DIR/scripts/$unit" "/etc/systemd/system/$unit"
 done
+awg31_unit_compat /etc/systemd/system/awg31-panel.service
 systemctl daemon-reload
 systemctl enable --now awg31-sampler.timer awg31-kernel-check.timer
 say "Upgrade completed. Backup: $backup"

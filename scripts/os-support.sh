@@ -81,3 +81,17 @@ awg31_wait_panel() {
   journalctl -u awg31-panel.service -n 25 --no-pager >&2 2>/dev/null || :
   return 1
 }
+
+# systemd older than 254 (Rocky Linux 9, Ubuntu 22.04, Debian 12) turns on
+# "no new privileges" for a non-root service that uses RestrictAddressFamilies,
+# and sudo then refuses to run. The panel and the bot cannot work without sudo,
+# so on those systems the unit goes without that one restriction.
+awg31_unit_compat() {
+    local unit="$1" version
+    version="$(systemctl --version 2>/dev/null | awk 'NR==1 {print $2}')"
+    [[ "$version" =~ ^[0-9]+$ ]] || version=0
+    if (( version < 254 )) && [[ -f "$unit" ]]; then
+        sed -i '/^RestrictAddressFamilies=/d' "$unit"
+    fi
+}
+

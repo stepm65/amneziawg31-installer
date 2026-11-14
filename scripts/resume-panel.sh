@@ -67,10 +67,11 @@ RestrictAddressFamilies=AF_INET AF_UNIX AF_NETLINK
 WantedBy=multi-user.target
 EOF
 chmod 644 /etc/systemd/system/awg31-panel.service
+source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/os-support.sh"
+awg31_unit_compat /etc/systemd/system/awg31-panel.service
 systemctl daemon-reload
 systemctl enable awg31-panel.service
 systemctl restart awg31-panel.service
-source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/os-support.sh"
 awg31_wait_panel "$PANEL_PORT" || die 'Панель не ответила на /health'
 printf '\n'
 say "Готово. Панель: 127.0.0.1:$PANEL_PORT (используйте Nginx HTTPS)"
