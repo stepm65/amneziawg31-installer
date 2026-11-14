@@ -31,6 +31,16 @@ ADMIN = {'servers', 'server-create', 'server-start', 'server-stop', 'server-rest
          'telegram-status','telegram-set','backup-encryption','backup-encryption-set','backup-export-encrypted'}
 
 
+def load_source(name, path):
+    """Import a program file that has no .py suffix (SourceFileLoader.load_module() is gone in Python 3.15)."""
+    import importlib.util
+    loader = SourceFileLoader(name, str(path))
+    module = importlib.util.module_from_spec(importlib.util.spec_from_loader(name, loader))
+    sys.modules[name] = module
+    loader.exec_module(module)
+    return module
+
+
 def run(*args, input=None):
     cp = subprocess.run(args, input=input, text=True, capture_output=True, timeout=60, check=False)
     if cp.returncode:
@@ -72,7 +82,7 @@ def check_new(iface, data):
     # Restrict quantities until tested operationally on the target VPS.
     if len(interfaces()) >= 8: raise ValueError('Maximum 8 servers per VPS')
     from importlib.machinery import SourceFileLoader
-    ctl = SourceFileLoader('awg31_validator', CTL).load_module()
+    ctl = load_source('awg31_validator', CTL)
     valid = ctl.validate_settings(data, initial=True)
     subnet = ipaddress.ip_network(valid['subnet'])
     for other in interfaces():
@@ -143,7 +153,7 @@ def main():
     raw = '' if op in no_payload or sys.stdin.isatty() else sys.stdin.read(32768)
     data=json.loads(raw) if raw.strip() else {}
     if not isinstance(data,dict): raise ValueError('Expected JSON object')
-    admin=SourceFileLoader('awg31admin',str(Path(__file__).with_name('awg31admin.py'))).load_module()
+    admin=load_source('awg31admin',Path(__file__).with_name('awg31admin.py'))
     if op=='servers': return {'servers':[info(x) for x in interfaces()]}
     if op=='audit': return admin.audit(data)
     if op=='audit-list': return admin.audit_recent()
@@ -160,7 +170,7 @@ def main():
     if op=='backup-encryption-set': return admin.backup_encryption_set(data)
     if op=='obfuscation-generate':
         # One generator for the wizard, new servers and the panel button.
-        fresh=SourceFileLoader('awg31_generator',CTL).load_module().fresh_obfuscation()
+        fresh=load_source('awg31_generator',CTL).fresh_obfuscation()
         fresh['HeaderProtectionKey']=fresh.pop('header_key')
         return fresh
     # Root console only: this command is intentionally missing from sudoers.

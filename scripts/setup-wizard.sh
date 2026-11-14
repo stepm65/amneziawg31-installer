@@ -109,9 +109,10 @@ fi
 # Pure validation; aborts before apt installation or writing any system files.
 export AWG31_SUBNET="$SUBNET" AWG31_PORT="$PORT" AWG31_MTU="$MTU" AWG31_ENDPOINT="$ENDPOINT" AWG31_DNS="$DNS" AWG31_MODE="$MODE" AWG31_UPLINK="$UPLINK" AWG31_PANEL_PORT="$PANEL_PORT" AWG31_FIRST_CLIENT="$FIRST_CLIENT"
 python3 - "$DIR/src" <<'PY'
-import ipaddress,json,os,pathlib,subprocess,sys
+import importlib.util,ipaddress,json,os,pathlib,subprocess,sys
 from importlib.machinery import SourceFileLoader
-m=SourceFileLoader('awg31ctl',str(pathlib.Path(sys.argv[1])/'awg31ctl')).load_module()
+loader=SourceFileLoader('awg31ctl',str(pathlib.Path(sys.argv[1])/'awg31ctl'))
+m=importlib.util.module_from_spec(importlib.util.spec_from_loader('awg31ctl',loader));loader.exec_module(m)
 d={k:os.environ[f'AWG31_{k.upper()}'] for k in ('subnet','port','mtu','endpoint','dns','mode','uplink')}
 setting=m.validate_settings(d,initial=True)
 port=int(os.environ['AWG31_PANEL_PORT'])

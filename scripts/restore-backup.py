@@ -140,7 +140,10 @@ def apply(name):
     if not spec or not spec.loader:raise ValueError('Installed admin module not found')
     mod=importlib.util.module_from_spec(spec);spec.loader.exec_module(mod)
     from importlib.machinery import SourceFileLoader
-    manager=SourceFileLoader('awg31mgr_recovery','/usr/local/sbin/awg31mgr').load_module()
+    loader=SourceFileLoader('awg31mgr_recovery','/usr/local/sbin/awg31mgr')
+    manager=importlib.util.module_from_spec(importlib.util.spec_from_loader('awg31mgr_recovery',loader))
+    sys.modules['awg31mgr_recovery']=manager
+    loader.exec_module(manager)
     # The safety snapshot must never be refused because the archive limit is
     # reached: that would make restoring impossible exactly when 30 copies exist.
     safe_copy=mod.create_backup(manager, enforce_limit=False)

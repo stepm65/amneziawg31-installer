@@ -1,0 +1,95 @@
+name: Install smoke test (virtual machines)
+# The same end-to-end check as on the Ubuntu runner, inside real virtual machines
+# (KVM on the runner) with their own kernel, DKMS build, init system and packages:
+#   Rocky Linux 9  - dnf, SELinux enforcing, Python 3.9, systemd 252
+#   Ubuntu 26.04   - kernel 7.x, sudo-rs, Python 3.14, the newest systemd
+on:
+  push:
+  pull_request:
+jobs:
+  vm:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 50
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: rocky9
+            images: https://dl.rockylinux.org/pub/rocky/9/images/x86_64/Rocky-9-GenericCloud-Base.latest.x86_64.qcow2
+            update: dnf -y -q update kernel kernel-core kernel-modules && dnf -y -q install tar
+            # SELinux keeps Nginx off a non-standard port without an interactive consent.
+            nginx: 'no'
+          - name: ubuntu2604
+            images: >-
+              https://cloud-images.ubuntu.com/releases/resolute/release/ubuntu-26.04-server-cloudimg-amd64.img
+              https://cloud-images.ubuntu.com/releases/26.04/release/ubuntu-26.04-server-cloudimg-amd64.img
+              https://cloud-images.ubuntu.com/resolute/current/resolute-server-cloudimg-amd64.img
+            update: >-
+              export DEBIAN_FRONTEND=noninteractive; cloud-init status --wait >/dev/null 2>&1 || true;
+              apt-get -qq update && apt-get -y -qq -o Dpkg::Options::=--force-confold full-upgrade
+            nginx: 'yes'
+    name: ${{ matrix.name }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Enable KVM and install QEMU
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules && sudo udevadm trigger --name-match=kvm
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends qemu-system-x86 qemu-utils cloud-image-utils
+          ls -l /dev/kvm
+      - name: Boot ${{ matrix.name }}
+        env:
+          IMAGES: ${{ matrix.images }}
+        run: |
+          set -eu
+          for url in $IMAGES; do
+            if curl -fsSL --retry 3 -o disk.img "$url"; then echo "image: $url"; break; fi
+            echo "not available: $url"; rm -f disk.img
+          done
+          [ -s disk.img ] || { echo 'no cloud image could be downloaded'; exit 1; }
+          qemu-img resize disk.img 20G
+          ssh-keygen -q -t ed25519 -N '' -f vmkey
+          cat > user-data <<CFG
+          #cloud-config
+          disable_root: false
+          ssh_pwauth: false
+          users:
+            - name: root
+              ssh_authorized_keys:
+                - $(cat vmkey.pub)
+          CFG
+          printf 'instance-id: awg31-smoke\nlocal-hostname: awg31-smoke\n' > meta-data
+          cloud-localds seed.img user-data meta-data
+          sudo qemu-system-x86_64 -enable-kvm -cpu host -smp 4 -m 6144 -display none -daemonize \
+            -drive file=disk.img,if=virtio -drive file=seed.img,if=virtio,format=raw \
+            -nic user,model=virtio-net-pci,hostfwd=tcp:127.0.0.1:2222-:22 -serial file:serial.log
+          cat > vm <<'SH'
+          #!/usr/bin/env bash
+          exec ssh -i vmkey -p 2222 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o ConnectTimeout=10 root@127.0.0.1 "$@"
+          SH
+          chmod +x vm
+          for attempt in $(seq 1 60); do ./vm true 2>/dev/null && break; sleep 5; done
+          ./vm 'cat /etc/os-release | head -n 2; uname -r; (getenforce 2>/dev/null || true); python3 -V; systemctl --version | head -n1; sudo --version | head -n1'
+      - name: Bring the system up to date and reboot
+        # Kernel headers in the repositories exist only for the current kernel.
+        env:
+          UPDATE: ${{ matrix.update }}
+        run: |
+          set -eu
+          ./vm "$UPDATE"
+          ./vm 'systemctl reboot' || true
+          sleep 20
+          for attempt in $(seq 1 60); do ./vm true 2>/dev/null && break; sleep 5; done
+          ./vm 'uname -r'
+      - name: Install, exercise and purge
+        run: |
+          set -eu
+          tar --exclude=.git --exclude=disk.img --exclude=seed.img --exclude=vmkey --exclude=serial.log -c . | ./vm 'mkdir -p /root/src && tar -x -C /root/src'
+          ./vm "cd /root/src && CI=true AWG31_SMOKE_NGINX=${{ matrix.nginx }} bash tests/smoke/check_install.sh"
+      - name: Logs on failure
+        if: failure()
+        run: |
+          ./vm "journalctl -u awg31-panel -u awg31-helper --no-pager | grep -v 'File \"' | tail -n 40; runuser -u awgpanel -- sudo -n /usr/local/sbin/awg31mgr servers; sudo -l -U awgpanel | tail -n 5" || true
+          ./vm "journalctl -u awg31-panel -u awg31-bot -u 'awg-quick@awg0' -n 80 --no-pager; dkms status; ausearch -m avc -ts recent 2>/dev/null | tail -n 30" || true
+          sudo tail -n 40 serial.log || true
