@@ -173,6 +173,7 @@ install -o root -g root -m 644 "$DIR/src/awg31admin.py" /usr/local/sbin/awg31adm
 install -d -o root -g root -m 755 /usr/local/libexec/awg31/scripts
 install -o root -g root -m 755 "$DIR/scripts/restore-backup.py" /usr/local/libexec/awg31/scripts/restore-backup.py
 install -o root -g root -m 644 "$DIR/src/web.py" /opt/awg31-panel/web.py
+install -o root -g root -m 644 "$DIR/src/awg31client.py" /opt/awg31-panel/awg31client.py
 install -o root -g root -m 644 "$DIR/src/amnezialink.py" /opt/awg31-panel/amnezialink.py
 install -o root -g root -m 644 "$DIR/src/quicinitial.py" /opt/awg31-panel/quicinitial.py
 install -o root -g root -m 644 "$DIR/src/awg31bot.py" /opt/awg31-panel/awg31bot.py
@@ -294,6 +295,8 @@ RestrictAddressFamilies=AF_INET AF_UNIX AF_NETLINK
 WantedBy=multi-user.target
 EOF
 awg31_unit_compat /etc/systemd/system/awg31-panel.service
+say 'Запуск помощника контроллера (быстрый доступ панели к VPN без sudo на каждый запрос)'
+awg31_install_helper "$DIR" || echo '[AWG31 WARNING] Помощник контроллера не запустился: панель работает через sudo, только медленнее' >&2
 systemctl daemon-reload
 systemctl enable awg31-panel.service
 # restart, not start: a panel left running by an earlier attempt must pick up this unit.

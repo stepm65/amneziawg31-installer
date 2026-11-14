@@ -95,3 +95,32 @@ awg31_unit_compat() {
     fi
 }
 
+
+# The control helper: a root service the panel and the bot reach over
+# /run/awg31/control.sock instead of starting `sudo awg31mgr` for every call.
+# It grants exactly what the sudo rules grant (it reads them), so sudo stays the
+# single list of permissions and also the fallback while the helper is down.
+awg31_control_group() {
+    getent group awg31ctl >/dev/null 2>&1 || groupadd --system awg31ctl
+    local user
+    for user in awgpanel awgbot; do
+        if id "$user" >/dev/null 2>&1; then usermod -a -G awg31ctl "$user"; fi
+    done
+}
+
+awg31_install_helper() {
+    local source_dir="$1" attempt
+    [[ -f "$source_dir/src/awg31helper" && -f "$source_dir/scripts/awg31-helper.service" ]] || return 1
+    awg31_control_group
+    install -o root -g root -m 755 "$source_dir/src/awg31helper" /usr/local/sbin/awg31helper
+    install -o root -g root -m 644 "$source_dir/src/awg31client.py" /opt/awg31-panel/awg31client.py
+    install -o root -g root -m 644 "$source_dir/scripts/awg31-helper.service" /etc/systemd/system/awg31-helper.service
+    systemctl daemon-reload
+    systemctl enable awg31-helper.service >/dev/null 2>&1 || :
+    systemctl restart awg31-helper.service || return 1
+    for ((attempt = 0; attempt < 50; attempt++)); do
+        [[ -S /run/awg31/control.sock ]] && return 0
+        sleep 0.2
+    done
+    return 1
+}

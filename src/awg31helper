@@ -1,0 +1,377 @@
+#!/usr/bin/env python3
+"""Root control helper: the operations of `sudo awg31mgr`, without starting Python twice per call.
+
+Through sudo every panel request costs two interpreter start-ups (awg31mgr, then
+awg31ctl) plus sudo itself. This service loads both programs once and runs each
+request in a forked copy of itself, so a request costs a fork and the work.
+
+Who may run what is read, on every request, from the sudoers files the installer
+writes (/etc/sudoers.d/awg31-panel and awg31-bot). The helper therefore grants
+exactly what sudo would grant, and removing a sudo rule (for example
+`awg31 telegram off`) revokes both ways at once. The caller is identified by the
+kernel (SO_PEERCRED), not by anything it sends. A request carries only an
+operation name and the JSON text sudo would have received on stdin: no paths,
+no arguments, no environment.
+
+Wire format: a 4-byte big-endian length, then UTF-8 JSON.
+  request   {"op": "list", "input": "{\\"interface\\": \\"awg0\\"}"}
+  response  {"rc": 0, "stdout": "...", "stderr": "..."}
+"""
+import builtins
+import grp
+import json
+import os
+import pwd
+import re
+import signal
+import socket
+import socketserver
+import struct
+import sys
+import tempfile
+import time
+import traceback
+import types
+from pathlib import Path
+
+SOCKET = Path(os.environ.get('AWG31_HELPER_SOCKET', '/run/awg31/control.sock'))
+GROUP = os.environ.get('AWG31_HELPER_GROUP', 'awg31ctl')
+MGR = os.environ.get('AWG31_MGR_PATH', '/usr/local/sbin/awg31mgr')
+CTL = os.environ.get('AWG31_CTL_PATH', '/usr/local/sbin/awg31ctl')
+SUDOERS = [Path(p) for p in os.environ.get('AWG31_HELPER_SUDOERS',
+                                           '/etc/sudoers.d/awg31-panel:/etc/sudoers.d/awg31-bot').split(':') if p]
+MAX_REQUEST = 64 * 1024            # awg31mgr itself reads at most 32 KiB of stdin
+REQUEST_SECONDS = 150              # hard limit for one request, whatever it does
+CTL_SECONDS = 75                   # the same limit awg31mgr gives awg31ctl
+RULE = re.compile(r'([a-z_][a-z0-9_-]{0,31}) ALL=\(root\) NOPASSWD: (.+)')
+OP = re.compile(r'[a-z0-9][a-z0-9-]{0,39}')
+
+
+def log(message):
+    print(f'awg31helper: {message}', file=sys.stderr, flush=True)
+
+
+# ------------------------------------------------------------------ permissions
+def permissions():
+    """{user: {operations}} from our own sudoers files; anything unexpected grants nothing."""
+    granted = {}
+    for path in SUDOERS:
+        try:
+            info = path.stat()
+            text = path.read_text()
+        except FileNotFoundError:
+            continue
+        except OSError as exc:
+            log(f'cannot read {path}: {exc}')
+            continue
+        # A rule file somebody else could have written is not trusted.
+        if info.st_uid != 0 or info.st_mode & 0o022:
+            log(f'ignoring {path}: not owned by root or writable by others')
+            continue
+        for line in text.splitlines():
+            match = RULE.fullmatch(line.strip())
+            if not match:
+                continue
+            operations = set()
+            for item in match.group(2).split(','):
+                words = item.split()
+                if len(words) == 2 and words[0] == MGR and OP.fullmatch(words[1]):
+                    operations.add(words[1])
+            granted.setdefault(match.group(1), set()).update(operations)
+    return granted
+
+
+def peer_user(connection):
+    data = connection.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, struct.calcsize('3i'))
+    _pid, uid, _gid = struct.unpack('3i', data)
+    try:
+        return pwd.getpwuid(uid).pw_name
+    except KeyError:
+        return f'uid {uid}'
+
+
+# ------------------------------------------------------------------ framing
+def read_frame(connection, limit):
+    header = _read_exact(connection, 4)
+    size = struct.unpack('>I', header)[0]
+    if size > limit:
+        raise ValueError('request too large')
+    return json.loads(_read_exact(connection, size).decode('utf-8'))
+
+
+def _read_exact(connection, size):
+    chunks, left = [], size
+    while left:
+        chunk = connection.recv(min(left, 1 << 20))
+        if not chunk:
+            raise ConnectionError('connection closed')
+        chunks.append(chunk)
+        left -= len(chunk)
+    return b''.join(chunks)
+
+
+def write_frame(connection, value):
+    body = json.dumps(value, ensure_ascii=False).encode('utf-8')
+    connection.sendall(struct.pack('>I', len(body)) + body)
+
+
+# ------------------------------------------------------------------ code, loaded once
+class Code:
+    """Compiled sources, recompiled when a file changes (an update needs no restart to be correct)."""
+
+    def __init__(self):
+        self.cache = {}
+
+    def get(self, path):
+        info = os.stat(path)
+        key = (info.st_mtime_ns, info.st_size)
+        hit = self.cache.get(path)
+        if hit and hit[0] == key:
+            return hit[1]
+        code = compile(Path(path).read_bytes(), path, 'exec')
+        self.cache[path] = (key, code)
+        return code
+
+
+CODE = Code()
+
+
+def _memfd(content=b''):
+    """An anonymous in-memory file. Outputs can hold private keys: never a file on disk."""
+    try:
+        fd = os.memfd_create('awg31', 0)
+    except AttributeError:                                   # Python built without memfd_create
+        here = SOCKET.parent if SOCKET.parent.is_dir() else None                  # /run/awg31: tmpfs
+        fd, name = tempfile.mkstemp(prefix='.io-', dir=str(here) if here else None)
+        os.unlink(name)
+    if content:
+        os.write(fd, content)
+    os.lseek(fd, 0, os.SEEK_SET)
+    return fd
+
+
+def _drain(fd):
+    os.lseek(fd, 0, os.SEEK_SET)
+    chunks = []
+    while True:
+        chunk = os.read(fd, 1 << 20)
+        if not chunk:
+            break
+        chunks.append(chunk)
+    os.close(fd)
+    return b''.join(chunks).decode('utf-8', 'replace')
+
+
+def _redirect(stdin_fd, stdout_fd, stderr_fd):
+    """Make fds 0/1/2 the given files, as a freshly started program would see them."""
+    for target, fd in ((0, stdin_fd), (1, stdout_fd), (2, stderr_fd)):
+        os.dup2(fd, target)
+    sys.stdin = open(0, 'r', encoding='utf-8', closefd=False)
+    sys.stdout = open(1, 'w', encoding='utf-8', closefd=False)
+    sys.stderr = open(2, 'w', encoding='utf-8', closefd=False)
+
+
+def _exit_code(exc):
+    if exc.code is None:
+        return 0
+    if isinstance(exc.code, int):
+        return exc.code
+    print(exc.code, file=sys.stderr)
+    return 1
+
+
+def _flush():
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.flush()
+        except (OSError, ValueError):
+            pass
+
+
+def run_program(code, path, argv, text, environment=None, timeout=None):
+    """Run a compiled program in a fork, like subprocess.run would run the file. Returns (rc, out, err)."""
+    stdin_fd, stdout_fd, stderr_fd = _memfd((text or '').encode('utf-8')), _memfd(), _memfd()
+    pid = os.fork()
+    if pid == 0:                                             # the program
+        rc = 1
+        try:
+            _redirect(stdin_fd, stdout_fd, stderr_fd)
+            if environment is not None:
+                os.environ.clear()
+                os.environ.update(environment)
+            sys.argv = [path, *argv]
+            exec(code, {'__name__': '__main__', '__file__': path, '__builtins__': builtins})
+            rc = 0
+        except SystemExit as exc:
+            rc = _exit_code(exc)
+        except BaseException:
+            traceback.print_exc()
+            rc = 1
+        finally:
+            _flush()
+            os._exit(rc & 0xff)
+    os.close(stdin_fd)
+    deadline = None if timeout is None else time.monotonic() + timeout
+    pause = 0.0005
+    while True:
+        done, status = os.waitpid(pid, os.WNOHANG)
+        if done:
+            break
+        if deadline is not None and time.monotonic() > deadline:
+            os.kill(pid, signal.SIGKILL)
+            os.waitpid(pid, 0)
+            _drain(stdout_fd), _drain(stderr_fd)
+            raise TimeoutError(f'{os.path.basename(path)} {" ".join(argv)} timed out')
+        time.sleep(pause)
+        pause = min(pause * 2, 0.02)
+    return os.waitstatus_to_exitcode(status), _drain(stdout_fd), _drain(stderr_fd)
+
+
+def fast_child_exec(env, command, payload):
+    """Drop-in for awg31mgr.child_exec: the same program, the same environment, no new interpreter."""
+    import subprocess
+    try:
+        rc, out, err = run_program(CODE.get(CTL), CTL, [command], json.dumps(payload), env, CTL_SECONDS)
+    except TimeoutError:
+        raise subprocess.TimeoutExpired([CTL, command], CTL_SECONDS) from None
+    if rc:
+        try:
+            message = json.loads(err).get('error', err)
+        except ValueError:
+            message = err
+        raise RuntimeError(str(message)[:700])
+    return out
+
+
+def run_manager(op, text):
+    """Run `awg31mgr OP` with TEXT on stdin inside this (already forked) process."""
+    module = types.ModuleType('awg31mgr')
+    module.__file__ = MGR
+    sys.modules['awg31mgr'] = module
+
+    def program():
+        exec(CODE.get(MGR), module.__dict__)
+        module.child_exec = fast_child_exec
+        module.cli()
+    return _run_inline(program, op, text)
+
+
+def _run_inline(program, op, text):
+    """Like run_program, but in this process: the connection child exits right after anyway."""
+    stdin_fd, stdout_fd, stderr_fd = _memfd((text or '').encode('utf-8')), _memfd(), _memfd()
+    saved = os.dup(2)
+    rc = 1
+    try:
+        _redirect(stdin_fd, stdout_fd, stderr_fd)
+        sys.argv = [MGR, op]
+        program()
+        rc = 0
+    except SystemExit as exc:
+        rc = _exit_code(exc)
+    except BaseException:
+        traceback.print_exc()
+        rc = 1
+    finally:
+        _flush()
+        os.dup2(saved, 2)
+        sys.stderr = open(2, 'w', encoding='utf-8', closefd=False)
+    return rc, _drain(stdout_fd), _drain(stderr_fd)
+
+
+# ------------------------------------------------------------------ server
+def denied(message):
+    return {'rc': 1, 'stdout': '', 'stderr': json.dumps({'error': message})}
+
+
+class Handler(socketserver.BaseRequestHandler):
+    def handle(self):                                       # runs in a forked child
+        signal.signal(signal.SIGALRM, signal.SIG_DFL)
+        signal.alarm(REQUEST_SECONDS)
+        connection = self.request
+        connection.settimeout(15)
+        try:
+            user = peer_user(connection)
+            request = read_frame(connection, MAX_REQUEST)
+        except (OSError, ValueError, ConnectionError) as exc:
+            log(f'bad request: {exc}')
+            return
+        if not isinstance(request, dict):
+            request = {}
+        op, text = request.get('op'), request.get('input')
+        if not isinstance(op, str) or not OP.fullmatch(op) or not (text is None or isinstance(text, str)):
+            write_frame(connection, denied('Malformed request'))
+            return
+        if op not in permissions().get(user, ()):
+            log(f'denied: {user} {op}')
+            write_frame(connection, denied('Operation not permitted'))
+            return
+        connection.settimeout(None)
+        try:
+            reply = dict(zip(('rc', 'stdout', 'stderr'), run_manager(op, text)))
+        except Exception as exc:                             # an answer, not a silently closed connection
+            log(f'{op} failed inside the helper: {traceback.format_exc()}')
+            reply = denied(f'Control helper failed: {type(exc).__name__}')
+        try:
+            write_frame(connection, reply)
+        except OSError:
+            pass                                             # the caller gave up waiting
+
+
+class Server(socketserver.ForkingMixIn, socketserver.UnixStreamServer):
+    request_queue_size = 64
+    max_children = 32
+
+    def process_request(self, request, client_address):
+        # Compile changed sources once, in the parent, so every child inherits them.
+        try:
+            CODE.get(MGR)
+            CODE.get(CTL)
+        except (OSError, SyntaxError) as exc:
+            log(f'cannot load the controller: {exc}')
+        super().process_request(request, client_address)
+
+
+def preload():
+    """Everything awg31mgr, awg31ctl and awg31admin import: paid once, not per request."""
+    import base64, datetime, fcntl, hashlib, hmac, importlib.machinery, ipaddress, io, secrets  # noqa: F401,E401
+    import shutil, sqlite3, subprocess, tarfile, tempfile, zlib, gzip  # noqa: F401,E401
+    CODE.get(MGR)
+    CODE.get(CTL)
+
+
+def main():
+    if os.geteuid() != 0:
+        log('must run as root')
+        return 1
+    preload()
+    SOCKET.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        SOCKET.unlink()
+    except FileNotFoundError:
+        pass
+    previous = os.umask(0o177)                               # 0600 until the group is set
+    server = Server(str(SOCKET), Handler)
+    os.umask(previous)
+    try:
+        os.chown(SOCKET, 0, grp.getgrnam(GROUP).gr_gid)
+        os.chmod(SOCKET, 0o660)
+    except KeyError:
+        log(f'group {GROUP} does not exist: only root can connect, the panel falls back to sudo')
+
+    def stop(*_):
+        raise SystemExit(0)
+    signal.signal(signal.SIGTERM, stop)
+    log(f'listening on {SOCKET}')
+    try:
+        server.serve_forever()
+    finally:
+        server.server_close()
+        try:
+            SOCKET.unlink()
+        except FileNotFoundError:
+            pass
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main())

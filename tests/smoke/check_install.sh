@@ -65,6 +65,57 @@ print('panel checks passed')
 PY
 awg show awg0 | grep -c '^peer' | grep -qx 2 || fail 'expected two peers on awg0'
 
+step 'Control helper: socket, permissions, fallback, speed'
+systemctl is-active --quiet awg31-helper.service || fail 'control helper is not running'
+[[ "$(stat -c '%U:%G %a' /run/awg31/control.sock)" == 'root:awg31ctl 660' ]] || fail 'helper socket has wrong owner or mode'
+id -nG awgpanel | tr ' ' '\n' | grep -qx awg31ctl || fail 'awgpanel is not in awg31ctl'
+panel_pid="$(systemctl show -p MainPID --value awg31-panel.service)"
+grep -qw "$(getent group awg31ctl | cut -d: -f3)" <(grep '^Groups:' "/proc/$panel_pid/status") || fail 'the running panel has not got the awg31ctl group'
+cat >/tmp/awg31-probe.py <<'PY'
+import json, statistics, sys, time
+sys.path.insert(0, '/opt/awg31-panel')
+import awg31client
+mode, op = sys.argv[1], sys.argv[2]
+data = json.dumps({'interface': 'awg0'})
+if mode == 'helper-only':
+    def no_sudo(*args):
+        raise SystemExit('fell back to sudo')
+    awg31client.via_sudo = no_sudo
+    code, out, err = awg31client.call(op, data)
+    print(code, (out or err).strip()[:200])
+    sys.exit(0)
+call = awg31client.call if mode == 'helper' else awg31client.via_sudo
+times = []
+for _ in range(15):
+    started = time.perf_counter()
+    code, out, err = call(op, data)
+    times.append((time.perf_counter() - started) * 1000)
+    assert code == 0, err
+print(f'{statistics.median(times):.1f}')
+PY
+chmod 644 /tmp/awg31-probe.py
+probe(){ runuser -u "$1" -- /opt/awg31-panel/.venv/bin/python3 /tmp/awg31-probe.py "${@:2}"; }
+probe awgpanel helper-only list | grep -q '^0 ' || fail 'the panel user does not reach the controller through the helper'
+probe awgpanel helper-only password-reset | grep -q 'Operation not permitted' || fail 'the helper ran a console-only operation for the panel'
+probe awgpanel helper-only totp-reset | grep -q 'Operation not permitted' || fail 'the helper ran totp-reset for the panel'
+if runuser -u nobody -- python3 -c 'import socket; socket.socket(socket.AF_UNIX).connect("/run/awg31/control.sock")' 2>/dev/null; then
+    fail 'an unrelated user can connect to the helper socket'
+fi
+via_sudo_ms="$(probe awgpanel sudo list)"
+via_helper_ms="$(probe awgpanel helper list)"
+servers_sudo_ms="$(probe awgpanel sudo servers)"
+servers_helper_ms="$(probe awgpanel helper servers)"
+echo "median of 15 calls: list ${via_sudo_ms} ms via sudo, ${via_helper_ms} ms via helper; servers ${servers_sudo_ms} ms via sudo, ${servers_helper_ms} ms via helper"
+python3 -c "import sys; sys.exit(0 if float('$via_helper_ms') < float('$via_sudo_ms') else 1)" || fail 'the helper is not faster than sudo'
+systemctl stop awg31-helper.service
+[[ ! -e /run/awg31/control.sock ]] || fail 'socket left behind after stop'
+probe awgpanel sudo list >/dev/null || fail 'sudo path does not work'
+runuser -u awgpanel -- /opt/awg31-panel/.venv/bin/python3 -c 'import sys; sys.path.insert(0,"/opt/awg31-panel"); import awg31client; sys.exit(awg31client.call("servers")[0])' \
+    || fail 'no fallback to sudo while the helper is stopped'
+systemctl start awg31-helper.service
+for attempt in $(seq 1 25); do [[ -S /run/awg31/control.sock ]] && break; sleep 0.2; done
+probe awgpanel helper-only servers | grep -q '^0 ' || fail 'helper did not come back'
+
 step 'Isolate clients, close private networks'
 echo '{"interface":"awg0","client_to_client":"off","private_access":"off"}' | "$MGR" settings
 forward
@@ -201,6 +252,11 @@ systemctl is-active --quiet awg31-bot.service || fail 'bot service is not active
 if runuser -u awgpanel -- cat /etc/awg31-bot/telegram.json >/dev/null 2>&1; then fail 'the panel user can read the bot token'; fi
 if runuser -u awgbot -- cat /etc/awg31-panel/auth.json >/dev/null 2>&1; then fail 'the bot user can read the panel secrets'; fi
 runuser -u awgbot -- sudo -n "$MGR" servers </dev/null >/dev/null || fail 'bot cannot run a permitted command'
+id -nG awgbot | tr ' ' '\n' | grep -qx awg31ctl || fail 'awgbot is not in awg31ctl'
+probe awgbot helper-only servers | grep -q '^0 ' || fail 'the bot user does not reach the helper'
+for forbidden in server-delete backup-restore backup-export password-change settings; do
+    probe awgbot helper-only "$forbidden" | grep -q 'Operation not permitted' || fail "the helper ran $forbidden for the bot"
+done
 for forbidden in server-delete backup-restore backup-export password-change settings session-revoke; do
     if echo '{"interface":"awg0","confirm":"awg0"}' | runuser -u awgbot -- sudo -n "$MGR" "$forbidden" >/dev/null 2>&1; then
         fail "bot user may run $forbidden"
@@ -264,9 +320,12 @@ if ss -H -ltn 'sport = :18081' | grep -q .; then fail 'something still listens o
 if systemctl list-timers --all --no-legend | grep -q awg31; then fail 'timers left behind'; fi
 if forward | grep -q awg0; then forward; fail 'firewall rules left behind'; fi
 if systemctl is-active --quiet awg31-bot.service; then fail 'bot service is still running'; fi
+if systemctl is-active --quiet awg31-helper.service; then fail 'control helper is still running'; fi
+if getent group awg31ctl >/dev/null; then fail 'group awg31ctl left behind'; fi
 if id awgbot >/dev/null 2>&1; then fail 'bot user left behind'; fi
 for path in /opt/awg31-panel /etc/awg31-panel /var/lib/awg31-panel /usr/local/bin/awg31 /etc/sudoers.d/awg31-panel "$CONF" \
-            /etc/awg31-bot /var/lib/awg31-bot /etc/sudoers.d/awg31-bot /etc/systemd/system/awg31-bot.service; do
+            /etc/awg31-bot /var/lib/awg31-bot /etc/sudoers.d/awg31-bot /etc/systemd/system/awg31-bot.service \
+            /usr/local/sbin/awg31helper /etc/systemd/system/awg31-helper.service /run/awg31/control.sock; do
     [[ ! -e "$path" ]] || fail "left behind: $path"
 done
 
@@ -293,6 +352,8 @@ grep -q 'server, backups' /tmp/awg31-telegram-status || fail 'notification choic
 if grep -q BBBBB /tmp/awg31-telegram-status; then fail 'status prints the token'; fi
 awg31 telegram off
 if systemctl is-active --quiet awg31-bot.service; then fail 'bot still runs after telegram off'; fi
+# Removing the bot's sudo rule also closes the helper to it.
+probe awgbot helper-only servers | grep -q 'Operation not permitted' || fail 'the helper still serves the bot after telegram off'
 [[ ! -e /etc/awg31-bot/telegram.json && ! -e /etc/sudoers.d/awg31-bot ]] || fail 'token or sudo rule left after telegram off'
 if runuser -u awgbot -- sudo -n "$MGR" servers </dev/null >/dev/null 2>&1; then fail 'bot user keeps sudo after telegram off'; fi
 

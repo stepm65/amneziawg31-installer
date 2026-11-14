@@ -26,9 +26,11 @@ import urllib.request
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))    # awg31client lives next to this file
+import awg31client  # noqa: E402
+
 CONFIG = Path(os.environ.get('AWG31_BOT_CONFIG', '/etc/awg31-bot/telegram.json'))
 STATE = Path(os.environ.get('AWG31_BOT_STATE', '/var/lib/awg31-bot/state.json'))
-MANAGER = os.environ.get('AWG31_MGR_PATH', '/usr/local/sbin/awg31mgr')
 NAME_RE = re.compile(r'[a-zA-Z0-9][a-zA-Z0-9_-]{0,31}')
 IFACE_RE = re.compile(r'awg(?:0|[1-9][0-9]?)')
 TOKEN_RE = re.compile(r'[0-9]{5,14}:[A-Za-z0-9_-]{30,60}')
@@ -228,20 +230,19 @@ def human_size(value):
 
 
 def ctl(command, data=None):
-    """Run one allowlisted controller command as root; data travels over stdin."""
+    """Run one allowlisted controller command as root (control helper, else sudo); data travels as JSON."""
     try:
-        proc = subprocess.run(['sudo', '-n', MANAGER, command], input=json.dumps(data) if data is not None else None,
-                              capture_output=True, text=True, timeout=90)
-    except (OSError, subprocess.TimeoutExpired) as exc:
+        code, stdout, stderr = awg31client.call(command, json.dumps(data) if data is not None else None, 90)
+    except (OSError, ConnectionError, subprocess.TimeoutExpired) as exc:
         raise BotError(type(exc).__name__) from None
-    if proc.returncode:
+    if code:
         try:
-            message = json.loads(proc.stderr).get('error', 'controller error')
+            message = json.loads(stderr).get('error', 'controller error')
         except ValueError:
             message = 'controller error (not permitted or unavailable)'
         raise BotError(str(message)[:300])
     try:
-        return json.loads(proc.stdout)
+        return json.loads(stdout)
     except ValueError:
         raise BotError('unexpected controller reply') from None
 

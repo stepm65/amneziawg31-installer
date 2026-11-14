@@ -1,0 +1,23 @@
+[Unit]
+Description=AmneziaWG 3.1 Console control helper (root operations for the panel and the Telegram bot)
+Documentation=https://github.com/stepm65/amneziawg31-installer
+Before=awg31-panel.service awg31-bot.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /usr/local/sbin/awg31helper
+Restart=always
+RestartSec=2
+# The socket lives in /run/awg31 (tmpfs); the directory is recreated on every start.
+RuntimeDirectory=awg31
+RuntimeDirectoryMode=0755
+# The same environment sudo gives awg31mgr.
+Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+UMask=0022
+# Stop accepting, let requests in progress finish (a backup, a restart of a server),
+# then exit. Only what is still running after TimeoutStopSec is killed.
+KillMode=mixed
+TimeoutStopSec=90
+
+[Install]
+WantedBy=multi-user.target

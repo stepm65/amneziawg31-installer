@@ -3,7 +3,7 @@
 set -Eeuo pipefail
 [[ ${EUID} -eq 0 ]] || { echo 'Run as root: sudo awg31' >&2; exit 1; }
 case "${1:-menu}" in
-  status) systemctl --no-pager status awg31-panel.service; /usr/local/sbin/awg31mgr servers ;;
+  status) systemctl --no-pager status awg31-panel.service; echo "Control helper: $(systemctl is-active awg31-helper.service 2>/dev/null)"; /usr/local/sbin/awg31mgr servers ;;
   restart-panel) systemctl restart awg31-panel.service; systemctl --no-pager status awg31-panel.service ;;
   logs) journalctl -u awg31-panel.service -n 100 --no-pager ;;
   nginx)

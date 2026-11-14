@@ -1,4 +1,6 @@
 """Bilingual charcoal/amber AWG 3.1 console. Unprivileged; localhost only."""
+import contextvars
+import copy
 import hashlib
 import hmac
 import html
@@ -12,6 +14,8 @@ import subprocess
 import sys
 import time
 from urllib.parse import quote, urlsplit
+
+import awg31client
 import re
 from datetime import datetime, timezone
 
@@ -594,19 +598,65 @@ def controller_message(lang, message):
     return KNOWN_ERRORS.get(lang, {}).get(str(message), str(message))
 
 
+# Operations that only read. Within one request their answers are reused: a page
+# that needs the server list three times asks the controller once. A change made
+# in the same request forgets everything read so far.
+READ_ONLY_OPS = frozenset({'servers', 'list', 'status', 'diagnostics', 'history', 'host-history', 'backup-list',
+                           'backup-policy', 'backup-encryption', 'telegram-status', 'audit-list'})
+_REQUEST_CACHE = contextvars.ContextVar('awg31_ctl_cache', default=None)
+
+
 def ctl(command, data=None):
-    proc = subprocess.run(['sudo', '-n', '/usr/local/sbin/awg31mgr', command],
-                          input=json.dumps(data) if data is not None else None,
-                          capture_output=True, text=True, timeout=(90 if command in ('server-create','backup-create','backup-export','backup-restore','backup-check') else 35))
-    if proc.returncode:
+    cache = _REQUEST_CACHE.get()
+    key = None
+    if cache is not None:
+        if command in READ_ONLY_OPS:
+            key = (command, json.dumps(data, sort_keys=True))
+            if key in cache:
+                return copy.deepcopy(cache[key])
+        else:
+            cache.clear()
+    result = _ctl_call(command, data)
+    if key is not None:
+        cache[key] = copy.deepcopy(result)
+    return result
+
+
+def _ctl_call(command, data=None):
+    timeout = 90 if command in ('server-create','backup-create','backup-export','backup-restore','backup-check') else 35
+    try:
+        code, stdout, stderr = awg31client.call(command, json.dumps(data) if data is not None else None, timeout)
+    except (OSError, ConnectionError) as exc:
+        print(f'awg31mgr {command}: control helper failed: {exc}', file=sys.stderr, flush=True)
+        raise RuntimeError('Ошибка контроллера: см. журнал службы') from None
+    if code:
         try:
-            msg = json.loads(proc.stderr).get('error', 'Ошибка контроллера')
+            msg = json.loads(stderr).get('error', 'Ошибка контроллера')
         except ValueError:
             msg = 'Ошибка контроллера: см. журнал службы'
             # The message points at the journal, so the reason has to be there.
-            print(f'awg31mgr {command} failed ({proc.returncode}): {proc.stderr.strip()[-600:]}', file=sys.stderr, flush=True)
+            print(f'awg31mgr {command} failed ({code}): {stderr.strip()[-600:]}', file=sys.stderr, flush=True)
         raise RuntimeError(str(msg)[:300])
-    return json.loads(proc.stdout)
+    return json.loads(stdout)
+
+
+class ControllerCache:
+    """ASGI middleware: one fresh cache of read-only controller answers per HTTP request."""
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope['type'] != 'http':
+            return await self.app(scope, receive, send)
+        token = _REQUEST_CACHE.set({})
+        try:
+            await self.app(scope, receive, send)
+        finally:
+            _REQUEST_CACHE.reset(token)
+
+
+app.add_middleware(ControllerCache)
 
 
 SERVER_RE = re.compile(r'^awg(?:0|[1-9][0-9]?)$')

@@ -273,7 +273,8 @@ def main():
     raise ValueError('Unsupported operation')
 
 
-if __name__=='__main__':
+def cli():
+    """The command line: one operation, JSON on stdout, {"error": ...} on stderr. awg31helper calls this too."""
     try:
         BASE.mkdir(parents=True,exist_ok=True)
         with open(BASE/'manager.lock','a+') as lock:
@@ -282,3 +283,7 @@ if __name__=='__main__':
     except (OSError,RuntimeError,ValueError,sqlite3.Error,subprocess.TimeoutExpired,subprocess.CalledProcessError) as exc:
         print(json.dumps({'error':str(exc)},ensure_ascii=False),file=sys.stderr)
         sys.exit(1)
+
+
+if __name__=='__main__':
+    cli()
