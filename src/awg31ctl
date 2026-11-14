@@ -579,10 +579,13 @@ def shape_now(cfg, peers, former=''):
     """Apply the speed limits to a running interface. Never fatal: the VPN matters more."""
     commands = shaping_commands(cfg, peers)
     if not commands and 'tc qdisc add' not in (former or ''): return
-    for clear in (['tc','qdisc','del','dev',IFACE,'root'], ['tc','qdisc','del','dev',IFACE,'ingress']):
-        subprocess.run(clear, capture_output=True, check=False)
-    for command in commands:
-        subprocess.run(command.split(), capture_output=True, check=False)
+    try:
+        for clear in (['tc','qdisc','del','dev',IFACE,'root'], ['tc','qdisc','del','dev',IFACE,'ingress']):
+            subprocess.run(clear, capture_output=True, check=False)
+        for command in commands:
+            subprocess.run(command.split(), capture_output=True, check=False)
+    except OSError:
+        pass          # no `tc` on this system (package iproute-tc / iproute2): the limit is simply not applied
 
 
 def server_config(cfg, peers):

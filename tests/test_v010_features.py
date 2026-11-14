@@ -926,3 +926,15 @@ def test_backups_page_shows_the_remote_storage_and_the_kernel_warning(ui):
 
 def test_batch_form_is_marked_for_the_download_script():
     assert 'data-batch-download' in (ROOT / 'src/web.py').read_text() and 'form[data-batch-download]' in (ROOT / 'src/panel.js').read_text()
+
+
+def test_missing_tc_does_not_break_saving_a_client(db, monkeypatch):
+    con, call, _ = db
+    call(ctl.clients_add, {'name': 'c1'})
+
+    def no_tc(argv, *args, **kwargs):
+        if argv[0] == 'tc':
+            raise FileNotFoundError(2, 'No such file or directory', 'tc')
+        return type('P', (), {'returncode': 0, 'stdout': '', 'stderr': ''})()
+    monkeypatch.setattr(ctl.subprocess, 'run', no_tc)
+    ctl.shape_now(ctl.get_settings(con), [{**ctl.peer_rows(con)[0], 'speed_limit_mbit': 10}])

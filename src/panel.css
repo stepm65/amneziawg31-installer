@@ -29,3 +29,8 @@
 .advanced-box .fields-grid{grid-template-columns:repeat(auto-fit,minmax(200px,1fr))}
 .advanced-box .field input,.advanced-box .field select{min-width:0;width:100%;font-family:var(--font-mono)}
 @media(max-width:760px){.instance-item{align-items:flex-start}.instance-item>.btn,.instance-item>form{flex:0 1 auto}}
+
+/* "Create several clients" under the single-client form */
+.batch-details{margin-top:20px}
+.batch-details>summary svg{vertical-align:-3px;margin-right:6px}
+.batch-details .add-client-form{margin-top:14px}

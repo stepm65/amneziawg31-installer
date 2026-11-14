@@ -262,16 +262,37 @@ if systemctl is-active --quiet ssh || systemctl is-active --quiet sshd; then
     awg31 backup-remote off
     userdel -r awgbackup >/dev/null 2>&1 || :
 else
+    [[ "${CI:-}" != true ]] || fail 'no SSH server: the SFTP upload was not checked'
     echo 'SKIPPED: no SSH server on this machine'
 fi
 
 step 'Backups are uploaded to S3-compatible storage (MinIO)'
-if command -v docker >/dev/null 2>&1 && docker pull -q minio/minio >/dev/null 2>&1; then
-    docker rm -f awg31-minio >/dev/null 2>&1 || :
-    docker run -d --name awg31-minio -p 127.0.0.1:19000:9000 -e MINIO_ROOT_USER=smokeaccess -e MINIO_ROOT_PASSWORD=smokesecret123 \
-        minio/minio server /data >/dev/null
-    for attempt in $(seq 1 30); do curl --noproxy '*' -fsS -o /dev/null http://127.0.0.1:19000/minio/health/live && break; sleep 1; done
-    docker exec awg31-minio mkdir -p /data/awg31-smoke
+# The single MinIO binary: no Docker needed, works the same on the runner and in the VMs.
+minio_ok=0
+if curl -fsSL --retry 3 --max-time 180 -o /usr/local/bin/awg31-smoke-minio https://dl.min.io/server/minio/release/linux-amd64/minio; then
+    chmod 755 /usr/local/bin/awg31-smoke-minio
+    rm -rf /tmp/awg31-minio && mkdir -p /tmp/awg31-minio
+    MINIO_ROOT_USER=smokeaccess MINIO_ROOT_PASSWORD=smokesecret123 \
+        nohup /usr/local/bin/awg31-smoke-minio server /tmp/awg31-minio --address 127.0.0.1:19000 --console-address 127.0.0.1:19001 \
+        >/tmp/awg31-minio.log 2>&1 &
+    minio_pid=$!
+    for attempt in $(seq 1 60); do curl --noproxy '*' -fsS -o /dev/null http://127.0.0.1:19000/minio/health/live && minio_ok=1 && break; sleep 1; done
+    [[ $minio_ok == 1 ]] || { tail -n 20 /tmp/awg31-minio.log; kill "$minio_pid" 2>/dev/null || :; }
+fi
+if [[ $minio_ok == 1 ]]; then
+    # Create the bucket through the S3 API, signed by the console's own SigV4 code.
+    python3 - <<'PY' || fail 'cannot create the test bucket'
+import hashlib, importlib.util, urllib.request
+from datetime import datetime, timezone
+from importlib.machinery import SourceFileLoader
+loader = SourceFileLoader('admin', '/usr/local/sbin/awg31admin.py')
+admin = importlib.util.module_from_spec(importlib.util.spec_from_loader('admin', loader)); loader.exec_module(admin)
+host, date, empty = '127.0.0.1:19000', datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ'), hashlib.sha256(b'').hexdigest()
+headers = {'Host': host, 'x-amz-content-sha256': empty, 'x-amz-date': date}
+headers['Authorization'] = admin.s3_authorization('PUT', host, '/awg31-smoke', headers, empty, 'us-east-1', 'smokeaccess', 'smokesecret123', date)
+opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+opener.open(urllib.request.Request('http://' + host + '/awg31-smoke', data=b'', method='PUT', headers=headers), timeout=20).read()
+PY
     s3_setup(){ AWG31_UNATTENDED=1 AWG31_REMOTE_ENDPOINT=http://127.0.0.1:19000 AWG31_REMOTE_REGION=us-east-1 AWG31_REMOTE_BUCKET=awg31-smoke \
         AWG31_REMOTE_PREFIX=vpn/ AWG31_REMOTE_ACCESS_KEY=smokeaccess AWG31_REMOTE_SECRET_KEY="$1" awg31 backup-remote s3 </dev/null; }
     if s3_setup 'a-wrong-secret-key'; then fail 'MinIO accepted a wrong secret key: the signature is not really checked'; fi
@@ -279,11 +300,13 @@ if command -v docker >/dev/null 2>&1 && docker pull -q minio/minio >/dev/null 2>
     awg31 backup-remote status | grep -q 's3://awg31-smoke/vpn/' || fail 'status does not show the storage'
     if awg31 backup-remote status | grep -q smokesecret123; then fail 'status prints the secret key'; fi
     sent="$("$MGR" backup-create | python3 -c 'import json,sys; r=json.load(sys.stdin); assert r["uploaded"] is True, r; print(r["name"])')"
-    docker exec awg31-minio ls /data/awg31-smoke/vpn/ | grep -qx "$sent" || fail 'the backup is not in the bucket'
+    [[ -e "/tmp/awg31-minio/awg31-smoke/vpn/$sent" ]] || fail 'the backup is not in the bucket'
     awg31 backup-remote off
-    docker rm -f awg31-minio >/dev/null
+    kill "$minio_pid" 2>/dev/null || :
+    rm -rf /tmp/awg31-minio /usr/local/bin/awg31-smoke-minio
 else
-    echo 'SKIPPED: Docker or the MinIO image is not available on this machine'
+    [[ "${CI:-}" != true ]] || fail 'MinIO could not be started: the S3 upload was not checked'
+    echo 'SKIPPED: MinIO is not available on this machine'
 fi
 
 step 'A new kernel without the module is noticed before the reboot'

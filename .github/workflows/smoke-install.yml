@@ -15,6 +15,10 @@ jobs:
           uname -r
           mokutil --sb-state || true
           sudo ufw status || true
+      - name: SSH server for the SFTP backup check
+        run: |
+          sudo apt-get install -y -qq openssh-server
+          sudo systemctl start ssh
       - name: Install, exercise and purge
         run: sudo env CI=true bash tests/smoke/check_install.sh
       - name: Service logs on failure

@@ -1371,7 +1371,8 @@ TEXT['ru'].update({
     'maint_telegram':'Telegram-бот',
     'maint_telegram_hint':'Кому отвечает бот и о чём сообщает. Токен хранится на сервере и здесь не показывается.',
     'tg_missing':'Бот не подключён. На сервере выполните:', 'tg_state':'Служба бота',
-    'tg_admins':'Администраторы (Telegram ID через запятую)', 'tg_viewers':'Наблюдатели: только просмотр и уведомления (ID через запятую)',
+    'tg_admins':'Администраторы (Telegram ID)', 'tg_viewers':'Наблюдатели: только просмотр',
+    'tg_ids_hint':'Числовые Telegram ID через запятую. Наблюдатели видят состояние и получают уведомления, но ничего не меняют.',
     'tg_lang':'Язык бота', 'tg_notify':'Уведомления', 'tg_digest':'Сводка',
     'tg_n_server':'Сервер, модуль ядра, панель', 'tg_n_clients':'Клиенты: срок и лимит', 'tg_n_security':'Входы в панель, пароль, выдача конфигураций',
     'tg_n_backups':'Резервные копии (зашифрованная копия приходит файлом)',
@@ -1400,7 +1401,8 @@ TEXT['en'].update({
     'maint_telegram':'Telegram bot',
     'maint_telegram_hint':'Whom the bot answers and what it reports. The token stays on the server and is not shown here.',
     'tg_missing':'The bot is not connected. On the server run:', 'tg_state':'Bot service',
-    'tg_admins':'Administrators (Telegram IDs, comma-separated)', 'tg_viewers':'Viewers: read-only access and notifications (IDs, comma-separated)',
+    'tg_admins':'Administrators (Telegram IDs)', 'tg_viewers':'Viewers: read-only',
+    'tg_ids_hint':'Numeric Telegram IDs separated by commas. Viewers see the state and get notifications but cannot change anything.',
     'tg_lang':'Bot language', 'tg_notify':'Notifications', 'tg_digest':'Digest',
     'tg_n_server':'Server, kernel module, panel', 'tg_n_clients':'Clients: expiry and quota', 'tg_n_security':'Panel sign-ins, password, configuration downloads',
     'tg_n_backups':'Backups (an encrypted backup arrives as a file)',
@@ -1650,7 +1652,7 @@ def server_content(request: Request, section: str = 'overview'):
         <form class="add-client-form" method="post" action="/client">{csrf(request)}
         <label class="field" for="client-name"><span>{h(t('client_name'))}</span>
         <input id="client-name" name="name" placeholder="{h(t('client_placeholder'))}"
-        pattern="[A-Za-z0-9][A-Za-z0-9_-]*" maxlength="32" required></label>
+        pattern="[A-Za-z0-9][A-Za-z0-9_\\-]*" maxlength="32" required></label>
         <div class="peer-network-options">
           <label class="field" for="routed-subnets-new"><span>{h(t('peer_routes'))}</span>
           <textarea id="routed-subnets-new" name="routed_subnets" rows="2" placeholder="192.168.50.0/24"></textarea>
@@ -1667,12 +1669,12 @@ def server_content(request: Request, section: str = 'overview'):
         </div>
         <button class="btn btn-primary" type="submit">{icon('plus',16)}{h(t('create'))}</button>
         </form>
-        <details class="cps-details"><summary>{icon('users',16)}{h(t('batch_title'))}</summary>
+        <details class="cps-details batch-details"><summary>{icon('users',16)} {h(t('batch_title'))}</summary>
         <form class="add-client-form" data-batch-download method="post" action="/servers/{h(state['interface'])}/clients/batch">{csrf(request)}
         <p class="info-line">{h(t('batch_hint'))}</p>
         <div class="fields-grid">
           <label class="field" for="batch-prefix"><span>{h(t('batch_prefix'))}</span>
-          <input id="batch-prefix" name="prefix" pattern="[A-Za-z0-9][A-Za-z0-9_-]*" maxlength="27" required></label>
+          <input id="batch-prefix" name="prefix" pattern="[A-Za-z0-9][A-Za-z0-9_\\-]*" maxlength="27" required></label>
           {form_field('count','5',t('batch_count'),field_id='batch-count')}
           {form_field('start','1',t('batch_start'),field_id='batch-start')}
           {expiry_field('', 'batch-expires', lang)}
@@ -2455,6 +2457,7 @@ def maintenance(request: Request, tab: str = 'diagnostics'):
                                f'{" checked" if bot["notify"].get(g) else ""}><span>{h(t("tg_n_"+g))}</span></label>'
                                for g in ('server','clients','security','backups'))
                 body+=f'''<section class="maint-form-panel"><p>{h(t('tg_state'))}: <strong>{h(bot.get('active',''))}</strong></p>
+                <p class="info-line">{h(t('tg_ids_hint'))}</p>
                 <form method="post" action="/maintenance/telegram">{csrf(request)}
                 <div class="fields-grid">
                 {form_field('admins',', '.join(str(x) for x in bot['admins']),t('tg_admins'),field_id='tg-admins')}
