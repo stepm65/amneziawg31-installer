@@ -20,7 +20,7 @@ Version **0.10.0** · MIT licence · not affiliated with the AmneziaVPN develope
 - **Monitoring:** host CPU, RAM, swap, disk and uplink traffic, per-server traffic charts, 30 days of history collected by a systemd timer.
 - **Backups:** full archives with checksums, download, schedule (daily or weekly), retention, restore with a safety snapshot; optional passphrase encryption (OpenPGP), after which the bot delivers every new backup to Telegram.
 - **Two-factor sign-in:** TOTP codes from any authenticator app in addition to the password.
-- **Security by layout:** the panel runs as an unprivileged user on `127.0.0.1`; root actions go through one narrow `sudo` allowlist; strict CSP, CSRF tokens, scrypt password hash, audit log.
+- **Security by layout:** the panel runs as an unprivileged user on `127.0.0.1`; root actions go through one narrow `sudo` allowlist, served by a local root helper so pages stay fast with hundreds of clients; strict CSP, CSRF tokens, scrypt password hash, audit log.
 - **Telegram bot (optional):** clients, configurations with QR codes, server start and stop, backups and notifications, through its own narrower `sudo` allowlist.
 - **Optional Nginx** reverse proxy with a self-signed or your own certificate.
 
@@ -235,6 +235,7 @@ sudo bash amneziawg31-installer/scripts/resume-panel.sh
 | `/var/backups/awg31-panel/` | backups and pre-change snapshots |
 | `/var/log/awg31-panel/audit.jsonl` | audit log |
 | `/etc/awg31-bot/telegram.json` | Telegram bot token and administrator IDs |
+| `/run/awg31/control.sock` | socket of the control helper (`awg31-helper.service`) |
 | `/opt/awg31-panel/` | panel code, Python environment, fonts |
 
 ## Security notes

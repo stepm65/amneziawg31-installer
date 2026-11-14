@@ -7,6 +7,13 @@
 - Do not commit files from `/etc/amnezia`, `/var/lib/awg31-panel`, auth JSON, certificates, production logs or backups.
 - The project has not been independently security-audited. Report vulnerabilities privately to the repository owner through GitHub (Security → Report a vulnerability) instead of a public issue.
 
+## Control helper
+
+- The panel and the bot do not start `sudo` for every call. They talk to `awg31-helper.service`, a root service on `/run/awg31/control.sock` (owner `root:awg31ctl`, mode 0660; only `awgpanel` and `awgbot` are in the group).
+- The helper does not have a permission list of its own. On every request it reads `/etc/sudoers.d/awg31-panel` and `/etc/sudoers.d/awg31-bot` (only if owned by root and not writable by others) and allows exactly the `awg31mgr` operations listed there for the calling user. The caller is identified by the kernel (`SO_PEERCRED`). Console-only operations (`password-reset`, `totp-reset`, `backup-encryption-set`, `init`, `sample-all`, `backup-run`) are in no rule and are refused.
+- A request carries only an operation name and the JSON that sudo would have received on stdin: no paths, arguments or environment. Requests are limited to 64 KiB and 150 seconds.
+- If the helper is not running, the panel and the bot fall back to `sudo` with the same rules. A request that has already reached the helper is never repeated through sudo.
+
 ## Telegram bot
 
 - The bot is a separate service running as the user `awgbot`. Its `sudo` rule (`/etc/sudoers.d/awg31-bot`) lists fewer commands than the panel's: it cannot delete or create a server, change settings, restore, download or delete a backup, or change the panel password. The limit is enforced by `sudo`, not by the bot's own code.
