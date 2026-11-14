@@ -56,10 +56,11 @@ jobs:
       - name: Install, exercise and purge
         run: |
           set -eu
-          tar --exclude=.git --exclude=rocky.qcow2 --exclude=seed.img --exclude=vmkey -c . | ./vm 'mkdir -p /root/src && tar -x -C /root/src'
+          tar --exclude=.git --exclude=rocky.qcow2 --exclude=seed.img --exclude=vmkey --exclude=serial.log -c . | ./vm 'mkdir -p /root/src && tar -x -C /root/src'
           ./vm 'cd /root/src && CI=true AWG31_SMOKE_NGINX=no bash tests/smoke/check_install.sh'
       - name: Logs on failure
         if: failure()
         run: |
+          ./vm "journalctl -u awg31-panel --no-pager | grep -v 'File \"' | tail -n 30; runuser -u awgpanel -- sudo -n /usr/local/sbin/awg31mgr servers; sudo -l -U awgpanel | tail -n 5" || true
           ./vm "journalctl -u awg31-panel -u awg31-bot -u 'awg-quick@awg0' -n 80 --no-pager; dkms status; ausearch -m avc -ts recent 2>/dev/null | tail -n 30" || true
           sudo tail -n 40 serial.log || true

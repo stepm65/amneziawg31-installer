@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 import secrets
 import subprocess
+import sys
 import time
 from urllib.parse import quote, urlsplit
 import re
@@ -602,6 +603,8 @@ def ctl(command, data=None):
             msg = json.loads(proc.stderr).get('error', 'Ошибка контроллера')
         except ValueError:
             msg = 'Ошибка контроллера: см. журнал службы'
+            # The message points at the journal, so the reason has to be there.
+            print(f'awg31mgr {command} failed ({proc.returncode}): {proc.stderr.strip()[-600:]}', file=sys.stderr, flush=True)
         raise RuntimeError(str(msg)[:300])
     return json.loads(proc.stdout)
 
