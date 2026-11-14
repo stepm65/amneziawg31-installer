@@ -52,6 +52,12 @@ build_from_source() {
     git clone -q https://github.com/amnezia-vpn/amneziawg-linux-kernel-module.git "$work/module"
     git -C "$work/module" checkout -q --detach "$KERNEL_COMMIT"
     [[ "$(git -C "$work/module" rev-parse HEAD)" == "$KERNEL_COMMIT" ]] || die 'Unexpected kernel source commit'
+    # RHEL-family kernels (Rocky 9.8+) backport timer_container_of() and drop
+    # from_timer(); the module's compat header must not redefine it there.
+    # The guard changes nothing on kernels that do not have the macro.
+    sed -i 's/^#define timer_container_of from_timer$/#ifndef timer_container_of\n#define timer_container_of from_timer\n#endif/' \
+        "$work/module/src/compat/compat.h"
+    grep -q '^#ifndef timer_container_of$' "$work/module/src/compat/compat.h" || die 'Unexpected compat.h in the pinned module source'
     if [[ "$with_patch" == 1 ]]; then
         say 'Applying the UDP tunnel compatibility patch (upstream PR #265)'
         git -C "$work/module" apply --check "$PATCH_FILE" || die 'Compatibility patch does not apply; inspect sources'
