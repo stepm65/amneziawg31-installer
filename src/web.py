@@ -1432,8 +1432,8 @@ def stat(icon_name, label, value, *, mono=True, detail=''):
     return (f'<div class="stat"> <span class="stat-icon">{icon(icon_name,22)}</span>'
             f'<div class="stat-body"><span class="stat-label">{h(label)}</span>'
             f'<span class="stat-value {klass}">{h(value)}</span>'
-            f'{"<span class=\"stat-caption\">" + h(detail) + "</span>" if detail else ""}'
-            f'</div></div>')
+            + ('<span class="stat-caption">' + h(detail) + '</span>' if detail else '')
+            + '</div></div>')
 
 
 def error_page(request, heading, exc, status_code=400):

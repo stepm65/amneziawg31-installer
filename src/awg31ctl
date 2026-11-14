@@ -677,6 +677,8 @@ def apply(cfg, con, initial=False, restart=False):
             # A deliberately stopped interface should stay stopped after editing.
             running = subprocess.run(['ip','link','show',IFACE],capture_output=True).returncode == 0
             if running:
+                # Several saves in a row must not trip systemd's start rate limit.
+                subprocess.run(['systemctl', 'reset-failed', f'awg-quick@{IFACE}'], capture_output=True, check=False)
                 run('systemctl', 'restart', f'awg-quick@{IFACE}')
         elif subprocess.run(['ip','link','show',IFACE],capture_output=True).returncode != 0:
             # Store peer changes for the next start; do not force-start a stopped server.

@@ -274,8 +274,12 @@ step 'Fresh installation over stray files from a failed first attempt'
 install -d /opt/awg31-panel
 cp "$ROOT/src/web.py" /opt/awg31-panel/web.py
 cp "$ROOT/src/awg31ctl" /usr/local/sbin/awg31ctl
-AWG31_PANEL_PORT=18082 AWG31_NGINX_CHOICE=1 AWG31_NGINX_HOST=203.0.113.10 AWG31_NGINX_HTTPS_PORT=8443 \
-  AWG31_NGINX_ALLOW='198.51.100.7, 192.0.2.0/24' \
+# AWG31_SMOKE_NGINX=no skips the proxy part (Rocky with SELinux needs port 443 and an interactive consent).
+WITH_NGINX="${AWG31_SMOKE_NGINX:-yes}"
+if [[ "$WITH_NGINX" == yes ]]; then
+    export AWG31_NGINX_CHOICE=1 AWG31_NGINX_HOST=203.0.113.10 AWG31_NGINX_HTTPS_PORT=8443 AWG31_NGINX_ALLOW='198.51.100.7, 192.0.2.0/24'
+fi
+AWG31_PANEL_PORT=18082 \
   AWG31_TELEGRAM_API="$TG" AWG31_TELEGRAM_TOKEN="123456789:$(printf 'B%.0s' {1..35})" AWG31_TELEGRAM_ADMINS='4242, 4343' \
   AWG31_TELEGRAM_NOTIFY=server,backups bash "$ROOT/install.sh"
 panel 18082 || fail 'panel does not answer after reinstall'
@@ -291,6 +295,12 @@ awg31 telegram off
 if systemctl is-active --quiet awg31-bot.service; then fail 'bot still runs after telegram off'; fi
 [[ ! -e /etc/awg31-bot/telegram.json && ! -e /etc/sudoers.d/awg31-bot ]] || fail 'token or sudo rule left after telegram off'
 if runuser -u awgbot -- sudo -n "$MGR" servers </dev/null >/dev/null 2>&1; then fail 'bot user keeps sudo after telegram off'; fi
+
+if [[ "$WITH_NGINX" != yes ]]; then
+    bash /usr/local/libexec/awg31/scripts/uninstall.sh --purge --yes
+    printf '\nSMOKE TEST PASSED (without the Nginx part)\n'
+    exit 0
+fi
 
 step 'Nginx HTTPS proxy: health, HSTS, allow list, sign-in limit'
 https(){ curl --noproxy '*' -ksS --max-time 10 --resolve 203.0.113.10:8443:127.0.0.1 "$@"; }

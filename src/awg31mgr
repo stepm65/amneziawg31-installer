@@ -250,9 +250,11 @@ def main():
                     raise ValueError('UDP port is already listening')
         return child(iface,op,payload)
     if op=='server-start':
+        subprocess.run(['systemctl','reset-failed',f'awg-quick@{iface}.service'],capture_output=True,check=False)
         run('systemctl','enable','--now',f'awg-quick@{iface}.service')
         return {'ok':True,'interface':iface}
     if op=='server-restart':
+        subprocess.run(['systemctl','reset-failed',f'awg-quick@{iface}.service'],capture_output=True,check=False)
         run('systemctl','restart',f'awg-quick@{iface}.service')
         return {'ok':True,'interface':iface}
     if op=='server-stop':
