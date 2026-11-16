@@ -438,7 +438,8 @@ def test_panel_edits_bot_settings_but_never_sees_the_token(tmp_path, monkeypatch
 
 def test_telegram_tab_shows_the_form_and_posts_the_settings(ui):
     app, client, calls = ui
-    assert 'sudo awg31 telegram' in client.get('/maintenance?tab=telegram').text
+    page = client.get('/maintenance?tab=telegram')
+    assert 'action="/maintenance/telegram/connect"' in page.text
     original = app.ctl
     app.ctl = lambda op, data=None: ({'configured': True, 'active': 'active', 'admins': [111222333], 'viewers': [], 'lang': 'ru',
                                       'digest': 'off', 'notify': {'server': True, 'clients': False, 'security': True, 'backups': False}}
@@ -645,8 +646,33 @@ def test_admin_sets_a_speed_limit_from_the_bot(env):
 def test_sudo_lists_keep_console_only_operations_out():
     script = f'. {ROOT}/scripts/sudoers.sh; printf "%s\\n" "${{AWG31_SUDO_COMMANDS[@]}}" "${{AWG31_BOT_SUDO_COMMANDS[@]}}"'
     allowed = set(subprocess.run(['bash', '-c', script], capture_output=True, text=True, check=True).stdout.split())
-    assert not allowed & {'totp-reset', 'backup-encryption-set', 'password-reset', 'init', 'sample-all', 'backup-run'}
-    assert {'totp-enable', 'totp-disable', 'telegram-status', 'telegram-set', 'add-batch', 'backup-encryption'} <= allowed
+    assert not allowed & {'totp-reset', 'backup-encryption-change', 'password-reset', 'init', 'sample-all', 'backup-run'}
+    assert {'totp-enable', 'totp-disable', 'telegram-status', 'telegram-connect', 'telegram-disconnect', 'telegram-set',
+            'add-batch', 'backup-encryption', 'backup-encryption-set'} <= allowed
+
+
+@needs_gpg
+def test_panel_enables_encryption_once_without_replacing_the_passphrase(backups, monkeypatch):
+    admin, _, tmp = backups
+    monkeypatch.setattr(admin.os, 'chown', lambda *args: None)
+    secret = 'a panel passphrase 123'
+    with pytest.raises(ValueError):
+        admin.backup_encryption_set({'enabled': True, 'passphrase': 'short'})
+    with pytest.raises(ValueError):
+        admin.backup_encryption_set({'passphrase': secret, 'enabled': False})
+    assert not (tmp / 'etc' / 'backup-passphrase').exists()
+    assert admin.backup_encryption_set({'enabled': True, 'passphrase': secret})['enabled'] is True
+    key = tmp / 'etc' / 'backup-passphrase'
+    assert key.read_text() == secret + '\n' and admin.backup_encryption()['enabled'] is True
+    with pytest.raises(ValueError, match='already enabled'):
+        admin.backup_encryption_set({'enabled': True, 'passphrase': 'another panel passphrase'})
+    assert key.read_text() == secret + '\n'
+    # retain direct root-console compatibility; the web handler sends enabled.
+    assert admin.backup_encryption_set({'passphrase': 'another panel passphrase'})['passphrase'] is None
+    assert key.read_text() == 'another panel passphrase\n'
+    admin.backup_encryption_set({'enabled': False})
+    assert not key.exists()
+    assert admin.backup_encryption_set({'enabled': True, 'passphrase': secret})['passphrase'] is None
 
 
 # ------------------------------------------------------------------ passphrase change, remote storage, next kernel

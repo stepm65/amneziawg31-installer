@@ -752,7 +752,9 @@ def backup_encryption_set(data):
         file.unlink(missing_ok=True)
         audit({'event':'backup_encryption_changed','target':'off'})
         return {'ok':True,'enabled':False}
-    if file.exists() or file.is_symlink():
+    # Only invocations explicitly marked as panel requests are restricted to
+    # enabling encryption. Direct root-console calls keep their old behavior.
+    if data.get('enabled') is True and (file.exists() or file.is_symlink()):
         raise ValueError('Backup encryption is already enabled: use "backup-encryption change" from the root console')
     if not shutil_which('gpg'): raise ValueError('gpg is not installed: install the gnupg package first')
     passphrase,generated=_new_passphrase(data)

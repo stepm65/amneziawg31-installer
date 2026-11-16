@@ -2410,6 +2410,7 @@ def maintenance(request: Request, tab: str = 'diagnostics'):
                 enc_class = 'encryption-enabled' if enc_enabled else 'encryption-disabled'
                 enc_icon = 'lock' if enc_enabled else 'info'
                 enc_text = t('enc_on') if enc_enabled else t('enc_off')
+                enc_fields = '' if enc_enabled else f'''<div class="fields-grid"><label class="field"><span>{h(t('enc_passphrase'))}</span><input type="password" name="passphrase" required minlength="16" maxlength="200" autocomplete="new-password"></label><label class="field"><span>{h(t('enc_passphrase_repeat'))}</span><input type="password" name="confirm" required minlength="16" maxlength="200" autocomplete="new-password"></label></div><p class="info-line">{h(t('enc_passphrase_hint'))}</p>'''
                 body+=f'''<section class="maint-info-block"><span class="info-chip">{h(t('maint_backup_count'))}: {len(backups)}</span>
                   <p>{h(t('backup_global_note'))}</p><p>{h(t('backup_secret'))}</p>
                   <form method="post" action="/maintenance/backup">{csrf(request)}
@@ -2419,7 +2420,7 @@ def maintenance(request: Request, tab: str = 'diagnostics'):
                     <h3>{icon('lock',18)}{'Шифрование резервных копий' if lang=='ru' else 'Backup Encryption'}</h3>
                     <div class="encryption-status {enc_class}">{icon(enc_icon,14)}{h(enc_text)}</div>
                     <form method="post" action="/maintenance/backup/encryption/{'disable' if enc_enabled else 'enable'}">{csrf(request)}
-                     {'' if enc_enabled else f'''<div class="fields-grid"><label class="field"><span>{h(t('enc_passphrase'))}</span><input type="password" name="passphrase" required minlength="16" maxlength="200" autocomplete="new-password"></label><label class="field"><span>{h(t('enc_passphrase_repeat'))}</span><input type="password" name="confirm" required minlength="16" maxlength="200" autocomplete="new-password"></label></div><p class="info-line">{h(t('enc_passphrase_hint'))}</p>'''}
+                     {enc_fields}
                      <button class="btn {'btn-danger' if enc_enabled else 'btn-primary'}" type="submit"
                        {'data-confirm="'+h(t('enc_disable_confirm'))+'"' if enc_enabled else ''}>
                        {icon('lock',16)}{h(t('enc_disable' if enc_enabled else 'enc_enable'))}
