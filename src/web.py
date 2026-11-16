@@ -85,7 +85,7 @@ TEXT = {
         'sent': 'Отправлено', 'client_details': 'Конфигурация', 'disable': 'Отключить',
         'enable': 'Включить', 'delete': 'Удалить', 'no_clients': 'Пока нет клиентов',
         'no_clients_hint': 'Добавьте клиента, чтобы получить конфигурацию и QR-код.',
-        'add_client': 'Добавить клиента', 'create': 'Создать',
+        'add_client': 'Добавить клиента', 'add_client_submit':'Добавить клиента', 'create': 'Создать',
         'client_name': 'Имя латиницей (до 32 символов)', 'client_placeholder': 'Например, laptop',
         'settings_hint': 'Изменение параметров может прервать подключения. Затем скачайте новые конфигурации клиентов.',
         'public_endpoint': 'Публичный IPv4 или DNS-имя', 'server_port': 'UDP-порт сервера',
@@ -148,7 +148,7 @@ TEXT = {
         'sent': 'Sent', 'client_details': 'Configuration', 'disable': 'Disable',
         'enable': 'Enable', 'delete': 'Delete', 'no_clients': 'No clients yet',
         'no_clients_hint': 'Add a client to create its configuration and QR code.',
-        'add_client': 'Add client', 'create': 'Create',
+        'add_client': 'Add client', 'add_client_submit':'Add client', 'create': 'Create',
         'client_name': 'Client name (Latin letters, max. 32)', 'client_placeholder': 'For example, laptop',
         'settings_hint': 'Changes may interrupt connections. Download updated client configurations afterwards.',
         'public_endpoint': 'Public IPv4 address or DNS name', 'server_port': 'Server UDP port',
@@ -313,10 +313,9 @@ TEXT['ru'].update({
     'peer_network_settings':'Маршруты и имитация трафика клиента',
     'save_client_network':'Сохранить параметры клиента',
     'client_network_saved':'Параметры клиента сохранены',
-    'client_network_changed':'Если изменили I1–I5 — заново импортируйте .conf или QR на клиенте. Дополнительные маршруты требуют IPv4 forwarding и корректных обратных маршрутов на самом клиенте и за ним.',
-    'routes_apply_warning':'Изменятся маршруты Linux и AllowedIPs peer. Рекомендуется делать это в окне обслуживания.',
+    'client_network_changed':'После изменения VPN-адреса или I1–I5 заново импортируйте .conf на клиенте. Дополнительные маршруты требуют IPv4 forwarding и корректных обратных маршрутов на самом клиенте и за ним.',
+    'routes_apply_warning':'Будут применены изменения адреса клиента и маршрутов на сервере. Активное VPN-соединение может прерваться.',
     'qr_warning':'Большой I-профиль может создать слишком плотный QR; используйте .conf при необходимости.',
-    'peer_address_static':'Основной VPN-адрес назначен автоматически и не изменяется при редактировании маршрутов.',
 })
 TEXT['en'].update({
     'peer_routes':'Networks or hosts behind this client (IPv4 CIDR)',
@@ -354,10 +353,9 @@ TEXT['en'].update({
     'peer_network_settings':'Client routing and traffic imitation',
     'save_client_network':'Save client settings',
     'client_network_saved':'Client settings saved',
-    'client_network_changed':'Re-import the client .conf/QR after changing I1–I5. Behind-client networks also require IPv4 forwarding and return routes on the client and its LAN.',
-    'routes_apply_warning':'This updates Linux routes and peer AllowedIPs. Schedule routing changes carefully.',
+    'client_network_changed':'Re-import the client .conf after changing its VPN address or I1–I5. Behind-client networks also require IPv4 forwarding and return routes on the client and its LAN.',
+    'routes_apply_warning':'The client address and server routes will be updated. Active VPN connections may be interrupted.',
     'qr_warning':'Long I1–I5 settings can make QR codes too dense; use .conf if scanning fails.',
-    'peer_address_static':'The primary VPN address is assigned automatically and is unchanged when editing these routes.',
 })
 
 TEXT['ru'].update({
@@ -370,7 +368,11 @@ TEXT['ru'].update({
     'link_unavailable': 'AmneziaVPN Link недоступна для этой конфигурации. Используйте .conf.',
     'sensitive_data': 'В конфигурации и ссылке содержится приватный ключ. Не передавайте их посторонним.',
     'client_options': 'Адреса и дополнительные параметры клиента', 'close_window': 'Закрыть',
-    'qr_overflow': 'QR слишком велик. Используйте копирование ссылки или скачивание .conf.',
+    'qr_overflow': 'QR слишком велик. Содержимое .conf доступно ниже для просмотра и копирования.',
+    'conf_contents':'Содержимое файла .conf',
+    'show_conf_contents':'Показывать конфигурацию',
+    'peer_address':'Основной VPN-адрес клиента',
+    'peer_address_hint':'Укажите свободный IPv4-адрес внутри VPN-подсети. После сохранения выдайте клиенту новый .conf.',
 })
 TEXT['en'].update({
     'share_config': 'Export configuration', 'share_conf_tab': '.conf file',
@@ -382,7 +384,11 @@ TEXT['en'].update({
     'link_unavailable': 'AmneziaVPN Link unavailable for this configuration. Use .conf.',
     'sensitive_data': 'The config and link contain a private key. Keep them confidential.',
     'client_options': 'Client addresses and advanced options', 'close_window': 'Close',
-    'qr_overflow': 'QR is too large. Copy the link or download the .conf instead.',
+    'qr_overflow': 'The QR is too large. The .conf contents are available below to view and copy.',
+    'conf_contents':'Contents of the .conf file',
+    'show_conf_contents':'Show configuration',
+    'peer_address':'Client VPN address',
+    'peer_address_hint':'Enter an unused IPv4 address inside the VPN subnet. Give the client a new .conf after saving.',
 })
 
 
@@ -524,6 +530,10 @@ KNOWN_ERRORS = {
         'Имя: латиница, цифры, -, _; до 32 символов': 'Name: Latin letters, numbers, - and _, up to 32 characters',
         'Свободных адресов нет': 'No available IP addresses',
         'Неверное имя клиента': 'Invalid client name',
+        'Адрес клиента должен быть IPv4': 'Client address must be IPv4',
+        'Адрес должен быть свободным хостом в VPN-подсети': 'Address must be an unused host inside the VPN subnet',
+        'Адрес зарезервирован сервером': 'Address is reserved for the server',
+        'Адрес уже назначен другому клиенту': 'Address is already assigned to another client',
         'Клиент не найден': 'Client not found',
         'Клиент отключён': 'Client is disabled',
         'Сервер не инициализирован': 'Server is not initialized',
@@ -1363,8 +1373,8 @@ TEXT['ru'].update({
     'host_hint':'«Запрещён» закрывает от клиентов всё, что слушает сам сервер. Панель по VPN-адресу тоже перестанет открываться.',
     'speed':'Ограничение скорости (Мбит/с; 0 = без ограничения)',
     'quota_monthly':'Сбрасывать счётчик трафика каждый месяц (UTC)',
-    'batch_title':'Создать несколько клиентов', 'batch_prefix':'Префикс имени', 'batch_count':'Сколько (1–50)',
-    'batch_start':'Начать с номера', 'batch_create':'Создать и скачать ZIP',
+    'batch_title':'Добавить несколько клиентов', 'batch_prefix':'Префикс имени', 'batch_count':'Сколько (1–50)',
+    'batch_start':'Начать с номера', 'batch_create':'Добавить клиентов и скачать ZIP',
     'batch_hint':'Имена вида префикс-01, префикс-02… Срок, лимит и скорость общие. В ответ придёт ZIP с конфигурациями, после чего список клиентов обновится.',
     'totp_code':'Код из приложения-аутентификатора', 'totp_title':'Двухфакторный вход (TOTP)',
     'totp_on':'Включён: при входе нужен пароль и код из приложения.',
@@ -1404,8 +1414,8 @@ TEXT['en'].update({
     'host_hint':'“Denied” closes everything the server itself listens on to clients. The panel stops opening on the VPN address too.',
     'speed':'Speed limit (Mbit/s; 0 = unlimited)',
     'quota_monthly':'Reset the traffic counter every month (UTC)',
-    'batch_title':'Create several clients', 'batch_prefix':'Name prefix', 'batch_count':'How many (1–50)',
-    'batch_start':'First number', 'batch_create':'Create and download ZIP',
+    'batch_title':'Add several clients', 'batch_prefix':'Name prefix', 'batch_count':'How many (1–50)',
+    'batch_start':'First number', 'batch_create':'Add clients and download ZIP',
     'batch_hint':'Names look like prefix-01, prefix-02… Expiry, quota and speed are shared. The reply is a ZIP with the configurations, after which the client list refreshes.',
     'totp_code':'Code from the authenticator app', 'totp_title':'Two-factor sign-in (TOTP)',
     'totp_on':'Enabled: signing in needs the password and a code from the app.',
@@ -1701,7 +1711,7 @@ def server_content(request: Request, section: str = 'overview'):
             <label class="check-field"><input type="checkbox" name="owner_export" value="1"><span>{h(t('owner_export'))}</span></label>
             {cps_block('new', {}, False, lang)}
           </div>
-          <div class="modal-footer"><button class="btn btn-primary" type="submit">{icon('plus',16)}{h(t('create'))}</button></div>
+          <div class="modal-footer"><button class="btn btn-primary" type="submit">{icon('plus',16)}{h(t('add_client_submit'))}</button></div>
           </form>
           </div>
         </dialog>
@@ -2121,20 +2131,23 @@ def detail(request: Request, name: str, interface: str = ''):
         <section class="share-tab-panel" role="tabpanel" id="share-panel-conf" aria-labelledby="share-tab-conf">
           <div class="share-grid"><figure class="qr-frame">
             {qr_conf_display}{qr_conf_download}</figure>
-            <div class="share-text-col"><p class="info-line">{h(t('conf_qr_note'))}</p>
-            <label class="sr-only" for="share-conf-text">{h(t('share_conf_tab'))}</label>
-            <textarea id="share-conf-text" class="share-text" readonly spellcheck="false">{h(config)}</textarea>
+            <div class="share-text-col"><p class="info-line">{h(t('conf_qr_note'))}</p></div></div>
+          <div class="share-config-content"><h3>{h(t('conf_contents'))}</h3>
+            <label class="check-field share-config-toggle"><input type="checkbox" data-toggle-target="share-conf-text" aria-controls="share-conf-text"><span>{h(t('show_conf_contents'))}</span></label>
+            <textarea id="share-conf-text" class="share-text" readonly spellcheck="false" hidden>{h(config)}</textarea>
             <div class="share-actions"><button class="btn btn-secondary" type="button" data-copy-target="share-conf-text">{h(t('copy'))}</button>
             <a class="btn btn-primary" href="/client/{name_url}/download">{icon('file',16)}{h(t('download'))}</a></div>
-            </div></div></section>
+          </div></section>
         <section class="share-tab-panel" role="tabpanel" id="share-panel-vpn" aria-labelledby="share-tab-vpn" hidden>{link_contents}</section>
         <p class="sr-only" aria-live="polite" id="copy-status" data-copy-ok="{h(t('copy_ok'))}" data-copy-failed="{h(t('copy_failed'))}"></p>
         </section>'''
     network_form = f'''<section class="card detail-card client-options">
         <div class="section-title"><h2>{icon('network',20)}{h(t('client_options'))}</h2></div>
-        <p class="info-line"><strong class="mono">{h(obj.get('ip',name))}/32</strong> · {h(t('peer_address_static'))}</p>
         <form method="post" action="/client/{name_url}/network" data-confirm="{h(t('routes_apply_warning'))}">
           {csrf(request)}
+          <label class="field" for="edit-client-ip"><span>{h(t('peer_address'))}</span>
+          <input id="edit-client-ip" name="ip" type="text" inputmode="decimal" autocomplete="off" spellcheck="false" value="{h(obj.get('ip',''))}" required>
+          <small>{h(t('peer_address_hint'))}</small></label>
           <label class="field" for="edit-routed-subnets"><span>{h(t('peer_routes'))}</span>
           <textarea id="edit-routed-subnets" name="routed_subnets" rows="3" placeholder="192.168.50.0/24">{h(obj.get('routed_subnets',''))}</textarea>
           <small>{h(t('peer_routes_hint'))}</small></label>
@@ -2164,7 +2177,8 @@ def detail(request: Request, name: str, interface: str = ''):
 async def client_network(request: Request, name: str, interface: str = ''):
     data = await request.form()
     require_csrf(request, data.get('csrf', ''))
-    payload = {'name':name, 'routed_subnets':str(data.get('routed_subnets','')),
+    payload = {'name':name, 'ip':str(data.get('ip','')).strip(),
+               'routed_subnets':str(data.get('routed_subnets','')),
                'i_enabled':'1' if data.get('i_enabled')=='1' else '0',
                **{f'i{n}':str(data.get(f'i{n}','')) for n in range(1,6)}}
     try:

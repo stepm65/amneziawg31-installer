@@ -378,6 +378,15 @@
       next.focus(); setTab(next); event.preventDefault();
     });
   }
+  const configToggles = new Map();
+  for (const toggle of document.querySelectorAll('[data-toggle-target]')) {
+    const target = document.getElementById(toggle.dataset.toggleTarget);
+    if (!target) continue;
+    configToggles.set(target.id, toggle);
+    const syncVisibility = () => { target.hidden = !toggle.checked; };
+    toggle.addEventListener('change', syncVisibility);
+    syncVisibility();
+  }
   for (const btn of document.querySelectorAll('[data-copy-target]')) {
     btn.addEventListener('click', async () => {
       const input = document.getElementById(btn.dataset.copyTarget);
@@ -388,6 +397,11 @@
         await navigator.clipboard.writeText(input.value);
         if (status) status.textContent = status.dataset.copyOk || 'Copied';
       } catch (_) {
+        const toggle = configToggles.get(input.id);
+        if (toggle && input.hidden) {
+          toggle.checked = true;
+          input.hidden = false;
+        }
         input.focus(); input.select();
         if (status) status.textContent = status.dataset.copyFailed || 'Select and copy manually';
       }

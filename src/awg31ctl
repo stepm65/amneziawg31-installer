@@ -1011,6 +1011,24 @@ def clients_delete_batch(con):
     return {'ok': True, 'deleted': names}
 
 
+def validate_client_address(raw, cfg, con, owner):
+    try:
+        address = ipaddress.ip_address(str(raw).strip())
+    except ValueError:
+        raise ValueError('Адрес клиента должен быть IPv4') from None
+    if not isinstance(address, ipaddress.IPv4Address):
+        raise ValueError('Адрес клиента должен быть IPv4')
+    tunnel = parse_network(cfg['subnet'])
+    if address not in tunnel or address in (tunnel.network_address, tunnel.broadcast_address):
+        raise ValueError('Адрес должен быть свободным хостом в VPN-подсети')
+    if address == ipaddress.ip_address(cfg['server_ip']):
+        raise ValueError('Адрес зарезервирован сервером')
+    conflict = con.execute('SELECT name FROM clients WHERE ip=? AND name<>?', (str(address), owner)).fetchone()
+    if conflict:
+        raise ValueError('Адрес уже назначен другому клиенту')
+    return str(address)
+
+
 def client_network_update(con):
     data = read_json()
     name = str(data.get('name', ''))
@@ -1018,9 +1036,13 @@ def client_network_update(con):
     row = con.execute('SELECT * FROM clients WHERE name=?', (name,)).fetchone()
     if not row: raise ValueError('Client not found')
     cfg = get_settings(con)
+    address = validate_client_address(data.get('ip', row['ip']), cfg, con, name)
     routes = parse_routes(data.get('routed_subnets',''),cfg,con,owner=name)
     cps = validate_i_fields(data,dict(row))
-    if row['routed_subnets'] != routes or any(row[key] != cps[key] for key in I_KEYS) or int(row['i_enabled']) != cps['i_enabled']:
+    address_changed = row['ip'] != address
+    routes_changed = row['routed_subnets'] != routes
+    cps_changed = any(row[key] != cps[key] for key in I_KEYS) or int(row['i_enabled']) != cps['i_enabled']
+    if address_changed or routes_changed or cps_changed:
         backup_dir = Path(os.environ.get('AWG31_PEER_BACKUPS', '/var/backups/awg31-panel/peers'))
         backup = backup_dir / (datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S') + '-' + IFACE + '-' + name + '-' + secrets.token_hex(3))
         backup.mkdir(parents=True, mode=0o700, exist_ok=False)
@@ -1031,13 +1053,13 @@ def client_network_update(con):
         with sqlite3.connect(backup/'state.sqlite3') as target:
             con.backup(target)
         os.chmod(backup/'state.sqlite3', 0o600)
-    con.execute('''UPDATE clients SET routed_subnets=?, i_enabled=?,
+    con.execute('''UPDATE clients SET ip=?, routed_subnets=?, i_enabled=?,
                    i1=?,i2=?,i3=?,i4=?,i5=? WHERE name=?''',
-                (routes,cps['i_enabled'],*(cps[key] for key in I_KEYS),name))
-    if row['routed_subnets'] != routes:
-        apply(cfg,con)  # sync peer AllowedIPs + reconcile IPv4 routes, no forced restart
+                (address,routes,cps['i_enabled'],*(cps[key] for key in I_KEYS),name))
+    if address_changed or routes_changed:
+        apply(cfg,con)  # sync peer AllowedIPs and reconcile routes without a forced restart
     con.commit()
-    return {'ok':True,'name':name,'routed_subnets':routes,'reimport_client':True}
+    return {'ok':True,'name':name,'ip':address,'routed_subnets':routes,'reimport_client':True}
 
 
 def settings_update(con):
