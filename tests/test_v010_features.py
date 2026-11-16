@@ -658,8 +658,7 @@ def test_panel_enables_encryption_once_without_replacing_the_passphrase(backups,
     secret = 'a panel passphrase 123'
     with pytest.raises(ValueError):
         admin.backup_encryption_set({'enabled': True, 'passphrase': 'short'})
-    with pytest.raises(ValueError):
-        admin.backup_encryption_set({'passphrase': secret, 'enabled': False})
+    assert admin.backup_encryption_set({'passphrase': secret, 'enabled': False})['enabled'] is False
     assert not (tmp / 'etc' / 'backup-passphrase').exists()
     assert admin.backup_encryption_set({'enabled': True, 'passphrase': secret})['enabled'] is True
     key = tmp / 'etc' / 'backup-passphrase'
