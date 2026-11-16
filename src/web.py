@@ -569,6 +569,7 @@ ICONS = {
     'cpu': '<rect x="5" y="5" width="14" height="14" rx="2"/><path d="M9 9h6v6H9zM9 1v4M15 1v4M9 19v4M15 19v4M1 9h4M1 15h4M19 9h4M19 15h4"/>',
     'hard-drive': '<rect x="2" y="7" width="20" height="11" rx="2"/><path d="M6 14h.01M10 14h.01"/>',
     'route': '<circle cx="5" cy="6" r="2"/><circle cx="19" cy="18" r="2"/><path d="M5 8v7a3 3 0 0 0 3 3h9M19 16V9a3 3 0 0 0-3-3H9"/>',
+    'x': '<path d="M18 6L6 18M6 6l12 12"/>',
 
 }
 
@@ -601,6 +602,7 @@ def controller_message(lang, message):
 # Operations that only read. Within one request their answers are reused: a page
 # that needs the server list three times asks the controller once. A change made
 # in the same request forgets everything read so far.
+NOTIFY_GROUPS = ('server', 'clients', 'security', 'backups')
 READ_ONLY_OPS = frozenset({'servers', 'list', 'status', 'diagnostics', 'history', 'host-history', 'backup-list',
                            'backup-policy', 'backup-encryption', 'backup-remote', 'telegram-status', 'audit-list'})
 _REQUEST_CACHE = contextvars.ContextVar('awg31_ctl_cache', default=None)
@@ -623,7 +625,8 @@ def ctl(command, data=None):
 
 
 def _ctl_call(command, data=None):
-    timeout = 90 if command in ('server-create','backup-create','backup-export','backup-restore','backup-check') else 35
+    timeout = 200 if command == 'telegram-connect' else \
+        90 if command in ('server-create','backup-create','backup-export','backup-restore','backup-check') else 35
     try:
         code, stdout, stderr = awg31client.call(command, json.dumps(data) if data is not None else None, timeout)
     except (OSError, ConnectionError) as exc:
@@ -1369,7 +1372,7 @@ TEXT['ru'].update({
     'totp_secret':'Ключ', 'totp_enable':'Включить двухфакторный вход', 'totp_disable':'Отключить двухфакторный вход',
     'totp_lost':'Потеряли телефон: на сервере выполните sudo awg31 totp-off',
     'maint_telegram':'Telegram-бот',
-    'maint_telegram_hint':'Кому отвечает бот и о чём сообщает. Токен хранится на сервере и здесь не показывается.',
+    'maint_telegram_hint':'Кому отвечает бот и о чём сообщает. Токен хранится отдельно от панели и никогда здесь не показывается.',
     'tg_missing':'Бот не подключён. На сервере выполните:', 'tg_state':'Служба бота',
     'tg_admins':'Администраторы (Telegram ID)', 'tg_viewers':'Наблюдатели: только просмотр',
     'tg_ids_hint':'Числовые Telegram ID через запятую. Наблюдатели видят состояние и получают уведомления, но ничего не меняют.',
@@ -1381,7 +1384,18 @@ TEXT['ru'].update({
     'remote_off':'Внешнее хранилище не настроено. Настроить: sudo awg31 backup-remote s3 (или sftp)',
     'next_kernel_bad':'Установлено новое ядро {version}, но модуль AmneziaWG для него не собран: после перезагрузки VPN не запустится. До перезагрузки выполните на сервере: sudo awg31 update',
     'enc_on':'Шифрование копий включено: архивы .gpg защищены паролем и могут приходить в Telegram.',
-    'enc_off':'Копии не шифруются и содержат все ключи открытым текстом. Включить: sudo awg31 backup-encryption on',
+    'enc_off':'Копии не шифруются и содержат все ключи открытым текстом.',
+    'enc_restore_note':'Старые архивы .tar.gz остаются доступны. Для восстановления .gpg после смены или отключения пароля его нужно указать заново через sudo awg31 backup-encryption on.',
+    'enc_enable':'Включить шифрование', 'enc_disable':'Отключить шифрование',
+    'enc_passphrase':'Пароль для шифрования', 'enc_passphrase_repeat':'Повторите пароль',
+    'enc_passphrase_hint':'От 16 до 200 символов. Сохраните пароль отдельно: он понадобится при восстановлении на новом сервере. Пароль не отображается в панели.',
+    'enc_disable_confirm':'Отключить шифрование новых резервных копий? Старые .gpg-архивы останутся зашифрованными.',
+    'tg_token_hint':'Формат токена Telegram: цифры:строка',
+    'tg_connect':'Проверить токен и найти администратора', 'tg_connect_hint':'Создайте бота у @BotFather, вставьте токен и заранее отправьте новому боту /start в личном чате. Найденный отправитель потребует отдельного подтверждения.',
+    'tg_confirm_title':'Подтвердите администратора Telegram',
+    'tg_confirm_hint':'Отправьте /start новому боту в личном чате и повторите проверку, если список пуст. Выберите свою учётную запись: только она станет первым администратором.',
+    'tg_no_candidates':'Сообщение /start пока не найдено. Отправьте его в личном чате с новым ботом и попробуйте снова.',
+    'tg_confirm':'Сохранить и подключить бота',
 })
 TEXT['en'].update({
     'host_label':'Client access to services of the server itself',
@@ -1411,7 +1425,18 @@ TEXT['en'].update({
     'remote_off':'No remote storage is set up. Set up: sudo awg31 backup-remote s3 (or sftp)',
     'next_kernel_bad':'A new kernel {version} is installed, but the AmneziaWG module is not built for it: after a reboot the VPN will not start. Before rebooting run on the server: sudo awg31 update',
     'enc_on':'Backup encryption is on: .gpg archives are protected by a passphrase and may be sent to Telegram.',
-    'enc_off':'Backups are not encrypted and contain every key in plain text. Turn on: sudo awg31 backup-encryption on',
+    'enc_off':'Backups are not encrypted and contain every key in plain text.',
+    'enc_restore_note':'Existing .tar.gz archives remain available. If the passphrase was changed or encryption disabled, restore .gpg access with sudo awg31 backup-encryption on.',
+    'enc_enable':'Enable encryption', 'enc_disable':'Disable encryption',
+    'enc_passphrase':'Encryption passphrase', 'enc_passphrase_repeat':'Repeat passphrase',
+    'enc_passphrase_hint':'16–200 characters. Store this passphrase separately: it is needed to restore on a new server. The panel does not display it.',
+    'enc_disable_confirm':'Disable encryption of new backups? Existing .gpg archives will remain encrypted.',
+    'tg_token_hint':'Telegram token format: digits:string',
+    'tg_connect':'Check token and find administrator', 'tg_connect_hint':'Create a bot with @BotFather, paste its token, then send /start to the new bot in a private chat. You will separately confirm the sender.',
+    'tg_confirm_title':'Confirm the Telegram administrator',
+    'tg_confirm_hint':'Send /start to the new bot in a private chat and retry if the list is empty. Select your own account: it will become the first administrator.',
+    'tg_no_candidates':'No /start message was found. Send it in a private chat with the new bot and try again.',
+    'tg_confirm':'Save and connect bot',
 })
 
 
@@ -1635,7 +1660,10 @@ def server_content(request: Request, section: str = 'overview'):
         <div class="section-title"><div><span class="section-overline">PEERS / ACCESS</span>
         <h2>{icon('users',20)}{h(t('clients'))}</h2>
         <p class="section-subtitle">{h(t('client_help'))}</p></div>
-        <a class="btn btn-primary" href="#add-client">{icon('plus',16)}{h(t('add_client'))}</a></div>
+        <div class="clients-actions">
+        <button type="button" class="btn btn-secondary" data-modal-open="batch-client-modal">{icon('users',16)}{h(t('batch_title'))}</button>
+        <button type="button" class="btn btn-primary" data-modal-open="add-client-modal">{icon('plus',16)}{h(t('add_client'))}</button>
+        </div></div>
         <div class="table-tools"><label class="table-search">{icon('search',16)}<input id="client-search" type="search" placeholder="{h(t('search_clients'))}" aria-label="{h(t('search_clients'))}"></label>
         <div class="client-status-filters" role="group" aria-label="{h(t('status'))}">
           <label><input type="checkbox" data-client-status="1" checked><span>{h(t('active_only'))}</span></label>
@@ -1648,41 +1676,56 @@ def server_content(request: Request, section: str = 'overview'):
         <div class="table-scroll"><table><thead><tr>
         <th><input type="checkbox" id="select-all-peers" aria-label="{h(t('select_all'))}"></th><th>{h(t('name'))}</th><th>{h(t('vpn_ip'))}</th><th>{h(t('status'))}</th>
         <th>{h(t('traffic'))}</th><th>{h(t('actions'))}</th></tr></thead><tbody>{rows}</tbody></table></div>
-        <div class="add-client" id="add-client"><div><span class="section-overline">NEW PEER</span><h3>{icon('plus',18)}{h(t('add_client'))}</h3></div>
-        <form class="add-client-form" method="post" action="/client">{csrf(request)}
-        <label class="field" for="client-name"><span>{h(t('client_name'))}</span>
-        <input id="client-name" name="name" placeholder="{h(t('client_placeholder'))}"
-        pattern="[A-Za-z0-9][A-Za-z0-9_\\-]*" maxlength="32" required></label>
-        <div class="peer-network-options">
-          <label class="field" for="routed-subnets-new"><span>{h(t('peer_routes'))}</span>
-          <textarea id="routed-subnets-new" name="routed_subnets" rows="2" placeholder="192.168.50.0/24"></textarea>
-          <small>{h(t('peer_routes_hint'))}</small></label>
-          <div class="fields-grid">
-            {form_field('comment','',t('comment'),required=False,field_id='new-comment')}
-            {expiry_field('', 'new-expires', lang)}
-            {form_field('quota_gib','0',t('quota'),required=False,field_id='new-quota')}
-            {form_field('telegram_id','',t('telegram_id'),t('telegram_id_hint'),required=False,field_id='new-telegram')}
-            {policy_extra_fields({'_lang':lang}, 'new')}
+        </section>
+
+        <!-- Add client modal -->
+        <dialog id="add-client-modal" class="awg-modal">
+          <div class="modal-header"><h2>{icon('plus',20)}{h(t('add_client'))}</h2>
+          <button type="button" class="icon-btn modal-close" aria-label="{h(t('close_window'))}">{icon('x',20)}</button></div>
+          <div class="modal-body">
+          <form class="add-client-form" method="post" action="/client">{csrf(request)}
+          <label class="field" for="client-name"><span>{h(t('client_name'))}</span>
+          <input id="client-name" name="name" placeholder="{h(t('client_placeholder'))}"
+          pattern="[A-Za-z0-9][A-Za-z0-9_\\-]*" maxlength="32" required autofocus></label>
+          <div class="peer-network-options">
+            <label class="field" for="routed-subnets-new"><span>{h(t('peer_routes'))}</span>
+            <textarea id="routed-subnets-new" name="routed_subnets" rows="2" placeholder="192.168.50.0/24"></textarea>
+            <small>{h(t('peer_routes_hint'))}</small></label>
+            <div class="fields-grid">
+              {form_field('comment','',t('comment'),required=False,field_id='new-comment')}
+              {expiry_field('', 'new-expires', lang)}
+              {form_field('quota_gib','0',t('quota'),required=False,field_id='new-quota')}
+              {form_field('telegram_id','',t('telegram_id'),t('telegram_id_hint'),required=False,field_id='new-telegram')}
+              {policy_extra_fields({'_lang':lang}, 'new')}
+            </div>
+            <label class="check-field"><input type="checkbox" name="owner_export" value="1"><span>{h(t('owner_export'))}</span></label>
+            {cps_block('new', {}, False, lang)}
           </div>
-          <label class="check-field"><input type="checkbox" name="owner_export" value="1"><span>{h(t('owner_export'))}</span></label>
-          {cps_block('new', {}, False, lang)}
-        </div>
-        <button class="btn btn-primary" type="submit">{icon('plus',16)}{h(t('create'))}</button>
-        </form>
-        <details class="cps-details batch-details"><summary>{icon('users',16)} {h(t('batch_title'))}</summary>
-        <form class="add-client-form" data-batch-download method="post" action="/servers/{h(state['interface'])}/clients/batch">{csrf(request)}
-        <p class="info-line">{h(t('batch_hint'))}</p>
-        <div class="fields-grid">
-          <label class="field" for="batch-prefix"><span>{h(t('batch_prefix'))}</span>
-          <input id="batch-prefix" name="prefix" pattern="[A-Za-z0-9][A-Za-z0-9_\\-]*" maxlength="27" required></label>
-          {form_field('count','5',t('batch_count'),field_id='batch-count')}
-          {form_field('start','1',t('batch_start'),field_id='batch-start')}
-          {expiry_field('', 'batch-expires', lang)}
-          {form_field('quota_gib','0',t('quota'),required=False,field_id='batch-quota')}
-          {policy_extra_fields({'_lang':lang}, 'batch')}
-        </div>
-        <button class="btn btn-secondary" type="submit">{icon('download',16)}{h(t('batch_create'))}</button>
-        </form></details></div></section>'''
+          <div class="modal-footer"><button class="btn btn-primary" type="submit">{icon('plus',16)}{h(t('create'))}</button></div>
+          </form>
+          </div>
+        </dialog>
+
+        <!-- Batch create modal -->
+        <dialog id="batch-client-modal" class="awg-modal">
+          <div class="modal-header"><h2>{icon('users',20)}{h(t('batch_title'))}</h2>
+          <button type="button" class="icon-btn modal-close" aria-label="{h(t('close_window'))}">{icon('x',20)}</button></div>
+          <div class="modal-body">
+          <form class="add-client-form" data-batch-download method="post" action="/servers/{h(state['interface'])}/clients/batch">{csrf(request)}
+          <p class="info-line">{h(t('batch_hint'))}</p>
+          <div class="fields-grid">
+            <label class="field" for="batch-prefix"><span>{h(t('batch_prefix'))}</span>
+            <input id="batch-prefix" name="prefix" pattern="[A-Za-z0-9][A-Za-z0-9_\\-]*" maxlength="27" required></label>
+            {form_field('count','5',t('batch_count'),field_id='batch-count')}
+            {form_field('start','1',t('batch_start'),field_id='batch-start')}
+            {expiry_field('', 'batch-expires', lang)}
+            {form_field('quota_gib','0',t('quota'),required=False,field_id='batch-quota')}
+            {policy_extra_fields({'_lang':lang}, 'batch')}
+          </div>
+          <div class="modal-footer"><button class="btn btn-primary" type="submit">{icon('download',16)}{h(t('batch_create'))}</button></div>
+          </form>
+          </div>
+        </dialog>'''
     current=selected_server(request)
     options=''.join(f'<div class="instance-item {"instance-active" if x["interface"]==current else ""}">'
         f'<div><strong>{h(x["interface"])}</strong><small class="mono">{h(x["subnet"])} · UDP {h(x["port"])}'
@@ -2363,12 +2406,28 @@ def maintenance(request: Request, tab: str = 'diagnostics'):
                             else ('Mon','Tue','Wed','Thu','Fri','Sat','Sun'))
                 weekday_opts=''.join(f'<option value="{i}" {"selected" if int(policy["weekday"])==i else ""}>{h(day)}</option>'
                                      for i,day in enumerate(weekdays))
+                enc_enabled = ctl('backup-encryption',{}).get('enabled', False)
+                enc_class = 'encryption-enabled' if enc_enabled else 'encryption-disabled'
+                enc_icon = 'lock' if enc_enabled else 'info'
+                enc_text = t('enc_on') if enc_enabled else t('enc_off')
                 body+=f'''<section class="maint-info-block"><span class="info-chip">{h(t('maint_backup_count'))}: {len(backups)}</span>
                   <p>{h(t('backup_global_note'))}</p><p>{h(t('backup_secret'))}</p>
                   <form method="post" action="/maintenance/backup">{csrf(request)}
                   <button class="btn btn-primary" type="submit">{icon('plus',19)}{h(t('backup_make'))}</button></form></section>
-                  <p class="info-line">{h(t('enc_on' if ctl('backup-encryption',{}).get('enabled') else 'enc_off'))}</p>
-                  <p class="info-line">{h(t('remote_on') + ' ' + str(remote.get('target','')) if remote.get('configured') else t('remote_off'))}</p>
+
+                  <section class="backup-encryption-panel">
+                    <h3>{icon('lock',18)}{'Шифрование резервных копий' if lang=='ru' else 'Backup Encryption'}</h3>
+                    <div class="encryption-status {enc_class}">{icon(enc_icon,14)}{h(enc_text)}</div>
+                    <form method="post" action="/maintenance/backup/encryption/{'disable' if enc_enabled else 'enable'}">{csrf(request)}
+                     {'' if enc_enabled else f'''<div class="fields-grid"><label class="field"><span>{h(t('enc_passphrase'))}</span><input type="password" name="passphrase" required minlength="16" maxlength="200" autocomplete="new-password"></label><label class="field"><span>{h(t('enc_passphrase_repeat'))}</span><input type="password" name="confirm" required minlength="16" maxlength="200" autocomplete="new-password"></label></div><p class="info-line">{h(t('enc_passphrase_hint'))}</p>'''}
+                     <button class="btn {'btn-danger' if enc_enabled else 'btn-primary'}" type="submit"
+                       {'data-confirm="'+h(t('enc_disable_confirm'))+'"' if enc_enabled else ''}>
+                       {icon('lock',16)}{h(t('enc_disable' if enc_enabled else 'enc_enable'))}
+                     </button></form>
+                     <p class="info-line">{h(t('enc_restore_note'))}</p>
+                   </section>
+
+                   <p class="info-line">{h(t('remote_on') + ' ' + str(remote.get('target','')) if remote.get('configured') else t('remote_off'))}</p>
                   <div class="backup-list">{cards or '<p class="empty-state">'+h(t('maint_no_backups'))+'</p>'}</div>
                   <section class="backup-policy-card"><div class="section-title"><h3>{icon('clock',20)}{h(t('backup_policy_title'))}</h3></div>
                    <p class="info-line">{h(t('backup_policy_note'))}</p>
@@ -2423,9 +2482,28 @@ def maintenance(request: Request, tab: str = 'diagnostics'):
                 <button class="btn btn-primary" type="submit">{icon('lock',18)}{h(t('password_change'))}</button></form>
                 </section>'''
             if read_auth().get('totp_secret'):
+                secret=base64.b32encode(secrets.token_bytes(20)).decode()
+                uri='otpauth://totp/AWG31%20Console:admin?secret='+secret+'&issuer=AWG31%20Console'
+                picture=io.BytesIO(); qrcode.make(uri).save(picture,format='PNG')
+                new_qr_base64 = base64.b64encode(picture.getvalue()).decode()
                 body+=f'''<section class="maint-form-panel"><h3>{icon('shield',19)}{h(t('totp_title'))}</h3>
                 <p class="info-line">{h(t('totp_on'))} {h(t('totp_lost'))}</p>
-                <form method="post" action="/maintenance/totp/disable">{csrf(request)}
+                <details class="totp-regenerate">
+                <summary class="btn btn-secondary">{icon('restart',16)}{'Перегенерировать ключ' if lang=='ru' else 'Regenerate key'}</summary>
+                <div class="totp-new-key">
+                <p class="info-line">{'Новый ключ TOTP' if lang=='ru' else 'New TOTP key'}</p>
+                <p><img class="totp-qr" width="200" height="200" alt="TOTP QR" src="data:image/png;base64,{new_qr_base64}"></p>
+                <p>{h(t('totp_secret'))}: <code class="totp-secret-display">{secret}</code></p>
+                <p class="info-line">{'Сохраните ключ перед перегенерацией. Старый ключ перестанет работать после применения.' if lang=='ru' else 'Save the key before regenerating. The old key will stop working after applying.'}</p>
+                <form method="post" action="/maintenance/totp/regenerate">{csrf(request)}
+                <input type="hidden" name="secret" value="{secret}">
+                <div class="fields-grid"><label class="field"><span>{h(t('password'))}</span>
+                <input type="password" name="password" required autocomplete="current-password"></label>
+                <label class="field"><span>{h(t('totp_code'))}</span>
+                <input name="code" inputmode="numeric" maxlength="7" required autocomplete="one-time-code"></label></div>
+                <button class="btn btn-primary" type="submit">{icon('shield',18)}{'Применить новый ключ' if lang=='ru' else 'Apply new key'}</button></form>
+                </div></details>
+                <form method="post" action="/maintenance/totp/disable" class="totp-disable-form">{csrf(request)}
                 <div class="fields-grid"><label class="field"><span>{h(t('password'))}</span>
                 <input type="password" name="password" required autocomplete="current-password"></label>
                 <label class="field"><span>{h(t('totp_code'))}</span>
@@ -2449,7 +2527,18 @@ def maintenance(request: Request, tab: str = 'diagnostics'):
         elif tab=='telegram':
             bot=ctl('telegram-status',{})
             if not bot.get('configured'):
-                body+=f'''<section class="maint-command-box"><p>{h(t('tg_missing'))}</p><code>sudo awg31 telegram</code></section>'''
+                body+=f'''<section class="maint-form-panel">
+                <h3>{icon('radio',19)}{h(t('maint_telegram'))}</h3>
+                <p class="info-line">{h(t('maint_telegram_hint'))}</p>
+                <div class="telegram-setup-form">
+                <form method="post" action="/maintenance/telegram/connect">{csrf(request)}
+                <label class="field telegram-token-field"><span>{'Токен от @BotFather' if lang=='ru' else 'Token from @BotFather'}</span>
+                 <input type="password" name="token" maxlength="100" required autocomplete="off" spellcheck="false"
+                       pattern="[0-9]{{5,14}}:[a-zA-Z0-9_\\-]{{30,60}}" title="{h(t('tg_token_hint'))}"></label>
+                 <p class="info-line">{h(t('tg_connect_hint'))}</p>
+                 <button class="btn btn-primary" type="submit">{icon('radio',16)}{h(t('tg_connect'))}</button>
+                </form>
+                </div></section>'''
             else:
                 def options(current, values, prefix=''):
                     return ''.join(f'<option value="{v}"{" selected" if current==v else ""}>{h(t(prefix+v) if prefix else v)}</option>' for v in values)
@@ -2457,6 +2546,9 @@ def maintenance(request: Request, tab: str = 'diagnostics'):
                                f'{" checked" if bot["notify"].get(g) else ""}><span>{h(t("tg_n_"+g))}</span></label>'
                                for g in ('server','clients','security','backups'))
                 body+=f'''<section class="maint-form-panel"><p>{h(t('tg_state'))}: <strong>{h(bot.get('active',''))}</strong></p>
+                <form method="post" action="/maintenance/telegram/disconnect" class="inline">{csrf(request)}
+                <button class="btn btn-danger btn-small" type="submit" data-confirm="{'Отключить Telegram-бота? Токен будет удалён с сервера.' if lang=='ru' else 'Disconnect Telegram bot? The token will be removed from the server.'}">
+                {icon('trash',14)}{'Отключить бота' if lang=='ru' else 'Disconnect bot'}</button></form>
                 <p class="info-line">{h(t('tg_ids_hint'))}</p>
                 <form method="post" action="/maintenance/telegram">{csrf(request)}
                 <div class="fields-grid">
@@ -2490,7 +2582,7 @@ async def make_backup(request: Request):
 async def remove_backup(request: Request):
     form=await request.form();require_csrf(request,form.get('csrf',''))
     name=str(form.get('name',''))
-    if not re.fullmatch(r'awg31-[0-9]{8}T[0-9]{6}Z-[0-9a-f]{10}\.tar\.gz',name):
+    if not re.fullmatch(r'awg31-[0-9]{8}T[0-9]{6}Z-[0-9a-f]{10}\.tar\.gz(?:\.gpg)?',name):
         raise HTTPException(400,detail='Invalid backup name')
     try: ctl('backup-delete',{'name':name})
     except RuntimeError as exc: return error_page(request,tr(lang_of(request),'maintenance_error'),exc)
@@ -2507,11 +2599,28 @@ async def backup_schedule_update(request: Request):
     return RedirectResponse('/maintenance?tab=backups',status_code=303)
 
 
+@app.post('/maintenance/backup/encryption/{action}')
+async def backup_encryption_change(request: Request, action: str):
+    form=await request.form();require_csrf(request,form.get('csrf',''))
+    if action not in ('enable','disable'): raise HTTPException(404)
+    try:
+        if action == 'enable':
+            passphrase = str(form.get('passphrase', ''))
+            confirm = str(form.get('confirm', ''))
+            if passphrase != confirm:
+                raise RuntimeError('Passwords do not match')
+            ctl('backup-encryption-set', {'enabled': True, 'passphrase': passphrase})
+        else:
+            ctl('backup-encryption-set', {'enabled': False})
+    except RuntimeError as exc: return error_page(request,tr(lang_of(request),'maintenance_error'),exc)
+    return RedirectResponse('/maintenance?tab=backups',status_code=303)
+
+
 @app.post('/maintenance/backup/check')
 async def verify_backup(request: Request):
     form=await request.form();require_csrf(request,form.get('csrf',''))
     name=str(form.get('name',''))
-    if not re.fullmatch(r'awg31-[0-9]{8}T[0-9]{6}Z-[0-9a-f]{10}\.tar\.gz',name):
+    if not re.fullmatch(r'awg31-[0-9]{8}T[0-9]{6}Z-[0-9a-f]{10}\.tar\.gz(?:\.gpg)?',name):
         raise HTTPException(400)
     try: outcome=ctl('backup-check',{'name':name})
     except RuntimeError as exc: return error_page(request,tr(lang_of(request),'maintenance_error'),exc)
@@ -2529,7 +2638,7 @@ async def restore_backup(request: Request):
     if str(form.get('confirmation','')).strip()!=expected:
         raise HTTPException(status_code=400,detail='Restore confirmation mismatch')
     name=str(form.get('name',''))
-    if not re.fullmatch(r'awg31-[0-9]{8}T[0-9]{6}Z-[0-9a-f]{10}\.tar\.gz',name):
+    if not re.fullmatch(r'awg31-[0-9]{8}T[0-9]{6}Z-[0-9a-f]{10}\.tar\.gz(?:\.gpg)?',name):
         raise HTTPException(400,detail='Invalid backup name')
     try:
         ctl('backup-check',{'name':name})
@@ -2564,10 +2673,10 @@ def download_backup(request: Request, name: str):
 async def totp_change(request: Request, action: str):
     form=await request.form()
     require_csrf(request,form.get('csrf',''))
-    if action not in ('enable','disable'): raise HTTPException(404)
+    if action not in ('enable','disable','regenerate'): raise HTTPException(404)
     payload={'password':str(form.get('password','')),'code':str(form.get('code',''))}
-    if action=='enable': payload['secret']=str(form.get('secret',''))
-    try: ctl('totp-enable' if action=='enable' else 'totp-disable',payload)
+    if action in ('enable','regenerate'): payload['secret']=str(form.get('secret',''))
+    try: ctl('totp-enable' if action in ('enable','regenerate') else 'totp-disable',payload)
     except RuntimeError as exc: return error_page(request,tr(lang_of(request),'maintenance_error'),exc)
     request.session.clear()            # every session ended: sign in again, now with the new rule
     return RedirectResponse('/login',status_code=303)
@@ -2581,6 +2690,49 @@ async def telegram_update(request: Request):
              'digest':str(form.get('digest','off')),
              'notify':{g:form.get('notify_'+g)=='1' for g in ('server','clients','security','backups')}}
     try: ctl('telegram-set',payload)
+    except RuntimeError as exc: return error_page(request,tr(lang_of(request),'maintenance_error'),exc)
+    return RedirectResponse('/maintenance?tab=telegram',status_code=303)
+
+
+@app.post('/maintenance/telegram/connect')
+async def telegram_connect(request: Request):
+    form=await request.form()
+    require_csrf(request,form.get('csrf',''))
+    lang=lang_of(request)
+    if form.get('cancel')=='1':
+        try: ctl('telegram-connect',{'cancel':True})
+        except RuntimeError as exc: return error_page(request,tr(lang,'maintenance_error'),exc)
+        return RedirectResponse('/maintenance?tab=telegram',status_code=303)
+    confirming=form.get('confirm')=='1'
+    payload={'admin_id':str(form.get('admin_id','')).strip(),'confirm':confirming,
+             'setup_id':str(form.get('setup_id','')).strip()}
+    if not confirming:
+        payload.update(token=str(form.get('token','')).strip(),lang=str(form.get('lang',lang)),
+                       notify={group:form.get('notify_'+group)=='1' for group in NOTIFY_GROUPS})
+    try: result=ctl('telegram-connect',payload)
+    except RuntimeError as exc: return error_page(request,tr(lang,'maintenance_error'),exc)
+    if result.get('pending'):
+        candidates=result.get('candidates',[])
+        choices=''.join(f'<label class="check-field"><input type="radio" name="admin_id" value="{h(item["id"])}" required><span>{h(item["label"] or "Telegram")} · ID {h(item["id"])}</span></label>' for item in candidates)
+        content=f'''<section class="maint-form-panel"><h3>{icon('radio',19)}{h(tr(lang,'tg_confirm_title'))}</h3>
+            <p class="info-line">{h(tr(lang,'tg_confirm_hint'))}</p>
+            <form method="post" action="/maintenance/telegram/connect">{csrf(request)}
+            <input type="hidden" name="setup_id" value="{h(result.get('setup_id',''))}">
+            {choices or '<p class="error-message">'+h(tr(lang,'tg_no_candidates'))+'</p>'}
+            <button class="btn btn-primary" type="submit" name="confirm" value="1" {'disabled' if not candidates else ''}>{h(tr(lang,'tg_confirm'))}</button>
+            <button class="btn btn-secondary" type="submit" name="cancel" value="1" formnovalidate>{h(tr(lang,'cancel_action'))}</button>
+            </form></section>'''
+        response=page(tr(lang,'maint_telegram'),content,request)
+        response.headers['Cache-Control']='no-store'
+        return response
+    return RedirectResponse('/maintenance?tab=telegram',status_code=303)
+
+
+@app.post('/maintenance/telegram/disconnect')
+async def telegram_disconnect(request: Request):
+    form=await request.form()
+    require_csrf(request,form.get('csrf',''))
+    try: ctl('telegram-disconnect',{})
     except RuntimeError as exc: return error_page(request,tr(lang_of(request),'maintenance_error'),exc)
     return RedirectResponse('/maintenance?tab=telegram',status_code=303)
 

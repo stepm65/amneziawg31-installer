@@ -26,8 +26,6 @@ import urllib.request
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))    # awg31client lives next to this file
-import awg31client  # noqa: E402
 
 CONFIG = Path(os.environ.get('AWG31_BOT_CONFIG', '/etc/awg31-bot/telegram.json'))
 STATE = Path(os.environ.get('AWG31_BOT_STATE', '/var/lib/awg31-bot/state.json'))
@@ -237,6 +235,8 @@ def human_size(value):
 
 def ctl(command, data=None):
     """Run one allowlisted controller command as root (control helper, else sudo); data travels as JSON."""
+    # Token helpers use only the standard library and must also work outside /opt.
+    import awg31client
     try:
         code, stdout, stderr = awg31client.call(command, json.dumps(data) if data is not None else None, 90)
     except (OSError, ConnectionError, subprocess.TimeoutExpired) as exc:
@@ -1126,7 +1126,24 @@ def setup_helper(mode):
         if mode == 'check-token':
             print(api.call('getMe').get('username', ''))
             return 0
-        # find-admin: wait for the first private message and report who sent it.
+        # Discovery always requires a subsequent explicit administrator choice in
+        # the panel: being first to write to a public bot is not authorization.
+        if mode == 'list-candidates':
+            api.call('deleteWebhook')
+            deadline, offset, found = time.time() + 25, None, {}
+            while time.time() <= deadline and not found:
+                updates=api.call('getUpdates',http_timeout=20,offset=offset,timeout=15,allowed_updates=['message']) or []
+                for update in updates:
+                    offset=int(update['update_id'])+1
+                    message=update.get('message') or {}
+                    sender=message.get('from') or {}
+                    if (message.get('chat') or {}).get('type')=='private' and sender.get('id'):
+                        name=' '.join(str(sender.get(k,'')) for k in ('first_name','last_name')).strip()
+                        label=re.sub(r'[^\w .@-]','',f"{name} @{sender.get('username','')}")[:100]
+                        found[str(int(sender['id']))]=label
+            print(json.dumps([{'id':int(key),'label':value} for key,value in found.items()]))
+            return 0
+        # Backward-compatible console setup; it separately asks for confirmation.
         api.call('deleteWebhook', drop_pending_updates=True)
         deadline, offset = time.time() + 120, None
         while time.time() < deadline:
@@ -1146,7 +1163,7 @@ def setup_helper(mode):
 
 
 def main():
-    if len(sys.argv) == 2 and sys.argv[1] in ('check-token', 'find-admin', 'send-test'):
+    if len(sys.argv) == 2 and sys.argv[1] in ('check-token', 'find-admin', 'list-candidates', 'send-test'):
         return setup_helper(sys.argv[1])
     try:
         config = load_config()

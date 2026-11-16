@@ -172,6 +172,7 @@ install -o root -g root -m 755 "$DIR/src/awg31ctl" /usr/local/sbin/awg31ctl
 install -o root -g root -m 755 "$DIR/src/awg31mgr" /usr/local/sbin/awg31mgr
 install -o root -g root -m 644 "$DIR/src/awg31admin.py" /usr/local/sbin/awg31admin.py
 install -d -o root -g root -m 755 /usr/local/libexec/awg31/scripts
+install -o root -g root -m 755 "$DIR/src/awg31bot.py" /usr/local/libexec/awg31/telegram-probe.py
 install -o root -g root -m 755 "$DIR/scripts/restore-backup.py" /usr/local/libexec/awg31/scripts/restore-backup.py
 install -o root -g root -m 644 "$DIR/src/web.py" /opt/awg31-panel/web.py
 install -o root -g root -m 644 "$DIR/src/awg31client.py" /opt/awg31-panel/awg31client.py
@@ -313,6 +314,7 @@ install -o root -g root -m 755 "$DIR/scripts/awg31-menu" /usr/local/bin/awg31
 install -o root -g root -m 755 "$DIR/scripts/uninstall.sh" /usr/local/libexec/awg31/scripts/uninstall.sh
 install -o root -g root -m 755 "$DIR/install.sh" /usr/local/libexec/awg31/install.sh
 install -o root -g root -m 755 "$DIR/scripts/setup-telegram.sh" /usr/local/libexec/awg31/scripts/setup-telegram.sh
+install -o root -g root -m 755 "$DIR/src/awg31bot.py" /usr/local/libexec/awg31/telegram-probe.py
 install -o root -g root -m 644 "$DIR/scripts/sudoers.sh" /usr/local/libexec/awg31/scripts/sudoers.sh
 install -o root -g root -m 644 "$DIR/scripts/awg31-bot.service" /usr/local/libexec/awg31/scripts/awg31-bot.service
 

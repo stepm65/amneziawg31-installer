@@ -672,6 +672,34 @@
   window.setInterval(()=>{for(const win of new Set(plots.map(selectedWindow)))refreshHistory(win);},60000);
 })();
 
+// Modal dialogs for adding clients (single and batch)
+(function(){
+  const modals = {};
+  for (const dialog of document.querySelectorAll('dialog.awg-modal')) {
+    modals[dialog.id] = dialog;
+  }
+  // Open buttons
+  for (const btn of document.querySelectorAll('[data-modal-open]')) {
+    btn.addEventListener('click', () => {
+      const id = btn.dataset.modalOpen;
+      const dialog = modals[id];
+      if (dialog) {
+        dialog.showModal();
+        const firstInput = dialog.querySelector('input:not([type=hidden]), textarea');
+        if (firstInput) firstInput.focus();
+      }
+    });
+  }
+  // Close on backdrop click and close button
+  for (const dialog of Object.values(modals)) {
+    dialog.addEventListener('click', (e) => {
+      if (e.target === dialog || e.target.closest('.modal-close')) {
+        dialog.close();
+      }
+    });
+  }
+})();
+
 // Batch creation answers with a ZIP. A plain form submit would save the file and
 // leave the page showing the old client list, so the download is done here and
 // the page is reloaded afterwards. Without JavaScript the form still works.
@@ -679,6 +707,7 @@
   const form=document.querySelector('form[data-batch-download]');
   if(!form||!window.fetch||!window.URL)return;
   form.addEventListener('submit',async event=>{
+    if(form.dataset.nativeSubmit==='1') { delete form.dataset.nativeSubmit; return; }
     event.preventDefault();
     const button=form.querySelector('button[type="submit"]');
     if(button)button.disabled=true;
@@ -695,11 +724,16 @@
       const url=URL.createObjectURL(await reply.blob());
       const link=document.createElement('a');
       link.href=url;link.download=name;document.body.appendChild(link);link.click();link.remove();
-      window.setTimeout(()=>{URL.revokeObjectURL(url);window.location.reload();},800);
+      window.setTimeout(()=>{
+        URL.revokeObjectURL(url);
+        // Reloading the document also destroys the now-inert modal.
+        window.location.reload();
+      },800);
     }catch(_){
       if(button)button.disabled=false;
-      form.removeAttribute('data-batch-download');
-      form.submit();          // network trouble before any answer: fall back to the plain submit
+      // Keep requestSubmit(): the CSRF/confirmation handlers still run.
+      form.dataset.nativeSubmit='1';
+      form.requestSubmit();          // network trouble before any answer: plain submit
     }
   });
 })();

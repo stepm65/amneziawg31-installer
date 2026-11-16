@@ -30,7 +30,43 @@
 .advanced-box .field input,.advanced-box .field select{min-width:0;width:100%;font-family:var(--font-mono)}
 @media(max-width:760px){.instance-item{align-items:flex-start}.instance-item>.btn,.instance-item>form{flex:0 1 auto}}
 
-/* "Create several clients" under the single-client form */
-.batch-details{margin-top:20px}
-.batch-details>summary svg{vertical-align:-3px;margin-right:6px}
-.batch-details .add-client-form{margin-top:14px}
+/* Modal dialogs for client creation */
+.awg-modal{border:1px solid var(--line);border-radius:var(--radius);background:var(--surface);box-shadow:0 20px 60px rgba(0,0,0,.5);padding:0;max-width:640px;width:90vw;max-height:90vh;overflow:hidden;position:fixed;top:50%;left:50%;transform:translate(-50%,-50%)}
+.awg-modal::backdrop{background:rgba(0,0,0,.65);backdrop-filter:blur(4px)}
+.awg-modal[open]{display:flex;flex-direction:column;animation:modal-in .2s ease-out}
+@keyframes modal-in{from{opacity:0;transform:translate(-50%,-48%)}to{opacity:1;transform:translate(-50%,-50%)}}
+.modal-header{display:flex;align-items:center;justify-content:space-between;padding:18px 20px;border-bottom:1px solid var(--line-soft);background:var(--raised)}
+.modal-header h2{margin:0;font-size:16px;font-weight:710;display:flex;align-items:center;gap:9px}
+.modal-header h2 .icon{color:var(--amber)}
+.modal-close{border:none;background:transparent}
+.modal-close:hover{background:#2d323a}
+.modal-body{padding:20px;overflow-y:auto;flex:1}
+.modal-footer{padding:16px 20px;border-top:1px solid var(--line-soft);background:var(--raised);display:flex;justify-content:flex-end;gap:10px}
+.modal-body .field{margin-bottom:16px}
+.modal-body .fields-grid{grid-template-columns:1fr}
+.modal-body .cps-box{margin:16px 0}
+.modal-body textarea{min-height:80px}
+.clients-actions{display:flex;gap:10px;flex-wrap:wrap}
+@media(max-width:670px){.clients-actions{width:100%;flex-direction:column}.clients-actions .btn{width:100%}.awg-modal{width:95vw;max-height:95vh}.modal-body{padding:16px}}
+
+/* TOTP regeneration */
+.totp-regenerate{margin:20px 0;padding:16px;border:1px solid var(--line);border-radius:var(--radius);background:#14171c}
+.totp-regenerate summary{list-style:none;cursor:pointer}
+.totp-regenerate summary::-webkit-details-marker{display:none}
+.totp-regenerate[open] summary{margin-bottom:16px}
+.totp-new-key{padding-top:16px;border-top:1px solid var(--line-soft)}
+.totp-secret-display{display:inline-block;padding:6px 10px;background:#0e1114;border:1px solid var(--line);border-radius:5px;font-family:var(--font-mono);font-size:12px;word-break:break-all;user-select:all}
+.totp-disable-form{margin-top:24px;padding-top:20px;border-top:1px solid var(--line-soft)}
+
+/* Telegram bot setup */
+.telegram-setup-form{margin:16px 0}
+.telegram-setup-form .fields-grid{grid-template-columns:1fr}
+.telegram-token-field input{font-family:var(--font-mono);font-size:13px}
+
+/* Backup encryption */
+.backup-encryption-panel{margin:16px 0;padding:16px;border:1px solid var(--line);border-radius:var(--radius);background:#14171c}
+.backup-encryption-panel h3{display:flex;align-items:center;gap:8px;font-size:14px;font-weight:690;margin:0 0 12px}
+.backup-encryption-panel h3 .icon{color:var(--amber)}
+.encryption-status{display:inline-flex;align-items:center;gap:8px;padding:8px 12px;border-radius:6px;font-size:12px;font-weight:680;margin:12px 0}
+.encryption-enabled{background:rgba(38,146,98,.13);color:#70d4a0;border:1px solid rgba(51,150,101,.25)}
+.encryption-disabled{background:#3b2426;color:#f09e9e;border:1px solid #5c3538}

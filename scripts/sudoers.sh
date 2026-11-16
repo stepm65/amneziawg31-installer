@@ -5,8 +5,9 @@
 #
 # Every entry is one exact `awg31mgr <command>` pair: no wildcards, no arguments.
 # Root-only operations (init, sample-all, backup-run, password-reset, totp-reset,
-# backup-encryption-set, backup-encryption-change, backup-remote-set, backup-remote-test) are
-# deliberately absent: they are started by systemd or from a root shell.
+# backup-encryption-change, backup-remote-set, backup-remote-test) are deliberately
+# absent: they are started by systemd or from a root shell. The panel can enable or
+# remove backup encryption, but cannot read the root-only passphrase.
 AWG31_SUDO_COMMANDS=(
   servers server-create server-start server-stop server-restart server-delete
   status list add download enable disable delete delete-batch settings
@@ -15,7 +16,8 @@ AWG31_SUDO_COMMANDS=(
   backup-create backup-list backup-export backup-delete backup-policy
   backup-policy-set backup-check backup-restore
   audit audit-list password-change session-revoke obfuscation-generate
-  add-batch totp-enable totp-disable telegram-status telegram-set backup-encryption backup-remote
+  add-batch totp-enable totp-disable telegram-status telegram-connect telegram-disconnect telegram-set
+  backup-encryption backup-encryption-set backup-remote
 )
 
 # The Telegram bot runs as its own user with a narrower list: it cannot delete

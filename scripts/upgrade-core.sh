@@ -14,7 +14,7 @@ SUD=/etc/sudoers.d/awg31-panel
 # The installed application and controller are checked below.
 [[ -f "$APP/web.py" && -x "$APP/.venv/bin/python3" && -f "$CTR" ]] || die 'Existing panel/controller missing'
 id awgpanel >/dev/null 2>&1 || die 'awgpanel user not found'
-for f in web.py amnezialink.py quicinitial.py awg31client.py awg31helper panel.css md3.css panel.js awg31ctl awg31mgr awg31admin.py; do
+for f in web.py amnezialink.py quicinitial.py awg31client.py awg31helper panel.css md3.css panel.js awg31ctl awg31mgr awg31admin.py awg31bot.py; do
     [[ -f "$DIR/src/$f" ]] || die "Missing src/$f"
 done
 [[ -f "$DIR/scripts/sudoers.sh" ]] || die 'Missing scripts/sudoers.sh'
@@ -65,6 +65,7 @@ install -o root -g root -m 755 "$DIR/src/awg31ctl" "$CTR"
 install -o root -g root -m 755 "$DIR/src/awg31mgr" "$MGR"
 install -o root -g root -m 644 "$DIR/src/awg31admin.py" /usr/local/sbin/awg31admin.py
 install -d -o root -g root -m 755 /usr/local/libexec/awg31/scripts
+install -o root -g root -m 755 "$DIR/src/awg31bot.py" /usr/local/libexec/awg31/telegram-probe.py
 install -o root -g root -m 755 "$DIR/scripts/restore-backup.py" /usr/local/libexec/awg31/scripts/restore-backup.py
 say 'Checking existing server inventory'
 "$MGR" servers </dev/null
@@ -112,6 +113,7 @@ install -o root -g root -m 755 "$DIR/scripts/awg31-menu" /usr/local/bin/awg31
 install -o root -g root -m 755 "$DIR/scripts/uninstall.sh" /usr/local/libexec/awg31/scripts/uninstall.sh
 install -o root -g root -m 755 "$DIR/install.sh" /usr/local/libexec/awg31/install.sh
 install -o root -g root -m 755 "$DIR/scripts/setup-telegram.sh" /usr/local/libexec/awg31/scripts/setup-telegram.sh
+install -o root -g root -m 755 "$DIR/src/awg31bot.py" /usr/local/libexec/awg31/telegram-probe.py
 install -o root -g root -m 644 "$DIR/scripts/sudoers.sh" /usr/local/libexec/awg31/scripts/sudoers.sh
 install -o root -g root -m 644 "$DIR/scripts/awg31-bot.service" /usr/local/libexec/awg31/scripts/awg31-bot.service
 # A configured Telegram bot follows the update: new code, unit and sudo rule.

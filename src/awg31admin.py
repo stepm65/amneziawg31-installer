@@ -2,16 +2,20 @@
 import base64
 import fcntl
 import hashlib
+import hmac
 import io
 import json
 import os
 from pathlib import Path
 import re
 import secrets
+import shutil
+import pwd
 import sqlite3
 import subprocess
 import tarfile
 import tempfile
+import time
 from datetime import datetime, timezone, timedelta
 
 VALID_BACKUP = re.compile(r'^awg31-[0-9]{8}T[0-9]{6}Z-[0-9a-f]{10}\.tar\.gz(?:\.gpg)?$')
@@ -437,6 +441,50 @@ def bot_config_file():
 
 
 NOTIFY_GROUPS=('server','clients','security','backups')
+TELEGRAM_PENDING_TTL=900
+
+
+def _telegram_pending_file():
+    return bot_config_file().parent/'telegram-pending.json'
+
+
+def _telegram_pending_cleanup():
+    """Best-effort expiry; failed cleanup cannot make the token readable."""
+    path=_telegram_pending_file()
+    try:
+        if path.is_symlink(): path.unlink(missing_ok=True)
+        elif path.is_file():
+            pending=json.loads(path.read_text())
+            if time.time()-float(pending['created'])>=TELEGRAM_PENDING_TTL:
+                path.unlink(missing_ok=True)
+    except (OSError,ValueError,KeyError,TypeError): pass
+
+
+def _telegram_pending_read(setup_id):
+    """Consume a single, short-lived pending setup; no secret is returned."""
+    path=_telegram_pending_file()
+    if path.is_symlink() or not path.is_file(): raise ValueError('Telegram setup expired; enter the token again')
+    try:
+        pending=json.loads(path.read_text())
+        if (not hmac.compare_digest(str(pending.get('id','')),setup_id)
+                or time.time()-float(pending['created'])>=TELEGRAM_PENDING_TTL):
+            raise ValueError('Telegram setup expired; enter the token again')
+        token=str(pending.get('token',''))
+        if not re.fullmatch(r'[0-9]{5,14}:[A-Za-z0-9_-]{30,60}',token):
+            raise ValueError('Telegram setup expired; enter the token again')
+        if not isinstance(pending.get('candidates'),dict):
+            raise ValueError('Telegram setup expired; enter the token again')
+        return pending
+    except (OSError,ValueError,KeyError,TypeError,json.JSONDecodeError) as exc:
+        raise ValueError('Telegram setup expired; enter the token again') from exc
+    finally: path.unlink(missing_ok=True)
+
+
+def _telegram_pending_write(pending):
+    path=_telegram_pending_file()
+    if path.is_symlink(): path.unlink(missing_ok=True)
+    _atomic_private_file(path,json.dumps(pending)+'\n')
+    os.chown(path,0,0)
 
 
 def _id_list(value, limit):
@@ -450,6 +498,7 @@ def _id_list(value, limit):
 
 
 def telegram_status():
+    _telegram_pending_cleanup()
     file=bot_config_file()
     if not file.is_file(): return {'configured':False}
     config=json.loads(file.read_text())
@@ -463,9 +512,200 @@ def telegram_status():
             'digest':config.get('digest','off') if config.get('digest') in ('daily','weekly') else 'off'}
 
 
+def _systemctl(*args):
+    cp=subprocess.run(['systemctl',*args],capture_output=True,text=True,timeout=45,check=False)
+    if cp.returncode:
+        detail=(cp.stderr or cp.stdout).strip()
+        # systemctl may include machine-readable command details, but never a token.
+        raise ValueError('Telegram service command failed: '+detail[-200:])
+    return cp.stdout
+
+
+def _telegram_provision():
+    """Create only the runtime account and directory; installers own units/sudoers."""
+    unit=Path('/usr/local/libexec/awg31/scripts/awg31-bot.service')
+    if not unit.is_file(): unit=Path('/etc/systemd/system/awg31-bot.service')
+    if not unit.is_file(): raise ValueError('Telegram bot service template is not installed')
+    cp=subprocess.run(['id','awgbot'],capture_output=True,timeout=10,check=False)
+    if cp.returncode:
+        cp=subprocess.run(['useradd','--system','--no-create-home','--home','/nonexistent','--shell',
+                           '/usr/sbin/nologin','awgbot'],capture_output=True,text=True,timeout=30,check=False)
+        if cp.returncode: raise ValueError('Could not create the Telegram service account')
+    directory=bot_config_file().parent
+    directory.mkdir(parents=True,mode=0o750,exist_ok=True)
+    group=pwd.getpwnam('awgbot').pw_gid
+    os.chown(directory,0,group);os.chmod(directory,0o750)
+    if Path('/opt/awg31-panel/.venv').is_dir():
+        # The bot imports the same pinned packages; its configuration stays root:awgbot.
+        subprocess.run(['chmod','-R','o+rX','/opt/awg31-panel/.venv'],check=True,timeout=60)
+    if shutil.which('getent') and subprocess.run(['getent','group','awg31ctl'],capture_output=True,check=False).returncode==0:
+        subprocess.run(['usermod','-a','-G','awg31ctl','awgbot'],check=True,timeout=30)
+    target=Path('/etc/systemd/system/awg31-bot.service')
+    _atomic_private_file(target,unit.read_text(),mode=0o644)
+    os.chown(target,0,0)
+    _telegram_install_bot_sudoers()
+    _systemctl('daemon-reload')
+    _systemctl('enable','awg31-bot.service')
+    return group
+
+
+def _telegram_install_bot_sudoers():
+    """Keep the helper's dynamically parsed allowlist in sync with bot access."""
+    import shutil
+    manager='/usr/local/sbin/awg31mgr'
+    commands=('servers','server-start','server-stop','server-restart','list','add','download','enable',
+              'disable','delete','client-policy','diagnostics','backup-create','backup-list',
+              'backup-export-encrypted','audit','audit-list')
+    target=Path('/etc/sudoers.d/awg31-bot')
+    if not target.parent.is_dir() or not shutil.which('visudo'):
+        raise ValueError('sudo with visudo is required to connect the Telegram bot')
+    temporary=target.with_name('.awg31-bot-'+secrets.token_hex(8))
+    fd=os.open(temporary,os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o440)
+    try:
+        with os.fdopen(fd,'w') as fp:
+            fp.write('awgbot ALL=(root) NOPASSWD: '+', '.join(f'{manager} {op}' for op in commands)+'\n')
+            fp.flush();os.fsync(fp.fileno())
+        cp=subprocess.run(['visudo','-cf',str(temporary)],capture_output=True,text=True,timeout=30,check=False)
+        if cp.returncode: raise ValueError('Could not validate Telegram sudo permissions')
+        os.chown(temporary,0,0);os.replace(temporary,target)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _restore_bot(pending, config, previous=None, ownership=None):
+    """Best-effort rollback after discovery or service startup failed."""
+    if config is not None:
+        try:
+            if previous is None:
+                config.unlink(missing_ok=True)
+            else:
+                _atomic_private_file(config,previous,mode=0o640)
+                if ownership is not None: os.chown(config,*ownership)
+        except OSError:
+            # Return the original startup error; remain conservative and do not
+            # start a service whose secret could not be restored.
+            return
+    if pending:
+        subprocess.run(['systemctl','start','awg31-bot.service'],capture_output=True,
+                       timeout=30,check=False)
+
+
+def _telegram_service(data):
+    lang=str(data.get('lang','ru'))
+    if lang not in ('ru','en'): raise ValueError('Language: ru or en')
+    notify=data.get('notify',{})
+    if not isinstance(notify,dict): raise ValueError('Invalid notification settings')
+    return lang,{group:bool(notify.get(group,False)) for group in NOTIFY_GROUPS}
+
+
+def telegram_connect(data):
+    """Discovery stores a root-only pending setup; confirmation sends only its ID."""
+    if data.get('cancel') is True:
+        _telegram_pending_file().unlink(missing_ok=True)
+        return {'ok':True,'cancelled':True}
+    confirming=data.get('confirm') is True
+    pending=None
+    if not confirming:
+        try: _telegram_pending_file().unlink(missing_ok=True)
+        except OSError as exc: raise ValueError('Could not reset the pending Telegram setup') from exc
+    if confirming:
+        setup_id=str(data.get('setup_id',''))
+        if not re.fullmatch(r'[a-f0-9]{64}',setup_id): raise ValueError('Invalid Telegram setup ID')
+        pending=_telegram_pending_read(setup_id)
+        token=pending['token']
+        username=str(pending['username'])
+        lang=str(pending['lang'])
+        notify=pending['notify']
+        valid=pending['candidates']
+    else:
+        token=str(data.get('token','')).strip()
+        if not re.fullmatch(r'[0-9]{5,14}:[A-Za-z0-9_-]{30,60}',token):
+            raise ValueError('Invalid Telegram token format')
+        lang,notify=_telegram_service(data)
+    config=bot_config_file()
+    existing=bool(config.is_file())
+    if config.is_symlink(): raise ValueError('Invalid Telegram configuration file')
+    # Keep the exact previous secret only in root memory until the new service
+    # is known to be active; restore it if the replacement cannot start.
+    previous=config.read_text() if existing else None
+    ownership=None
+    if existing:
+        stat=config.stat(); ownership=(stat.st_uid,stat.st_gid)
+    import sys
+    python=Path(sys.executable)
+    bot=Path('/usr/local/libexec/awg31/telegram-probe.py')
+    if not bot.is_file():
+        raise ValueError('Telegram setup helper is not installed; run scripts/upgrade-core.sh')
+    if not confirming:
+        cp=subprocess.run([str(python),str(bot),'check-token'],input=token+'\n',text=True,capture_output=True,timeout=40,check=False)
+        if cp.returncode:
+            raise ValueError('Telegram did not accept the token or api.telegram.org is unreachable')
+        username=cp.stdout.strip()
+        if not re.fullmatch(r'[A-Za-z0-9_]{1,32}',username): raise ValueError('Invalid response from Telegram')
+    if existing and not confirming:
+        _systemctl('stop','awg31-bot.service')
+    try:
+        if not confirming:
+            cp=subprocess.run([str(python),str(bot),'list-candidates'],input=token+'\n',text=True,capture_output=True,timeout=40,check=False)
+            if cp.returncode:
+                raise ValueError('Could not check the private /start message; try again')
+            candidates=json.loads(cp.stdout)
+            if not isinstance(candidates,list): raise ValueError('Invalid Telegram administrator response')
+            valid={}
+            for item in candidates:
+                if not isinstance(item,dict) or not re.fullmatch(r'[1-9][0-9]{2,14}',str(item.get('id',''))): continue
+                valid[str(item['id'])]=str(item.get('label',''))[:100]
+            if existing: _systemctl('start','awg31-bot.service')
+            setup_id=secrets.token_hex(32)
+            _telegram_pending_write({'id':setup_id,'token':token,'username':username,'lang':lang,
+                                    'notify':notify,'candidates':valid,'created':time.time()})
+            return {'ok':True,'pending':True,'setup_id':setup_id,'expires':TELEGRAM_PENDING_TTL,
+                    'username':username,'candidates':[{'id':int(key),'label':value} for key,value in valid.items()]}
+        admin=str(data.get('admin_id',''))
+        if admin not in valid:
+            raise ValueError('Select the administrator who sent /start in a private chat')
+        group=_telegram_provision()
+        admins=[int(admin)]
+        viewers=[]
+        digest='off'
+        if existing:
+            old=json.loads(previous)
+            viewers=[x for x in _id_list(old.get('viewers',[]),20) if x not in admins]
+            digest=old.get('digest','off') if old.get('digest') in ('daily','weekly') else 'off'
+        _atomic_private_file(config,json.dumps({'token':token,'admins':admins,'viewers':viewers,'lang':lang,
+                                                'notify':notify,'digest':digest},indent=1)+'\n',mode=0o640)
+        os.chown(config,0,group)
+        _systemctl('restart','awg31-bot.service')
+        active=_systemctl('is-active','awg31-bot.service').strip()
+        if active!='active': raise ValueError('Telegram bot did not start; check journalctl -u awg31-bot.service')
+    except (OSError,ValueError,KeyError,TypeError,subprocess.SubprocessError,json.JSONDecodeError):
+        # A failure after confirmation must erase the pending token.
+        if confirming: _telegram_pending_file().unlink(missing_ok=True)
+        _restore_bot(existing,config,previous,ownership)
+        raise
+    audit({'event':'telegram_changed','target':f'connected @{username}, administrator confirmed'})
+    return {'ok':True,'username':username}
+
+
+
+def telegram_disconnect(data=None):
+    _systemctl('disable','--now','awg31-bot.service')
+    config=bot_config_file()
+    if config.is_symlink(): raise ValueError('Invalid Telegram configuration file')
+    config.unlink(missing_ok=True)
+    _telegram_pending_file().unlink(missing_ok=True)
+    sudoers=Path('/etc/sudoers.d/awg31-bot')
+    if sudoers.is_symlink(): raise ValueError('Invalid Telegram sudoers file')
+    sudoers.unlink(missing_ok=True)
+    state=Path('/var/lib/awg31-bot')
+    if state.is_dir() and not state.is_symlink(): shutil.rmtree(state)
+    audit({'event':'telegram_changed','target':'disconnected; token removed'})
+    return {'ok':True}
+
+
 def telegram_set(data):
     file=bot_config_file()
-    if not file.is_file(): raise ValueError('The bot is not connected: run sudo awg31 telegram on the server')
+    if not file.is_file(): raise ValueError('The bot is not connected: connect it first')
     config=json.loads(file.read_text())
     admins=_id_list(data.get('admins',config.get('admins',[])),10)
     if not admins: raise ValueError('At least one administrator is required')
@@ -503,12 +743,17 @@ def backup_encryption():
 
 
 def backup_encryption_set(data):
-    """Root console only. Returns a generated passphrase exactly once."""
+    """Enable/disable encryption. The passphrase stays root-readable only."""
     file=backup_key_file()
-    if data.get('off') is True:
+    # Keep the CLI's off flag; accept the web form's boolean as its equivalent.
+    off=data.get('off') is True or data.get('enabled') is False
+    if off:
+        if file.is_symlink(): raise ValueError('Invalid backup passphrase file')
         file.unlink(missing_ok=True)
         audit({'event':'backup_encryption_changed','target':'off'})
         return {'ok':True,'enabled':False}
+    if file.exists() or file.is_symlink():
+        raise ValueError('Backup encryption is already enabled: use "backup-encryption change" from the root console')
     if not shutil_which('gpg'): raise ValueError('gpg is not installed: install the gnupg package first')
     passphrase,generated=_new_passphrase(data)
     file.parent.mkdir(parents=True,exist_ok=True)

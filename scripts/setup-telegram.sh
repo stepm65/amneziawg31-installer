@@ -23,6 +23,25 @@ CONFIG="$CONFIG_DIR/telegram.json"
 UNIT=awg31-bot.service
 say(){ printf '[AWG31 Telegram] %s\n' "$*"; }
 die(){ printf '[AWG31 Telegram] ОШИБКА: %s\n' "$*" >&2; exit 1; }
+RESTORE_CONFIG=0
+candidate=''
+previous_mode=''
+restore_connection(){
+    local status="$?"
+    if (( status != 0 && RESTORE_CONFIG )); then
+        if [[ -f "$previous" ]]; then
+            install -o root -g awgbot -m "${previous_mode:-640}" "$previous" "$CONFIG" || :
+        else
+            rm -f -- "$CONFIG"
+        fi
+    fi
+    if (( status != 0 && EXISTING_ACTIVE )) && [[ -f "$CONFIG" ]]; then
+        systemctl start "$UNIT" >/dev/null 2>&1 || :
+    fi
+    [[ -n "$candidate" ]] && rm -f -- "$candidate"
+    if [[ -n "${previous:-}" ]]; then rm -f -- "$previous"; fi
+    exit "$status"
+}
 
 turn_off() {
     systemctl disable --now "$UNIT" >/dev/null 2>&1 || :
@@ -59,6 +78,8 @@ esac
 
 [[ -f "$BOT" && -x "$PY" ]] || die 'Панель не установлена или повреждена (нет awg31bot.py)'
 [[ -f "$DIR/sudoers.sh" && -f "$DIR/awg31-bot.service" ]] || die 'Не найдены файлы установки бота'
+mkdir -p /usr/local/libexec/awg31
+install -o root -g root -m 755 "$BOT" /usr/local/libexec/awg31/telegram-probe.py
 UNATTENDED="${AWG31_UNATTENDED:-0}"
 TOKEN="${AWG31_TELEGRAM_TOKEN:-}"
 ADMINS="${AWG31_TELEGRAM_ADMINS:-}"
@@ -84,6 +105,15 @@ fi
 [[ "$TOKEN" =~ ^[0-9]{5,14}:[A-Za-z0-9_-]{30,60}$ ]] || die 'Токен не похож на токен Telegram (123456789:AA...)'
 
 # A running bot and the helper below must not poll Telegram at the same time.
+# Discovery errors and cancellations must not leave an existing service stopped.
+EXISTING_CONFIG=0
+EXISTING_ACTIVE=0
+previous=''
+if [[ -f "$CONFIG" ]]; then
+    EXISTING_CONFIG=1
+    systemctl is-active --quiet "$UNIT" && EXISTING_ACTIVE=1
+fi
+trap restore_connection EXIT
 systemctl stop "$UNIT" >/dev/null 2>&1 || :
 # The token goes to the helper over stdin: it never appears in a process list.
 username="$(printf '%s\n' "$TOKEN" | "$PY" "$BOT" check-token)" ||
@@ -119,6 +149,13 @@ NOTIFY="${NOTIFY:-all}"; NOTIFY="${NOTIFY// /}"
 [[ "$NOTIFY" =~ ^(all|none|(server|clients|security|backups)(,(server|clients|security|backups)){0,3})$ ]] ||
     die 'Уведомления: all, none или список из server,clients,security,backups'
 
+if (( EXISTING_CONFIG )); then
+    previous="$(mktemp /root/.awg31-telegram.XXXXXX)"
+    cp -- "$CONFIG" "$previous"
+    chmod 600 -- "$previous"
+    previous_mode="$(stat -c '%a' -- "$CONFIG")"
+    RESTORE_CONFIG=1
+fi
 if ! id awgbot >/dev/null 2>&1; then
     useradd --system --no-create-home --home /nonexistent --shell /usr/sbin/nologin awgbot
 fi
@@ -126,7 +163,6 @@ fi
 chmod -R o+rX "$APP/.venv"
 install -d -o root -g awgbot -m 750 "$CONFIG_DIR"
 candidate="$(mktemp "$CONFIG_DIR/.telegram.XXXXXX")"
-trap 'rm -f -- "$candidate"' EXIT
 AWG31_T="$TOKEN" AWG31_A="$ADMINS" AWG31_L="$BOT_LANG" AWG31_N="$NOTIFY" AWG31_B="${AWG31_TELEGRAM_API:-}" \
 AWG31_V="$VIEWERS" AWG31_D="$DIGEST" AWG31_OLD="$CONFIG" \
 python3 - "$candidate" <<'PY'
@@ -152,7 +188,8 @@ with open(sys.argv[1], 'w') as handle:
 PY
 chown root:awgbot "$candidate"; chmod 640 "$candidate"
 mv -f -- "$candidate" "$CONFIG"
-trap - EXIT
+# Keep restore_connection armed through unit installation and service startup;
+# it restores the previous token if anything fails before this script succeeds.
 unset TOKEN AWG31_TELEGRAM_TOKEN
 
 . "$DIR/sudoers.sh"
