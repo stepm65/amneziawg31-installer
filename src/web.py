@@ -2177,10 +2177,12 @@ def detail(request: Request, name: str, interface: str = ''):
 async def client_network(request: Request, name: str, interface: str = ''):
     data = await request.form()
     require_csrf(request, data.get('csrf', ''))
-    payload = {'name':name, 'ip':str(data.get('ip','')).strip(),
-               'routed_subnets':str(data.get('routed_subnets','')),
+    payload = {'name':name, 'routed_subnets':str(data.get('routed_subnets','')),
                'i_enabled':'1' if data.get('i_enabled')=='1' else '0',
                **{f'i{n}':str(data.get(f'i{n}','')) for n in range(1,6)}}
+    address = str(data.get('ip','')).strip()
+    if address:
+        payload['ip'] = address
     try:
         control(request,'client-network',payload)
         audit_event('client_modified',f'{selected_server(request)}/{name}')
