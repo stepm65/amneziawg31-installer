@@ -378,10 +378,16 @@
       next.focus(); setTab(next); event.preventDefault();
     });
   }
-  const configToggles = new Map();
   const configCheckbox = document.getElementById('share-config-checkbox');
   const configText = document.getElementById('share-conf-text');
-  if (configCheckbox && configText) configToggles.set(configText.id, configCheckbox);
+  const syncConfigVisibility = () => {
+    if (!configCheckbox || !configText) return;
+    configText.style.display = configCheckbox.checked ? 'block' : 'none';
+  };
+  if (configCheckbox && configText) {
+    configCheckbox.addEventListener('change', syncConfigVisibility);
+    syncConfigVisibility();
+  }
   for (const btn of document.querySelectorAll('[data-copy-target]')) {
     btn.addEventListener('click', async () => {
       const input = document.getElementById(btn.dataset.copyTarget);
@@ -392,8 +398,10 @@
         await navigator.clipboard.writeText(input.value);
         if (status) status.textContent = status.dataset.copyOk || 'Copied';
       } catch (_) {
-        const toggle = configToggles.get(input.id);
-        if (toggle) toggle.checked = true;
+        if (configCheckbox && input === configText) {
+          configCheckbox.checked = true;
+          syncConfigVisibility();
+        }
         input.focus(); input.select();
         if (status) status.textContent = status.dataset.copyFailed || 'Select and copy manually';
       }
