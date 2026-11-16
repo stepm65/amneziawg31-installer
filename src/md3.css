@@ -207,8 +207,7 @@ tbody tr:hover {background:rgba(248,180,68,.055)}
 .share-config-checkbox{grid-column:1;grid-row:2;width:20px;height:20px;margin:0;align-self:center;accent-color:#f3ac21;cursor:pointer}
 .share-config-toggle{grid-column:2;grid-row:2;align-self:center;margin:0;cursor:pointer}
 .share-config-checkbox:focus-visible + .share-config-toggle{outline:2px solid #e6a21a;outline-offset:3px;border-radius:4px}
-.share-config-content .share-text{display:none;grid-column:1/-1}
-.share-config-checkbox:checked ~ .share-text{display:block}
+.share-config-content .share-text{grid-column:1/-1}
 .share-config-content .share-actions{grid-column:1/-1}
 .share-text{display:block;box-sizing:border-box;width:100%;min-height:340px;resize:vertical;border:1px solid #3a424d;border-radius:12px;padding:14px;background:#11161e;color:#e9edf4;font:13px/1.5 var(--font-mono);word-break:break-all}
 .share-text:focus{outline:2px solid #e6a21a;outline-offset:1px}

@@ -2135,7 +2135,7 @@ def detail(request: Request, name: str, interface: str = ''):
           <div class="share-config-content"><h3>{h(t('conf_contents'))}</h3>
             <input class="share-config-checkbox" id="share-config-checkbox" type="checkbox" aria-controls="share-conf-text" checked>
             <label class="check-field share-config-toggle" for="share-config-checkbox"><span>{h(t('show_conf_contents'))}</span></label>
-            <textarea id="share-conf-text" class="share-text" readonly spellcheck="false" style="display:block">{h(config)}</textarea>
+            <textarea id="share-conf-text" class="share-text" readonly spellcheck="false" style="display:block!important">{h(config)}</textarea>
             <div class="share-actions"><button class="btn btn-secondary" type="button" data-copy-target="share-conf-text">{h(t('copy'))}</button>
             <a class="btn btn-primary" href="/client/{name_url}/download">{icon('file',16)}{h(t('download'))}</a></div>
           </div></section>

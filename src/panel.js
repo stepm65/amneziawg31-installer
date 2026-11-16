@@ -382,7 +382,7 @@
   const configText = document.getElementById('share-conf-text');
   const syncConfigVisibility = () => {
     if (!configCheckbox || !configText) return;
-    configText.style.display = configCheckbox.checked ? 'block' : 'none';
+    configText.style.setProperty('display', configCheckbox.checked ? 'block' : 'none', 'important');
   };
   if (configCheckbox && configText) {
     configCheckbox.addEventListener('change', syncConfigVisibility);
