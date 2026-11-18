@@ -378,16 +378,8 @@
       next.focus(); setTab(next); event.preventDefault();
     });
   }
-  const configCheckbox = document.getElementById('share-config-checkbox');
-  const configText = document.getElementById('share-conf-text');
-  const syncConfigVisibility = () => {
-    if (!configCheckbox || !configText) return;
-    configText.style.setProperty('display', configCheckbox.checked ? 'block' : 'none', 'important');
-  };
-  if (configCheckbox && configText) {
-    configCheckbox.addEventListener('change', syncConfigVisibility);
-    syncConfigVisibility();
-  }
+  // Showing and hiding the .conf text is a native <details>; no script is involved.
+  const configDetails = document.getElementById('share-config-details');
   for (const btn of document.querySelectorAll('[data-copy-target]')) {
     btn.addEventListener('click', async () => {
       const input = document.getElementById(btn.dataset.copyTarget);
@@ -398,10 +390,7 @@
         await navigator.clipboard.writeText(input.value);
         if (status) status.textContent = status.dataset.copyOk || 'Copied';
       } catch (_) {
-        if (configCheckbox && input === configText) {
-          configCheckbox.checked = true;
-          syncConfigVisibility();
-        }
+        if (configDetails && configDetails.contains(input)) configDetails.open = true;
         input.focus(); input.select();
         if (status) status.textContent = status.dataset.copyFailed || 'Select and copy manually';
       }

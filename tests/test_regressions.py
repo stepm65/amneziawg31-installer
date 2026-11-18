@@ -497,6 +497,12 @@ def test_oversized_qr_is_a_clean_422_and_the_page_explains_it(ui):
     page = client.get('/servers/awg0/clients/alpha')
     assert page.status_code == 200 and 'qr-too-large' in page.text and 'qr?mode=conf"' not in page.text
     assert client.get('/servers/awg0/clients/alpha/download').text == huge
+    # The .conf text must be readable without any script: a native <details>, open by default,
+    # never a checkbox whose effect depends on JavaScript or on an inline style the CSP blocks.
+    details = re.search(r'<details class="share-config-details" id="share-config-details" open>(.*?)</details>',
+                        page.text, re.S)
+    assert details and 'id="share-conf-text"' in details.group(1) and 'TEST_ONLY' in details.group(1)
+    assert 'share-config-checkbox' not in page.text and ' style="' not in page.text
 
 
 def test_every_installer_ships_the_quic_module():

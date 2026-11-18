@@ -4,6 +4,7 @@
 #   - a pushed tag: the release does not exist yet and is created here;
 #   - a release drafted on github.com: files are attached to it, and an empty
 #     title or description is filled in (text the author wrote is never replaced).
+# The title is the version alone (the tag, e.g. v1.2.3): it reads best in the list.
 # Usage: scripts/publish-release.sh vX.Y.Z DIST_DIR   (needs the gh CLI and GH_TOKEN)
 set -Eeuo pipefail
 tag="${1:?usage: publish-release.sh vX.Y.Z DIST_DIR}"
@@ -12,7 +13,9 @@ repo="${GITHUB_REPOSITORY:-stepm65/amneziawg31-installer}"
 [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "Invalid tag: $tag" >&2; exit 1; }
 asset="awg31-console-$tag.tar.gz"
 [[ -f "$dist/$asset" && -f "$dist/$asset.sha256" ]] || { echo "Missing $asset or its .sha256 in $dist" >&2; exit 1; }
-title="AmneziaWG 3.1 Console ${tag#v}"
+title="$tag"
+# Titles that earlier versions of this script wrote, and so may be replaced.
+old_title="AmneziaWG 3.1 Console ${tag#v}"
 notes="$(mktemp)"
 trap 'rm -f -- "$notes"' EXIT
 cat >"$notes" <<NOTES
@@ -30,7 +33,7 @@ if gh release view "$tag" >/dev/null 2>&1; then
     current_title="$(gh release view "$tag" --json name --jq .name)"
     current_notes="$(gh release view "$tag" --json body --jq .body)"
     # GitHub shows the last commit subject when the title is empty.
-    if [[ -z "${current_title//[[:space:]]/}" || "$current_title" == "$tag" ]]; then
+    if [[ -z "${current_title//[[:space:]]/}" || "$current_title" == "$old_title" ]]; then
         gh release edit "$tag" --title "$title"
     fi
     if [[ -z "${current_notes//[[:space:]]/}" ]]; then
@@ -39,3 +42,14 @@ if gh release view "$tag" >/dev/null 2>&1; then
 else
     gh release create "$tag" "$dist/$asset" "$dist/$asset.sha256" --verify-tag --title "$title" --notes-file "$notes"
 fi
+
+# Earlier releases keep the long title that older versions of this script wrote,
+# or none at all; give them the version alone too. Titles authors chose stay.
+# Best effort: a failure here never fails the release that was just published.
+gh release list --limit 200 --json tagName,name --jq '.[]|[.tagName,.name]|@tsv' 2>/dev/null |
+while IFS=$'\t' read -r other other_title; do
+    [[ "$other" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ && "$other" != "$tag" ]] || continue
+    if [[ -z "${other_title//[[:space:]]/}" || "$other_title" == "AmneziaWG 3.1 Console ${other#v}" ]]; then
+        gh release edit "$other" --title "$other" >/dev/null || :
+    fi
+done || :

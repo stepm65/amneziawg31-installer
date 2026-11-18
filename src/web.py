@@ -2145,9 +2145,10 @@ def detail(request: Request, name: str, interface: str = ''):
             {qr_conf_display}{qr_conf_download}</figure>
             <div class="share-text-col"><p class="info-line">{h(t('conf_qr_note'))}</p></div></div>
           <div class="share-config-content"><h3>{h(t('conf_contents'))}</h3>
-            <input class="share-config-checkbox" id="share-config-checkbox" type="checkbox" aria-controls="share-conf-text" checked>
-            <label class="check-field share-config-toggle" for="share-config-checkbox"><span>{h(t('show_conf_contents'))}</span></label>
-            <textarea id="share-conf-text" class="share-text" readonly spellcheck="false" style="display:block!important">{h(config)}</textarea>
+            <details class="share-config-details" id="share-config-details" open>
+              <summary>{h(t('show_conf_contents'))}</summary>
+              <textarea id="share-conf-text" class="share-text" readonly spellcheck="false" aria-label="{h(t('conf_contents'))}">{h(config)}</textarea>
+            </details>
             <div class="share-actions"><button class="btn btn-secondary" type="button" data-copy-target="share-conf-text">{h(t('copy'))}</button>
             <a class="btn btn-primary" href="/client/{name_url}/download">{icon('file',16)}{h(t('download'))}</a></div>
           </div></section>

@@ -308,13 +308,14 @@ case "$2" in
     done ;;
   create) touch "$GH_STATE/exists" ;;
   upload) ;;
+  list) [[ -f "$GH_STATE/others" ]] && cat "$GH_STATE/others" ;;
 esac
 '''
 
 
-def publish(tmp_path, *, exists, name='', body=''):
+def publish(tmp_path, *, exists, name='', body='', keep_state=False):
     state = tmp_path / 'gh'
-    state.mkdir()
+    state.mkdir(exist_ok=keep_state)
     (state / 'name').write_text(name)
     (state / 'body').write_text(body)
     if exists:
@@ -337,7 +338,7 @@ def publish(tmp_path, *, exists, name='', body=''):
 def test_pushed_tag_creates_the_release_with_title_and_notes(tmp_path):
     result, calls, _, _ = publish(tmp_path, exists=False)
     assert result.returncode == 0, result.stderr
-    assert 'release create v1.2.3' in calls and '--title AmneziaWG 3.1 Console 1.2.3' in calls
+    assert 'release create v1.2.3' in calls and '--title v1.2.3' in calls and 'Console' not in calls
     assert '--verify-tag' in calls and 'release upload' not in calls
 
 
@@ -345,13 +346,30 @@ def test_release_drafted_on_the_site_gets_files_title_and_notes(tmp_path):
     result, calls, name, body = publish(tmp_path, exists=True)
     assert result.returncode == 0, result.stderr
     assert 'release upload v1.2.3' in calls and '--clobber' in calls and 'release create' not in calls
-    assert name == 'AmneziaWG 3.1 Console 1.2.3'
+    assert name == 'v1.2.3'
     assert f'bash <(curl -Ls {RAW}) v1.2.3' in body and 'awg31-console-v1.2.3.tar.gz' in body
 
 
-def test_title_equal_to_the_tag_is_treated_as_empty(tmp_path):
-    _, _, name, _ = publish(tmp_path, exists=True, name='v1.2.3')
-    assert name == 'AmneziaWG 3.1 Console 1.2.3'
+def test_title_is_the_version_alone(tmp_path):
+    # Already the version: nothing to edit.
+    _, calls, name, _ = publish(tmp_path, exists=True, name='v1.2.3', body='notes')
+    assert name == 'v1.2.3' and 'release edit' not in calls
+
+
+def test_long_title_from_earlier_versions_is_shortened(tmp_path):
+    _, _, name, _ = publish(tmp_path, exists=True, name='AmneziaWG 3.1 Console 1.2.3', body='notes')
+    assert name == 'v1.2.3'
+
+
+def test_earlier_releases_get_the_short_title_but_authors_titles_stay(tmp_path):
+    state = tmp_path / 'gh'
+    state.mkdir()
+    (state / 'others').write_text('v1.2.2\tAmneziaWG 3.1 Console 1.2.2\nv1.2.1\t\nv1.2.0\tWinter release\n'
+                                  'v1.2.3\tAmneziaWG 3.1 Console 1.2.3\n')
+    result, calls, _, _ = publish(tmp_path, exists=False, keep_state=True)
+    assert result.returncode == 0, result.stderr
+    assert 'release edit v1.2.2 --title v1.2.2' in calls and 'release edit v1.2.1 --title v1.2.1' in calls
+    assert 'release edit v1.2.0' not in calls
 
 
 def test_text_written_by_the_author_is_never_replaced(tmp_path):

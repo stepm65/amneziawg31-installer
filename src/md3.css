@@ -202,13 +202,18 @@ tbody tr:hover {background:rgba(248,180,68,.055)}
 .qr-frame .btn{color:#e5e7eb;background:#242a32}
 .share-text-col{display:flex;flex-direction:column;gap:12px;min-width:0}
 .share-text-col .info-line{margin:0}
-.share-config-content{display:grid;grid-template-columns:20px minmax(0,1fr);gap:12px;margin-top:22px;min-width:0}
-.share-config-content h3{grid-column:1/-1;margin:0;color:#eef1f6;font-size:16px;font-weight:700}
-.share-config-checkbox{grid-column:1;grid-row:2;width:20px;height:20px;margin:0;align-self:center;accent-color:#f3ac21;cursor:pointer}
-.share-config-toggle{grid-column:2;grid-row:2;align-self:center;margin:0;cursor:pointer}
-.share-config-checkbox:focus-visible + .share-config-toggle{outline:2px solid #e6a21a;outline-offset:3px;border-radius:4px}
-.share-config-content .share-text{grid-column:1/-1}
-.share-config-content .share-actions{grid-column:1/-1}
+.share-config-content{display:flex;flex-direction:column;gap:12px;margin-top:22px;min-width:0}
+.share-config-content h3{margin:0;color:#eef1f6;font-size:16px;font-weight:700}
+/* A native <details>: opening and closing needs no script and no style changes, so it
+   works in every browser, with scripts blocked and under the strict CSP alike. */
+.share-config-details{display:block;min-width:0}
+.share-config-details>summary{position:relative;display:inline-flex;align-items:center;gap:10px;cursor:pointer;color:#d9dfe8;font-size:14px;list-style:none;user-select:none;padding:4px 0}
+.share-config-details>summary::-webkit-details-marker{display:none}
+.share-config-details>summary::before{content:"";box-sizing:border-box;width:20px;height:20px;border:2px solid #8a94a3;border-radius:5px;flex:none}
+.share-config-details[open]>summary::before{border-color:#f3ac21;background:#f3ac21}
+.share-config-details[open]>summary::after{content:"";position:absolute;left:7px;top:calc(50% - 7px);width:5px;height:10px;border:solid #11161e;border-width:0 2px 2px 0;transform:rotate(45deg)}
+.share-config-details>summary:hover{color:#fff}
+.share-config-details>.share-text{margin-top:12px}
 .share-text{display:block;box-sizing:border-box;width:100%;min-height:340px;resize:vertical;border:1px solid #3a424d;border-radius:12px;padding:14px;background:#11161e;color:#e9edf4;font:13px/1.5 var(--font-mono);word-break:break-all}
 .share-text:focus{outline:2px solid #e6a21a;outline-offset:1px}
 .share-actions{display:flex;flex-wrap:wrap;gap:10px}
