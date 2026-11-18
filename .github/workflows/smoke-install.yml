@@ -20,7 +20,9 @@ jobs:
           sudo apt-get install -y -qq openssh-server
           sudo systemctl start ssh
       - name: Install, exercise and purge
-        run: sudo env CI=true bash tests/smoke/check_install.sh
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: sudo env CI=true GITHUB_TOKEN="$GITHUB_TOKEN" bash tests/smoke/check_install.sh
       - name: Service logs on failure
         if: failure()
         run: |

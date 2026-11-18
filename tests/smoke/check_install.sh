@@ -295,8 +295,22 @@ step 'Backups are uploaded to S3-compatible storage'
 # versitygw: an S3 gateway in one binary that checks SigV4 signatures and keeps
 # objects as plain files (MinIO no longer publishes binaries or images).
 s3_ok=0
-s3_url="$(curl -fsSL --retry 3 https://api.github.com/repos/versity/versitygw/releases/latest 2>/dev/null \
-          | grep -oiE '"browser_download_url": *"[^"]*linux[^"]*(x86_64|amd64)[^"]*\.tar\.gz"' | head -n1 | sed -E 's/.*"(https[^"]+)"$/\1/')"
+# The GitHub API limits anonymous requests from shared addresses, so it is only the first try;
+# the release page redirect (no such limit) gives the version for the usual asset names.
+s3_url="$( { curl -fsSL --retry 2 ${GITHUB_TOKEN:+-H "Authorization: Bearer $GITHUB_TOKEN"} \
+             https://api.github.com/repos/versity/versitygw/releases/latest 2>/dev/null || :; } \
+          | grep -oiE '"browser_download_url": *"[^"]*linux[^"]*(x86_64|amd64)[^"]*\.tar\.gz"' | head -n1 | sed -E 's/.*"(https[^"]+)"$/\1/' || :)"
+if [[ -z "$s3_url" ]]; then
+    s3_tag="$(curl -fsSI --retry 3 https://github.com/versity/versitygw/releases/latest 2>/dev/null | tr -d '\r' \
+              | sed -nE 's#^[Ll]ocation: .*/tag/(v?[0-9][0-9.]*)$#\1#p' | tail -n1 || :)"
+    for name in "versitygw_${s3_tag}_Linux_x86_64.tar.gz" "versitygw_${s3_tag#v}_Linux_x86_64.tar.gz" \
+                "versitygw_${s3_tag}_linux_amd64.tar.gz" "versitygw_${s3_tag#v}_linux_amd64.tar.gz"; do
+        [[ -n "$s3_tag" ]] || break
+        candidate="https://github.com/versity/versitygw/releases/download/$s3_tag/$name"
+        if curl -fsSIL --retry 2 -o /dev/null "$candidate"; then s3_url="$candidate"; break; fi
+    done
+fi
+echo "S3 test server: ${s3_url:-not found}"
 if [[ -n "$s3_url" ]] && rm -rf /tmp/awg31-s3gw && mkdir -p /tmp/awg31-s3gw/data && curl -fsSL --retry 3 --max-time 180 "$s3_url" | tar xz -C /tmp/awg31-s3gw; then
     s3_bin="$(find /tmp/awg31-s3gw -type f -name versitygw | head -n1)"
     if [[ -n "$s3_bin" ]]; then
