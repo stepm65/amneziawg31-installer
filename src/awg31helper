@@ -306,6 +306,10 @@ class Handler(socketserver.BaseRequestHandler):
             write_frame(connection, denied('Operation not permitted'))
             return
         connection.settimeout(None)
+        # Who asked, as the kernel reported it: the controller asks the panel for its password again on
+        # lasting changes (sudo tells it the same through SUDO_USER). A request cannot set this itself.
+        os.environ['AWG31_CALLER'] = user
+        os.environ.pop('SUDO_USER', None)
         try:
             reply = dict(zip(('rc', 'stdout', 'stderr'), run_manager(op, text)))
         except Exception as exc:                             # an answer, not a silently closed connection

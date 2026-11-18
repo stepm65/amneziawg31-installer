@@ -1376,6 +1376,12 @@ TEXT['ru'].update({
     'batch_title':'Добавить несколько клиентов', 'batch_prefix':'Префикс имени', 'batch_count':'Сколько (1–50)',
     'batch_start':'Начать с номера', 'batch_create':'Добавить клиентов и скачать ZIP',
     'batch_hint':'Имена вида префикс-01, префикс-02… Срок, лимит и скорость общие. В ответ придёт ZIP с конфигурациями, после чего список клиентов обновится.',
+    'panel_password':'Пароль панели', 'totp_code_current':'Код текущего ключа', 'totp_code_new':'Код нового ключа',
+    'tg_password_when':'Нужен, если меняются администраторы или наблюдатели.',
+    'enc_change':'Сменить пароль шифрования', 'enc_passphrase_new':'Новый пароль шифрования (16+ символов)',
+    'enc_change_hint':'Архивы на сервере, которые открывает текущий пароль, будут перешифрованы новым. Копии, уже отправленные в Telegram или во внешнее хранилище, останутся со старым паролем.',
+    'enc_reencrypted':'Пароль сменён, перешифровано архивов: {count}.',
+    'enc_skipped':'Не перешифрованы (зашифрованы ещё более старым паролем, ему они и нужны):',
     'totp_code':'Код из приложения-аутентификатора', 'totp_title':'Двухфакторный вход (TOTP)',
     'totp_on':'Включён: при входе нужен пароль и код из приложения.',
     'totp_off_hint':'Отсканируйте QR-код приложением-аутентификатором (Aegis, Google Authenticator, 2FAS и т. п.) или введите ключ вручную, затем подтвердите паролем и кодом.',
@@ -1417,6 +1423,12 @@ TEXT['en'].update({
     'batch_title':'Add several clients', 'batch_prefix':'Name prefix', 'batch_count':'How many (1–50)',
     'batch_start':'First number', 'batch_create':'Add clients and download ZIP',
     'batch_hint':'Names look like prefix-01, prefix-02… Expiry, quota and speed are shared. The reply is a ZIP with the configurations, after which the client list refreshes.',
+    'panel_password':'Panel password', 'totp_code_current':'Code of the current key', 'totp_code_new':'Code of the new key',
+    'tg_password_when':'Needed when administrators or viewers change.',
+    'enc_change':'Change the encryption passphrase', 'enc_passphrase_new':'New encryption passphrase (16+ characters)',
+    'enc_change_hint':'Archives on the server that the current passphrase opens are re-encrypted with the new one. Copies already sent to Telegram or a remote storage keep the old passphrase.',
+    'enc_reencrypted':'Passphrase changed, archives re-encrypted: {count}.',
+    'enc_skipped':'Not re-encrypted (sealed with an even older passphrase, they need that one):',
     'totp_code':'Code from the authenticator app', 'totp_title':'Two-factor sign-in (TOTP)',
     'totp_on':'Enabled: signing in needs the password and a code from the app.',
     'totp_off_hint':'Scan the QR code with an authenticator app (Aegis, Google Authenticator, 2FAS…) or type the key by hand, then confirm with the password and a code.',
@@ -2427,6 +2439,13 @@ def maintenance(request: Request, tab: str = 'diagnostics'):
                 enc_class = 'encryption-enabled' if enc_enabled else 'encryption-disabled'
                 enc_icon = 'lock' if enc_enabled else 'info'
                 enc_text = t('enc_on') if enc_enabled else t('enc_off')
+                enc_change_form = '' if not enc_enabled else f'''<details class="cps-details"><summary>{h(t('enc_change'))}</summary>
+                     <p class="info-line">{h(t('enc_change_hint'))}</p>
+                     <form method="post" action="/maintenance/backup/encryption/change">{csrf(request)}
+                     <div class="fields-grid"><label class="field"><span>{h(t('enc_passphrase_new'))}</span><input type="password" name="passphrase" required minlength="16" maxlength="200" autocomplete="new-password"></label>
+                     <label class="field"><span>{h(t('enc_passphrase_repeat'))}</span><input type="password" name="confirm" required minlength="16" maxlength="200" autocomplete="new-password"></label>
+                     <label class="field"><span>{h(t('panel_password'))}</span><input type="password" name="password" required autocomplete="current-password"></label></div>
+                     <button class="btn btn-primary" type="submit">{icon('lock',16)}{h(t('enc_change'))}</button></form></details>'''
                 enc_fields = '' if enc_enabled else f'''<div class="fields-grid"><label class="field"><span>{h(t('enc_passphrase'))}</span><input type="password" name="passphrase" required minlength="16" maxlength="200" autocomplete="new-password"></label><label class="field"><span>{h(t('enc_passphrase_repeat'))}</span><input type="password" name="confirm" required minlength="16" maxlength="200" autocomplete="new-password"></label></div><p class="info-line">{h(t('enc_passphrase_hint'))}</p>'''
                 body+=f'''<section class="maint-info-block"><span class="info-chip">{h(t('maint_backup_count'))}: {len(backups)}</span>
                   <p>{h(t('backup_global_note'))}</p><p>{h(t('backup_secret'))}</p>
@@ -2438,10 +2457,12 @@ def maintenance(request: Request, tab: str = 'diagnostics'):
                     <div class="encryption-status {enc_class}">{icon(enc_icon,14)}{h(enc_text)}</div>
                     <form method="post" action="/maintenance/backup/encryption/{'disable' if enc_enabled else 'enable'}">{csrf(request)}
                      {enc_fields}
+                     <div class="fields-grid"><label class="field"><span>{h(t('panel_password'))}</span><input type="password" name="password" required autocomplete="current-password"></label></div>
                      <button class="btn {'btn-danger' if enc_enabled else 'btn-primary'}" type="submit"
                        {'data-confirm="'+h(t('enc_disable_confirm'))+'"' if enc_enabled else ''}>
                        {icon('lock',16)}{h(t('enc_disable' if enc_enabled else 'enc_enable'))}
                      </button></form>
+                     {enc_change_form}
                      <p class="info-line">{h(t('enc_restore_note'))}</p>
                    </section>
 
@@ -2517,7 +2538,9 @@ def maintenance(request: Request, tab: str = 'diagnostics'):
                 <input type="hidden" name="secret" value="{secret}">
                 <div class="fields-grid"><label class="field"><span>{h(t('password'))}</span>
                 <input type="password" name="password" required autocomplete="current-password"></label>
-                <label class="field"><span>{h(t('totp_code'))}</span>
+                <label class="field"><span>{h(t('totp_code_current'))}</span>
+                <input name="current_code" inputmode="numeric" maxlength="7" required autocomplete="one-time-code"></label>
+                <label class="field"><span>{h(t('totp_code_new'))}</span>
                 <input name="code" inputmode="numeric" maxlength="7" required autocomplete="one-time-code"></label></div>
                 <button class="btn btn-primary" type="submit">{icon('shield',18)}{'Применить новый ключ' if lang=='ru' else 'Apply new key'}</button></form>
                 </div></details>
@@ -2554,6 +2577,7 @@ def maintenance(request: Request, tab: str = 'diagnostics'):
                  <input type="password" name="token" maxlength="100" required autocomplete="off" spellcheck="false"
                        pattern="[0-9]{{5,14}}:[a-zA-Z0-9_\\-]{{30,60}}" title="{h(t('tg_token_hint'))}"></label>
                  <p class="info-line">{h(t('tg_connect_hint'))}</p>
+                 <label class="field"><span>{h(t('panel_password'))}</span><input type="password" name="password" required autocomplete="current-password"></label>
                  <button class="btn btn-primary" type="submit">{icon('radio',16)}{h(t('tg_connect'))}</button>
                 </form>
                 </div></section>'''
@@ -2564,9 +2588,11 @@ def maintenance(request: Request, tab: str = 'diagnostics'):
                                f'{" checked" if bot["notify"].get(g) else ""}><span>{h(t("tg_n_"+g))}</span></label>'
                                for g in ('server','clients','security','backups'))
                 body+=f'''<section class="maint-form-panel"><p>{h(t('tg_state'))}: <strong>{h(bot.get('active',''))}</strong></p>
-                <form method="post" action="/maintenance/telegram/disconnect" class="inline">{csrf(request)}
-                <button class="btn btn-danger btn-small" type="submit" data-confirm="{'Отключить Telegram-бота? Токен будет удалён с сервера.' if lang=='ru' else 'Disconnect Telegram bot? The token will be removed from the server.'}">
-                {icon('trash',14)}{'Отключить бота' if lang=='ru' else 'Disconnect bot'}</button></form>
+                <details class="cps-details"><summary>{icon('trash',14)}{'Отключить бота' if lang=='ru' else 'Disconnect bot'}</summary>
+                <form method="post" action="/maintenance/telegram/disconnect">{csrf(request)}
+                <p class="info-line">{'Служба бота остановится, токен будет удалён с сервера.' if lang=='ru' else 'The bot service stops and the token is removed from the server.'}</p>
+                <div class="fields-grid"><label class="field"><span>{h(t('panel_password'))}</span><input type="password" name="password" required autocomplete="current-password"></label></div>
+                <button class="btn btn-danger" type="submit">{'Отключить бота' if lang=='ru' else 'Disconnect bot'}</button></form></details>
                 <p class="info-line">{h(t('tg_ids_hint'))}</p>
                 <form method="post" action="/maintenance/telegram">{csrf(request)}
                 <div class="fields-grid">
@@ -2575,6 +2601,8 @@ def maintenance(request: Request, tab: str = 'diagnostics'):
                 <label class="field" for="tg-lang"><span>{h(t('tg_lang'))}</span><select id="tg-lang" name="lang">{options(bot['lang'],('ru','en'))}</select></label>
                 <label class="field" for="tg-digest"><span>{h(t('tg_digest'))}</span><select id="tg-digest" name="digest">{options(bot['digest'],('off','daily','weekly'),'tg_d_')}</select></label>
                 </div><p>{h(t('tg_notify'))}</p>{checks}
+                <div class="fields-grid"><label class="field"><span>{h(t('panel_password'))}</span>
+                <input type="password" name="password" autocomplete="current-password"><small>{h(t('tg_password_when'))}</small></label></div>
                 <button class="btn btn-primary" type="submit">{icon('check',18)}{h(t('tg_save'))}</button></form></section>'''
         elif tab=='audit':
             entries=ctl('audit-list',{}).get('entries',[])
@@ -2620,17 +2648,30 @@ async def backup_schedule_update(request: Request):
 @app.post('/maintenance/backup/encryption/{action}')
 async def backup_encryption_change(request: Request, action: str):
     form=await request.form();require_csrf(request,form.get('csrf',''))
-    if action not in ('enable','disable'): raise HTTPException(404)
+    if action not in ('enable','disable','change'): raise HTTPException(404)
+    password = str(form.get('password', ''))
+    reply = {}
     try:
-        if action == 'enable':
+        if action in ('enable', 'change'):
             passphrase = str(form.get('passphrase', ''))
             confirm = str(form.get('confirm', ''))
             if passphrase != confirm:
                 raise RuntimeError('Passwords do not match')
-            ctl('backup-encryption-set', {'enabled': True, 'passphrase': passphrase})
+            if action == 'enable':
+                ctl('backup-encryption-set', {'enabled': True, 'passphrase': passphrase, 'password': password})
+            else:
+                reply = ctl('backup-encryption-change', {'passphrase': passphrase, 'password': password})
         else:
-            ctl('backup-encryption-set', {'enabled': False})
+            ctl('backup-encryption-set', {'enabled': False, 'password': password})
     except RuntimeError as exc: return error_page(request,tr(lang_of(request),'maintenance_error'),exc)
+    if reply.get('skipped'):
+        lang = lang_of(request)
+        body = (f'<section class="card message-card"><h2>{icon("lock",20)} {h(tr(lang,"enc_change"))}</h2>'
+                f'<p>{h(tr(lang,"enc_reencrypted").format(count=reply.get("reencrypted",0)))}</p>'
+                f'<p class="info-line">{h(tr(lang,"enc_skipped"))}</p><ul>'
+                + ''.join(f'<li class="mono">{h(name)}</li>' for name in reply['skipped'])
+                + f'</ul><a class="btn btn-primary" href="/maintenance?tab=backups">{h(tr(lang,"back"))}</a></section>')
+        return page(tr(lang, 'enc_change'), body, request)
     return RedirectResponse('/maintenance?tab=backups',status_code=303)
 
 
@@ -2694,6 +2735,7 @@ async def totp_change(request: Request, action: str):
     if action not in ('enable','disable','regenerate'): raise HTTPException(404)
     payload={'password':str(form.get('password','')),'code':str(form.get('code',''))}
     if action in ('enable','regenerate'): payload['secret']=str(form.get('secret',''))
+    if action=='regenerate': payload['current_code']=str(form.get('current_code',''))
     try: ctl('totp-enable' if action in ('enable','regenerate') else 'totp-disable',payload)
     except RuntimeError as exc: return error_page(request,tr(lang_of(request),'maintenance_error'),exc)
     request.session.clear()            # every session ended: sign in again, now with the new rule
@@ -2707,6 +2749,7 @@ async def telegram_update(request: Request):
     payload={'admins':str(form.get('admins','')),'viewers':str(form.get('viewers','')),'lang':str(form.get('lang','ru')),
              'digest':str(form.get('digest','off')),
              'notify':{g:form.get('notify_'+g)=='1' for g in ('server','clients','security','backups')}}
+    if form.get('password'): payload['password']=str(form.get('password'))
     try: ctl('telegram-set',payload)
     except RuntimeError as exc: return error_page(request,tr(lang_of(request),'maintenance_error'),exc)
     return RedirectResponse('/maintenance?tab=telegram',status_code=303)
@@ -2726,7 +2769,8 @@ async def telegram_connect(request: Request):
              'setup_id':str(form.get('setup_id','')).strip()}
     if not confirming:
         payload.update(token=str(form.get('token','')).strip(),lang=str(form.get('lang',lang)),
-                       notify={group:form.get('notify_'+group)=='1' for group in NOTIFY_GROUPS})
+                       notify={group:form.get('notify_'+group)=='1' for group in NOTIFY_GROUPS},
+                       password=str(form.get('password','')))
     try: result=ctl('telegram-connect',payload)
     except RuntimeError as exc: return error_page(request,tr(lang,'maintenance_error'),exc)
     if result.get('pending'):
@@ -2750,7 +2794,7 @@ async def telegram_connect(request: Request):
 async def telegram_disconnect(request: Request):
     form=await request.form()
     require_csrf(request,form.get('csrf',''))
-    try: ctl('telegram-disconnect',{})
+    try: ctl('telegram-disconnect',{'password':str(form.get('password',''))})
     except RuntimeError as exc: return error_page(request,tr(lang_of(request),'maintenance_error'),exc)
     return RedirectResponse('/maintenance?tab=telegram',status_code=303)
 

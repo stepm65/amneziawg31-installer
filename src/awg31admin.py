@@ -401,12 +401,37 @@ def totp_counter_for(secret, code, now=None):
     return None
 
 
+SERVICE_USERS={'awgpanel','awgbot'}
+
+
+def from_service():
+    """True when the request comes from the panel or the bot (through the control helper or sudo),
+    False for an administrator at the root console. Neither caller can set these variables itself:
+    the helper sets AWG31_CALLER from the kernel's peer credentials, sudo sets SUDO_USER."""
+    return os.environ.get('AWG31_CALLER','') in SERVICE_USERS or os.environ.get('SUDO_USER','') in SERVICE_USERS
+
+
+def require_panel_password(data):
+    """Changes with a lasting effect ask for the panel password again when they come from the panel:
+    a stolen session alone must not be enough to hand the server to somebody else's Telegram account
+    or to switch off backup encryption. The root console is not asked."""
+    if not from_service(): return
+    try: auth=json.loads(auth_file().read_text())
+    except (OSError,ValueError): raise ValueError('Cannot read the panel credentials') from None
+    if not _password_ok(auth,data.get('password','')): raise ValueError('Incorrect panel password')
+
+
 def totp_enable(data):
-    """Turn on the second factor: needs the password and a code from the new secret."""
+    """Turn on the second factor, or replace its key: the password, a code from the new key and,
+    when a key is already set, a code from the current one."""
     secret=str(data.get('secret','')).strip().upper()
     if not re.fullmatch(r'[A-Z2-7]{32}',secret): raise ValueError('Invalid TOTP secret')
     file=auth_file(); auth=json.loads(file.read_text())
     if not _password_ok(auth,data.get('password','')): raise ValueError('Incorrect password')
+    if auth.get('totp_secret'):
+        if secret==auth['totp_secret']: raise ValueError('The new key must differ from the current one')
+        if totp_counter_for(auth['totp_secret'],data.get('current_code','')) is None:
+            raise ValueError('Incorrect code of the current key')
     if totp_counter_for(secret,data.get('code','')) is None:
         raise ValueError('The code does not match: check the clock of the server and of the phone')
     auth['totp_secret']=secret
@@ -606,6 +631,7 @@ def telegram_connect(data):
     confirming=data.get('confirm') is True
     pending=None
     if not confirming:
+        require_panel_password(data)
         try: _telegram_pending_file().unlink(missing_ok=True)
         except OSError as exc: raise ValueError('Could not reset the pending Telegram setup') from exc
     if confirming:
@@ -689,6 +715,7 @@ def telegram_connect(data):
 
 
 def telegram_disconnect(data=None):
+    require_panel_password(data or {})
     _systemctl('disable','--now','awg31-bot.service')
     config=bot_config_file()
     if config.is_symlink(): raise ValueError('Invalid Telegram configuration file')
@@ -710,6 +737,10 @@ def telegram_set(data):
     admins=_id_list(data.get('admins',config.get('admins',[])),10)
     if not admins: raise ValueError('At least one administrator is required')
     viewers=[x for x in _id_list(data.get('viewers',config.get('viewers',[])),20) if x not in admins]
+    # Who may control the bot is a lasting way into the server: changing it needs the panel password.
+    if sorted(admins)!=sorted(int(x) for x in config.get('admins',[])) or \
+       sorted(viewers)!=sorted(int(x) for x in config.get('viewers',[])):
+        require_panel_password(data)
     lang=str(data.get('lang',config.get('lang','ru')))
     if lang not in ('ru','en'): raise ValueError('Language: ru or en')
     digest=str(data.get('digest',config.get('digest','off')))
@@ -745,6 +776,7 @@ def backup_encryption():
 def backup_encryption_set(data):
     """Enable/disable encryption. The passphrase stays root-readable only."""
     file=backup_key_file()
+    require_panel_password(data)
     # Keep the CLI's off flag; accept the web form's boolean as its equivalent.
     off=data.get('off') is True or data.get('enabled') is False
     if off:
@@ -790,11 +822,13 @@ def _new_passphrase(data):
 
 
 def backup_encryption_change(data):
-    """Root console only: a new passphrase, and every archive the current one opens is re-encrypted with it.
+    """A new passphrase, and every archive the current one opens is re-encrypted with it.
+    From the panel it needs the panel password.
 
     Nothing is replaced until every archive has been re-encrypted, so a failure
     half-way leaves the old passphrase and the old archives fully intact.
     """
+    require_panel_password(data)
     file=backup_key_file()
     if not file.is_file(): raise ValueError('Backup encryption is off: use "backup-encryption on"')
     passphrase,generated=_new_passphrase(data)

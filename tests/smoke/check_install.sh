@@ -239,6 +239,31 @@ if opens 'smoke test passphrase 2026'; then fail 'the archive still opens with t
 awg31 restore-check "$sealed"
 if ls /var/backups/awg31-panel/full/ /etc/awg31-panel/ | grep -q '\.new$'; then fail 'temporary files left after the passphrase change'; fi
 
+step 'Lasting changes from the panel ask for the panel password'
+cat >/tmp/awg31-panel-call.py <<'PY'
+import json, sys
+sys.path.insert(0, '/opt/awg31-panel')
+import awg31client
+code, out, err = awg31client.call(sys.argv[1], sys.argv[2], 120)
+print(code, (out or err).strip()[:200])
+PY
+chmod 644 /tmp/awg31-panel-call.py
+panel_call(){ runuser -u awgpanel -- /opt/awg31-panel/.venv/bin/python3 /tmp/awg31-panel-call.py "$1" "$2"; }
+panel_password="$(cat /root/awg31-initial-password.txt)"
+for request in 'backup-encryption-set {"enabled": false}' 'backup-encryption-set {"off": true, "password": "wrong-password-0"}' \
+               'backup-encryption-change {"passphrase": "smoke third passphrase 2028"}' 'telegram-disconnect {}' \
+               'telegram-connect {"token": "123456789:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"}'; do
+    panel_call ${request%% *} "${request#* }" | grep -q 'Incorrect panel password' || fail "the panel ran without its password: $request"
+done
+[[ -f /etc/awg31-panel/backup-passphrase ]] || fail 'encryption was switched off without the panel password'
+# The same through sudo (the fallback path): SUDO_USER names the panel.
+# The command fails on purpose: keep its output first, pipefail would count the failure.
+sudo_reply="$(echo '{"off": true}' | runuser -u awgpanel -- sudo -n "$MGR" backup-encryption-set 2>&1 || :)"
+grep -q 'Incorrect panel password' <<<"$sudo_reply" || fail "the sudo path ran without the panel password: $sudo_reply"
+reply="$(PW="$panel_password" python3 -c 'import json,os; print(json.dumps({"passphrase": "smoke NEW passphrase 2027", "password": os.environ["PW"]}))')"
+panel_call backup-encryption-change "$reply" | grep -q '^0 ' || fail 'the panel cannot change the passphrase with its password'
+opens 'smoke NEW passphrase 2027' || fail 'the archive does not open after the change from the panel'
+
 step 'Backups are uploaded over SFTP'
 if systemctl is-active --quiet ssh || systemctl is-active --quiet sshd; then
     id awgbackup >/dev/null 2>&1 || useradd -m -s /bin/bash awgbackup

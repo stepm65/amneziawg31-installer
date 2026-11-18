@@ -646,9 +646,10 @@ def test_admin_sets_a_speed_limit_from_the_bot(env):
 def test_sudo_lists_keep_console_only_operations_out():
     script = f'. {ROOT}/scripts/sudoers.sh; printf "%s\\n" "${{AWG31_SUDO_COMMANDS[@]}}" "${{AWG31_BOT_SUDO_COMMANDS[@]}}"'
     allowed = set(subprocess.run(['bash', '-c', script], capture_output=True, text=True, check=True).stdout.split())
-    assert not allowed & {'totp-reset', 'backup-encryption-change', 'password-reset', 'init', 'sample-all', 'backup-run'}
+    assert not allowed & {'totp-reset', 'password-reset', 'init', 'sample-all', 'backup-run', 'backup-remote-set'}
+    # These reach the panel, but ask for the panel password again (tests/test_password_guards.py).
     assert {'totp-enable', 'totp-disable', 'telegram-status', 'telegram-connect', 'telegram-disconnect', 'telegram-set',
-            'add-batch', 'backup-encryption', 'backup-encryption-set'} <= allowed
+            'add-batch', 'backup-encryption', 'backup-encryption-set', 'backup-encryption-change'} <= allowed
 
 
 @needs_gpg

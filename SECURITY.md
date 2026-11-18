@@ -22,10 +22,14 @@
 - Client configurations sent by the bot contain private keys and are stored by Telegram. An administrator's Telegram account is therefore as sensitive as the panel password for client management.
 - Backup archives are never sent to Telegram.
 
+## Panel password for lasting changes (0.12.5)
+
+A valid panel session is not enough for changes that outlive it. The panel password is asked again for: connecting or disconnecting the Telegram bot, changing the bot's administrators or viewers, enabling, disabling or changing backup encryption. Replacing the TOTP key needs a code of the current key as well. The controller recognises panel requests by the caller the kernel reports to the control helper (`SO_PEERCRED`) or by `SUDO_USER` on the sudo path; a request cannot claim to come from the console. The root console is not asked.
+
 ## Added in 0.10
 
-- **Two-factor sign-in.** TOTP (RFC 6238). Turning it on or off needs the password and a valid code; regenerating a key also needs the password and a code from the new key. A code is accepted once. Console recovery: `sudo awg31 totp-off` (root only, not reachable from the panel or the bot).
-- **Backup encryption.** OpenPGP symmetric encryption (AES-256) with one passphrase stored in `/etc/awg31-panel/backup-passphrase` (root only; the panel user cannot read it). An authenticated panel administrator can enable or remove encryption with a chosen 16–200-character passphrase, but cannot read it or replace an existing passphrase. The bot may fetch an archive only if it is encrypted.
+- **Two-factor sign-in.** TOTP (RFC 6238). Turning it on or off needs the password and a valid code; replacing the key needs the password, a code of the current key and a code of the new one. A code is accepted once. Console recovery: `sudo awg31 totp-off` (root only, not reachable from the panel or the bot).
+- **Backup encryption.** OpenPGP symmetric encryption (AES-256) with one passphrase stored in `/etc/awg31-panel/backup-passphrase` (root only; the panel user cannot read it). From the panel encryption can be enabled, removed or given a new passphrase (16–200 characters, existing archives are re-encrypted); the panel can never read the passphrase. The bot may fetch an archive only if it is encrypted.
 - **Viewers** of the Telegram bot have no action buttons, and every action is refused for them in the handler as well.
 - **Bot settings in the panel** edit administrators, viewers and notifications; an already configured bot's token is never returned to the panel. Connecting a new token requires selecting an administrator who sent `/start` in a private chat; their `/start` is not authorization by itself. The discovery helper is root-owned and uses only the standard library; provisioning, unit and sudoers definitions follow `scripts/sudoers.sh`. Between discovery and explicit confirmation the token is kept only in `/etc/awg31-bot/telegram-pending.json` (mode 0600, `root:root`) for at most 15 minutes. The browser receives a random one-time setup ID, never this pending token. Cancellation, disconnection, successful setup, service failure or a new attempt removes the pending file.
 - **Host protection.** A per-server switch drops what clients send to the server itself, except replies, ping and DNS.
