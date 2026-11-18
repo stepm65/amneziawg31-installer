@@ -135,3 +135,16 @@ def test_locale_and_auth_boundaries(ui):
     client.get('/logout')
     assert client.get('/maintenance?tab=diagnostics',follow_redirects=False).status_code==303
     assert client.get('/maintenance?tab=backups',follow_redirects=False).status_code==303
+
+
+def test_no_backdrop_blur_and_resource_cards_fill_to_their_share():
+    """backdrop-filter is recomputed on every frame: under the client dialogs it dropped scrolling to ~18 fps."""
+    import re
+    css = (ROOT / 'src' / 'panel.css').read_text() + (ROOT / 'src' / 'md3.css').read_text()
+    assert not re.search(r'backdrop-filter\s*:\s*(?!none)', css)
+    md3 = (ROOT / 'src' / 'md3.css').read_text()
+    assert '.host-kpi-chart {position:absolute;inset:0;width:100%;height:100%' in md3, 'the chart covers the whole card'
+    web = (ROOT / 'src' / 'web.py').read_text()
+    assert 'viewBox="0 0 280 100" preserveAspectRatio="none" class="host-kpi-chart"' in web, '0-100 % over the full height'
+    js = (ROOT / 'src' / 'panel.js').read_text()
+    assert "base=key==='socket'?111:100,height=key==='socket'?104:100" in js and 'values=[values[0],values[0]]' in js

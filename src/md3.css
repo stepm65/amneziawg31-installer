@@ -833,15 +833,19 @@ body {background:var(--ui-bg);font-size:14px;line-height:1.48;}
 .host-kpi-indicator {width:7px;height:7px;border-radius:50%;background:#5c83a8;box-shadow:0 0 0 4px rgba(105,156,197,.09)}
 .host-kpi-value {font-weight:760;font-size:clamp(25px,2.5vw,32px);letter-spacing:-.045em;line-height:1.18;margin-top:10px;color:#f2f5f8;font-variant-numeric:tabular-nums}
 .host-kpi-detail {color:#9eabb7;font-size:11px;white-space:nowrap;text-overflow:ellipsis;overflow:hidden;margin-top:4px;min-height:17px}
-.host-kpi-chart {height:59px;width:calc(100% + 34px);margin:auto -17px 0;display:block;overflow:visible}
+.host-kpi>*:not(.host-kpi-chart) {position:relative;z-index:1}
+/* The history chart fills the card from the bottom: 50 % load = half the card. */
+.host-kpi-chart {position:absolute;inset:0;width:100%;height:100%;margin:0;display:block;z-index:0;pointer-events:none}
+.host-kpi-chart path {vector-effect:non-scaling-stroke}
+.host-kpi-chart path.host-kpi-half {stroke:rgba(255,255,255,.05);stroke-width:1;stroke-dasharray:3 5;fill:none}
 .host-kpi-chart path[data-kpi-line] {stroke:#84aee8;stroke-width:2.3;stroke-linecap:round;fill:none}
-.host-kpi-chart path[data-kpi-area] {fill:rgba(105,154,222,.105);stroke:none}
+.host-kpi-chart path[data-kpi-area] {fill:rgba(105,154,222,.17);stroke:none}
 .host-kpi:nth-child(2) path[data-kpi-line] {stroke:#f8b444}
-.host-kpi:nth-child(2) path[data-kpi-area] {fill:rgba(248,180,68,.10)}
+.host-kpi:nth-child(2) path[data-kpi-area] {fill:rgba(248,180,68,.15)}
 .host-kpi:nth-child(3) path[data-kpi-line] {stroke:#83caaa}
-.host-kpi:nth-child(3) path[data-kpi-area] {fill:rgba(92,188,142,.10)}
+.host-kpi:nth-child(3) path[data-kpi-area] {fill:rgba(92,188,142,.15)}
 .host-kpi:nth-child(4) path[data-kpi-line] {stroke:#a4aed0}
-.host-kpi:nth-child(4) path[data-kpi-area] {fill:rgba(128,142,175,.10)}
+.host-kpi:nth-child(4) path[data-kpi-area] {fill:rgba(128,142,175,.17)}
 .host-chart-grid {display:grid;grid-template-columns:minmax(0,1.85fr) minmax(265px,.9fr);gap:12px}
 .host-traffic-panel,.host-connections-panel {min-width:0;border:1px solid var(--dash-border);border-radius:17px;background:linear-gradient(155deg,#1a1d22,#16181c);padding:20px 21px 15px}
 .host-panel-head {display:flex;align-items:flex-start;justify-content:space-between;gap:16px;margin-bottom:5px}
@@ -1006,7 +1010,7 @@ body {background:var(--ui-bg);font-size:14px;line-height:1.48;}
 .settings-success strong {font-size:15px}
 .settings-success p {color:#b4d1c4;font-size:12px;margin:5px 0 0}
 .awg-confirm-dialog {border:1px solid #474d56;border-radius:19px;background:#20242a;color:#edf0f5;padding:0;box-shadow:0 25px 75px rgba(0,0,0,.65);width:min(460px,calc(100vw - 30px));max-width:none}
-.awg-confirm-dialog::backdrop {background:rgba(0,0,0,.75);backdrop-filter:blur(3px)}
+.awg-confirm-dialog::backdrop {background:rgba(5,7,10,.8)}
 .awg-confirm-content {padding:26px}
 .awg-confirm-content h2 {font-size:19px;margin:0 0 13px}
 .awg-confirm-content p {font-size:14px;line-height:1.65;color:#bac4d1;margin:0 0 25px}

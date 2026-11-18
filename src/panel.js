@@ -501,9 +501,15 @@
   function setPath(root, selector, d) {const el=root.querySelector(selector);if(el)el.setAttribute('d',d);}
 
   function drawSmall(key, values) {
-    if(values.length < 2) return;
+    if(!values.length) return;
+    // A resource card is filled from the bottom to its current share: the chart spans the whole
+    // card on a 0-100 % scale. One sample is enough to show the level as a flat fill.
+    if(values.length < 2) {
+      if(key==='socket') return;
+      values=[values[0],values[0]];
+    }
     const max=key==='socket' ? Math.max(1,...values) : 100;
-    const width=key==='socket'?280:280,base=key==='socket'?111:46,height=key==='socket'?104:40;
+    const width=280,base=key==='socket'?111:100,height=key==='socket'?104:100;
     const scaled=values.map((v,i)=>({x:i*width/(values.length-1),y:base-height*Math.min(1,Math.max(0,v/max))}));
     if(key==='socket') {
       setPath(main,'[data-socket-line]',smooth(scaled));

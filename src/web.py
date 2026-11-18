@@ -1930,8 +1930,8 @@ def infrastructure_overview(request: Request):
       <div class="host-kpi-heading"><span>{h(title)}</span><span class="host-kpi-indicator"></span></div>
       <div class="host-kpi-value" id="host-{key}">—</div>
       <div class="host-kpi-detail" id="host-{key}-detail">{h(detail)}</div>
-      <svg viewBox="0 0 280 48" preserveAspectRatio="none" class="host-kpi-chart" aria-label="{h(title)}">
-        <path data-kpi-area="{key}"/><path data-kpi-line="{key}"/></svg></article>'''
+      <svg viewBox="0 0 280 100" preserveAspectRatio="none" class="host-kpi-chart" aria-hidden="true">
+        <path d="M0 50H280" class="host-kpi-half"/><path data-kpi-area="{key}"/><path data-kpi-line="{key}"/></svg></article>'''
     cards=''.join(dash_metric(key,title,title,detail) for key,title,detail in [
        ('cpu','Процессор' if ru else 'CPU','Логические ядра' if ru else 'Logical cores'),
        ('ram','Память' if ru else 'RAM','Оперативная память' if ru else 'System memory'),
