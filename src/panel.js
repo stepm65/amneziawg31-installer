@@ -379,7 +379,7 @@
     });
   }
   // Showing and hiding the .conf text is a native <details>; no script is involved.
-  const configDetails = document.getElementById('share-config-details');
+  const configDetails = document.getElementById('cfgx-config-details');
   for (const btn of document.querySelectorAll('[data-copy-target]')) {
     btn.addEventListener('click', async () => {
       const input = document.getElementById(btn.dataset.copyTarget);

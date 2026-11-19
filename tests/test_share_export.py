@@ -115,8 +115,8 @@ def test_authenticated_tab_qrs_download_and_no_cache(tmp_path,monkeypatch):
     page = client.get('/client/Laptop')
     assert page.status_code == 200
     assert 'AmneziaVPN Link' in page.text
-    assert 'share-tab-conf' in page.text
-    assert 'share-tab-vpn' in page.text
+    assert 'cfgx-tab-conf' in page.text
+    assert 'cfgx-tab-vpn' in page.text
     assert 'role="tabpanel"' in page.text
     assert 'clientPrivateBase64key' in page.text
     assert 'Cache-Control' in page.headers

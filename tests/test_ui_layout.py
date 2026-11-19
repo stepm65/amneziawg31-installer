@@ -148,3 +148,20 @@ def test_no_backdrop_blur_and_resource_cards_fill_to_their_share():
     assert 'viewBox="0 0 280 100" preserveAspectRatio="none" class="host-kpi-chart"' in web, '0-100 % over the full height'
     js = (ROOT / 'src' / 'panel.js').read_text()
     assert "base=key==='socket'?111:100,height=key==='socket'?104:100" in js and 'values=[values[0],values[0]]' in js
+
+
+def test_no_class_or_id_that_ad_blockers_hide_everywhere():
+    # Ad and annoyance blockers (uBlock Origin, AdGuard: "Fanboy's Social" and similar lists)
+    # hide elements by bare class names on every site, e.g. `##.share-text`. The .conf text
+    # of a client was a `.share-text` and vanished for such users, whatever the checkbox said.
+    # Names starting with these words are kept out of the panel altogether.
+    SRC = ROOT / 'src'
+    sources = ''.join((SRC / name).read_text() for name in ('web.py', 'panel.js', 'md3.css', 'panel.css'))
+    css = (SRC / 'md3.css').read_text() + (SRC / 'panel.css').read_text()
+    names = set(re.findall(r'id="([A-Za-z][\w-]*)"', sources))
+    names.update(re.findall(r'\.([A-Za-z][\w-]*)', re.sub(r'url\([^)]*\)', '', css)))
+    for value in re.findall(r'class="([^"{}]+)"', sources):
+        names.update(value.split())
+    risky = re.compile(r'(share|sharing|social|sponsor|advert|ads?[-_]|banner|promo|popup|cookie|newsletter|subscribe)', re.I)
+    assert not sorted(name for name in names if risky.match(name))
+    assert 'cfgx-text' in names and 'cfgx-config-details' in names

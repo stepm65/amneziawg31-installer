@@ -2117,13 +2117,13 @@ def detail(request: Request, name: str, interface: str = ''):
     qr_vpn_available = bool(share_uri and len(share_uri.encode('utf-8')) <= 2400)
     # The tab is deliberately disabled rather than inventing a URI for old
     # controllers that do not return a client's public key.
-    link_contents = (f'''<div class="share-grid"><figure class="qr-frame">
+    link_contents = (f'''<div class="cfgx-grid"><figure class="qr-frame">
           {f'<img alt="{h(t("share_link_tab"))} QR" loading="lazy" src="{qr_vpn}">' if qr_vpn_available else f'<p class="qr-too-large">{h(t("qr_overflow"))}</p>'}
           {f'<figcaption><a class="btn btn-secondary btn-small" href="{qr_vpn}&amp;download=1">{h(t("save_qr"))}</a></figcaption>' if qr_vpn_available else ''}
-          </figure><div class="share-text-col"><p class="info-line">{h(t('vpn_link_note'))}</p>
-          <label class="sr-only" for="share-vpn-text">{h(t('share_link_tab'))}</label>
-          <textarea id="share-vpn-text" class="share-text" readonly spellcheck="false">{h(share_uri)}</textarea>
-          <div class="share-actions"><button type="button" class="btn btn-secondary" data-copy-target="share-vpn-text">{h(t('copy'))}</button>
+          </figure><div class="cfgx-text-col"><p class="info-line">{h(t('vpn_link_note'))}</p>
+          <label class="sr-only" for="cfgx-vpn-text">{h(t('share_link_tab'))}</label>
+          <textarea id="cfgx-vpn-text" class="cfgx-text" readonly spellcheck="false">{h(share_uri)}</textarea>
+          <div class="cfgx-actions"><button type="button" class="btn btn-secondary" data-copy-target="cfgx-vpn-text">{h(t('copy'))}</button>
           <a class="btn btn-primary" href="/client/{name_url}/vpn-link?download=1">{h(t('save_vpn'))}</a></div></div></div>'''
           if share_uri else f'<p role="status" class="info-line">{h(t("link_unavailable"))}</p>')
     link_disabled = '' if share_uri else ' disabled aria-disabled="true"'
@@ -2131,28 +2131,28 @@ def detail(request: Request, name: str, interface: str = ''):
                        else f'<p class="qr-too-large">{h(t("qr_overflow"))}</p>')
     qr_conf_download = (f'<figcaption><a class="btn btn-secondary btn-small" href="{qr_conf}&amp;download=1">{h(t("save_qr"))}</a></figcaption>'
                        if qr_conf_available else '')
-    contents = f'''<section class="card detail-card share-dialog" aria-label="{h(t('share_config'))}">
-        <div class="section-title share-heading"><div><span class="section-overline">PEER / EXPORT</span>
+    contents = f'''<section class="card detail-card cfgx-dialog" aria-label="{h(t('share_config'))}">
+        <div class="section-title cfgx-heading"><div><span class="section-overline">PEER / EXPORT</span>
         <h2>{icon('file',21)}{h(t('share_config'))}: <span class="mono">{safe_name}</span></h2></div>
         <a class="btn btn-secondary btn-small" href="/#clients">{icon('arrow',16)}{h(t('close_window'))}</a></div>
-        <div class="share-security">{icon('lock',16)}{h(t('sensitive_data'))}</div>
-        <div class="share-tabs" role="tablist" aria-label="{h(t('share_config'))}">
-          <button class="share-tab is-active" type="button" role="tab" id="share-tab-conf" aria-controls="share-panel-conf" aria-selected="true" data-tab-target="share-panel-conf">{h(t('share_conf_tab'))}</button>
-          <button class="share-tab" type="button" role="tab" id="share-tab-vpn" aria-controls="share-panel-vpn" aria-selected="false" data-tab-target="share-panel-vpn"{link_disabled}>{h(t('share_link_tab'))}</button>
+        <div class="cfgx-security">{icon('lock',16)}{h(t('sensitive_data'))}</div>
+        <div class="cfgx-tabs" role="tablist" aria-label="{h(t('share_config'))}">
+          <button class="cfgx-tab is-active" type="button" role="tab" id="cfgx-tab-conf" aria-controls="cfgx-panel-conf" aria-selected="true" data-tab-target="cfgx-panel-conf">{h(t('share_conf_tab'))}</button>
+          <button class="cfgx-tab" type="button" role="tab" id="cfgx-tab-vpn" aria-controls="cfgx-panel-vpn" aria-selected="false" data-tab-target="cfgx-panel-vpn"{link_disabled}>{h(t('share_link_tab'))}</button>
         </div>
-        <section class="share-tab-panel" role="tabpanel" id="share-panel-conf" aria-labelledby="share-tab-conf">
-          <div class="share-grid"><figure class="qr-frame">
+        <section class="cfgx-tab-panel" role="tabpanel" id="cfgx-panel-conf" aria-labelledby="cfgx-tab-conf">
+          <div class="cfgx-grid"><figure class="qr-frame">
             {qr_conf_display}{qr_conf_download}</figure>
-            <div class="share-text-col"><p class="info-line">{h(t('conf_qr_note'))}</p></div></div>
-          <div class="share-config-content"><h3>{h(t('conf_contents'))}</h3>
-            <details class="share-config-details" id="share-config-details" open>
+            <div class="cfgx-text-col"><p class="info-line">{h(t('conf_qr_note'))}</p></div></div>
+          <div class="cfgx-config-content"><h3>{h(t('conf_contents'))}</h3>
+            <details class="cfgx-config-details" id="cfgx-config-details" open>
               <summary>{h(t('show_conf_contents'))}</summary>
-              <textarea id="share-conf-text" class="share-text" readonly spellcheck="false" aria-label="{h(t('conf_contents'))}">{h(config)}</textarea>
+              <textarea id="cfgx-conf-text" class="cfgx-text" readonly spellcheck="false" aria-label="{h(t('conf_contents'))}">{h(config)}</textarea>
             </details>
-            <div class="share-actions"><button class="btn btn-secondary" type="button" data-copy-target="share-conf-text">{h(t('copy'))}</button>
+            <div class="cfgx-actions"><button class="btn btn-secondary" type="button" data-copy-target="cfgx-conf-text">{h(t('copy'))}</button>
             <a class="btn btn-primary" href="/client/{name_url}/download">{icon('file',16)}{h(t('download'))}</a></div>
           </div></section>
-        <section class="share-tab-panel" role="tabpanel" id="share-panel-vpn" aria-labelledby="share-tab-vpn" hidden>{link_contents}</section>
+        <section class="cfgx-tab-panel" role="tabpanel" id="cfgx-panel-vpn" aria-labelledby="cfgx-tab-vpn" hidden>{link_contents}</section>
         <p class="sr-only" aria-live="polite" id="copy-status" data-copy-ok="{h(t('copy_ok'))}" data-copy-failed="{h(t('copy_failed'))}"></p>
         </section>'''
     network_form = f'''<section class="card detail-card client-options">
