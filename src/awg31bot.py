@@ -37,10 +37,64 @@ PENDING_SECONDS = 300
 READ_KINDS = {'m', 'h', 's', 'cl', 'c', 'st', 'bk'}     # buttons a viewer may press: screens only
 QUOTA_WARNING = 0.8
 RENEW_INTERVAL = 86400
-DIGEST_HOUR = 9          # server local time
 OWNERS_TTL = 60          # how long the list of client owners is trusted
 OWNER_INTERVAL = 3       # seconds between answers to one client owner
 EXPIRY_WARNING = timedelta(hours=72)
+# Event switches as the panel shows them: each event belongs to one card (group).
+EVENTS = {
+    'server_state': 'server', 'module': 'server', 'kernel': 'server', 'panel': 'server',
+    'client_auto': 'clients', 'client_expiring': 'clients', 'client_quota': 'clients',
+    'login': 'security', 'login_failed': 'security', 'password': 'security', 'owner_export': 'security',
+    'backup_created': 'backups', 'backup_failed': 'backups', 'upload_failed': 'backups',
+    'cpu': 'system', 'memory': 'system', 'disk': 'system',
+}
+THRESHOLDS = {'cpu': 90, 'memory': 90, 'disk': 90}     # percent; the panel lets each be changed
+LOAD_MINUTES = 3         # CPU must stay above its threshold this many checks in a row
+CRON_ALIASES = {'@hourly': '0 * * * *', '@daily': '0 9 * * *', '@weekly': '0 9 * * 1', '@monthly': '0 9 1 * *',
+                'daily': '0 9 * * *', 'weekly': '0 9 * * 1'}
+CRON_LIMITS = ((0, 59), (0, 23), (1, 31), (1, 12), (0, 7))
+
+
+def cron_fields(expression):
+    """Parse a five-field crontab line (numbers, *, a-b, lists, /step) into sets of values."""
+    text = CRON_ALIASES.get(str(expression).strip(), str(expression).strip())
+    parts = text.split()
+    if len(parts) != 5:
+        raise ValueError('Schedule: five crontab fields, e.g. 0 9 * * *')
+    fields = []
+    for part, (low, high) in zip(parts, CRON_LIMITS):
+        values = set()
+        for item in part.split(','):
+            match = re.fullmatch(r'(\*|[0-9]{1,2}(?:-[0-9]{1,2})?)(?:/([0-9]{1,2}))?', item)
+            if not match:
+                raise ValueError(f'Schedule: cannot read "{item}"')
+            base, step = match.group(1), int(match.group(2) or 1)
+            if base == '*':
+                first, last = low, high
+            elif '-' in base:
+                first, last = (int(x) for x in base.split('-'))
+            else:
+                first = int(base)
+                last = high if match.group(2) else first
+            if step < 1 or not low <= first <= last <= high:
+                raise ValueError(f'Schedule: "{item}" is out of range {low}-{high}')
+            values.update(range(first, last + 1, step))
+        fields.append(values)
+    if 7 in fields[4]:
+        fields[4].add(0)                                  # both 0 and 7 mean Sunday
+    return fields
+
+
+def cron_due(fields, moment):
+    """Does a local time.struct_time fall on the schedule? Day of month and weekday follow cron's OR rule."""
+    minute, hour, days, months, weekdays = fields
+    if moment.tm_min not in minute or moment.tm_hour not in hour or moment.tm_mon not in months:
+        return False
+    any_day, any_weekday = days == set(range(1, 32)), weekdays >= set(range(0, 7))
+    on_day, on_weekday = moment.tm_mday in days, (moment.tm_wday + 1) % 7 in weekdays
+    if any_day or any_weekday:
+        return on_day and on_weekday
+    return on_day or on_weekday
 
 TEXT = {
     'ru': {
@@ -115,6 +169,13 @@ TEXT = {
         'n_enabled': '▶️ Клиент <b>{target}</b> включён автоматически: новый месяц, счётчик трафика сброшен.',
         'n_backup_file': 'Зашифрованная резервная копия. Для расшифровки нужен пароль шифрования копий.',
         'dg_title': '📊 <b>Сводка {period}</b>', 'dg_day': 'за сутки', 'dg_week': 'за неделю',
+        'dg_hour': 'за час', 'dg_hours': 'за {n} ч', 'dg_days': 'за {n} дн.',
+        'n_cpu': '🔥 Загрузка процессора {value}% уже {minutes} мин (порог {limit}%).',
+        'n_cpu_ok': '🟢 Загрузка процессора снова ниже порога: {value}%.',
+        'n_memory': '🧠 Занято памяти {value}% (порог {limit}%), свободно {free}.',
+        'n_memory_ok': '🟢 Память снова ниже порога: занято {value}%.',
+        'n_disk': '💽 Диск заполнен на {value}% (порог {limit}%), свободно {free}.',
+        'n_disk_ok': '🟢 Диск снова ниже порога: заполнен на {value}%.',
         'dg_server': '{icon} <b>{iface}</b>: клиентов {clients}, на связи {online}, отключено {off}',
         'dg_traffic': 'Трафик клиентов: {total}', 'dg_top': 'Самые активные:', 'dg_top_row': '• {name} ({iface}) — {used}',
         'dg_expiring': 'Срок истекает в течение 7 дней: {names}', 'dg_idle': 'Не подключались более 30 дней: {names}',
@@ -125,6 +186,7 @@ TEXT = {
         'n_owner_export': '📤 Владелец получил конфигурацию клиента <b>{target}</b> через бота.',
         'n_user_expiring': '⏳ Срок вашего VPN-доступа <b>{name}</b> истекает {when}. Обратитесь к администратору.',
         'test': '✅ Бот AmneziaWG 3.1 Console подключён. Отправьте /menu.',
+        'your_id': 'Ваш Telegram ID: <code>{id}</code>',
         'n_backup': '💾 Создана резервная копия <code>{target}</code>.', 'n_backup_failed': '⚠️ Резервная копия по расписанию не создана: {target}',
     },
     'en': {
@@ -199,6 +261,13 @@ TEXT = {
         'n_enabled': '▶️ Client <b>{target}</b> was enabled automatically: a new month, the traffic counter was reset.',
         'n_backup_file': 'Encrypted backup. Decrypting it needs the backup passphrase.',
         'dg_title': '📊 <b>Digest {period}</b>', 'dg_day': 'for the last day', 'dg_week': 'for the last week',
+        'dg_hour': 'for the last hour', 'dg_hours': 'for the last {n} h', 'dg_days': 'for the last {n} days',
+        'n_cpu': '🔥 CPU load has been {value}% for {minutes} min (threshold {limit}%).',
+        'n_cpu_ok': '🟢 CPU load is below the threshold again: {value}%.',
+        'n_memory': '🧠 Memory use is {value}% (threshold {limit}%), {free} free.',
+        'n_memory_ok': '🟢 Memory use is below the threshold again: {value}%.',
+        'n_disk': '💽 The disk is {value}% full (threshold {limit}%), {free} free.',
+        'n_disk_ok': '🟢 The disk is below the threshold again: {value}% full.',
         'dg_server': '{icon} <b>{iface}</b>: {clients} clients, {online} online, {off} disabled',
         'dg_traffic': 'Client traffic: {total}', 'dg_top': 'Most active:', 'dg_top_row': '• {name} ({iface}) — {used}',
         'dg_expiring': 'Expire within 7 days: {names}', 'dg_idle': 'No connection for over 30 days: {names}',
@@ -209,6 +278,7 @@ TEXT = {
         'n_owner_export': '📤 The owner fetched the configuration of client <b>{target}</b> through the bot.',
         'n_user_expiring': '⏳ Your VPN access <b>{name}</b> expires {when}. Contact the administrator.',
         'test': '✅ The AmneziaWG 3.1 Console bot is connected. Send /menu.',
+        'your_id': 'Your Telegram ID: <code>{id}</code>',
         'n_backup': '💾 Backup <code>{target}</code> was created.', 'n_backup_failed': '⚠️ The scheduled backup was not created: {target}',
     },
 }
@@ -302,11 +372,28 @@ def load_config(path=CONFIG):
     if not admins:
         raise ValueError('No administrators configured')
     lang = data.get('lang', 'ru')
-    notify = {key: bool(data.get('notify', {}).get(key, True)) for key in ('server', 'clients', 'security', 'backups')}
-    return {'token': str(data['token']), 'admins': admins, 'lang': lang if lang in TEXT else 'ru', 'notify': notify,
+    groups = {key: bool((data.get('notify') or {}).get(key, True)) for key in ('server', 'clients', 'security', 'backups')}
+    chosen = data.get('events') if isinstance(data.get('events'), dict) else {}
+    # Older settings had one switch per group: each event starts from its group's switch.
+    events = {key: bool(chosen.get(key, groups.get(group, True))) for key, group in EVENTS.items()}
+    limits = data.get('thresholds') if isinstance(data.get('thresholds'), dict) else {}
+    thresholds = {}
+    for key, default in THRESHOLDS.items():
+        try:
+            thresholds[key] = min(100, max(10, int(limits.get(key, default))))
+        except (TypeError, ValueError):
+            thresholds[key] = default
+    digest = str(data.get('digest') or 'off').strip()
+    if digest != 'off':
+        try:
+            cron_fields(digest)
+        except ValueError:
+            digest = 'off'
+    return {'token': str(data['token']), 'admins': admins, 'lang': lang if lang in TEXT else 'ru',
+            'events': events, 'thresholds': thresholds, 'backup_file': bool(data.get('backup_file', groups['backups'])),
             # Viewers see the menus and get notifications but cannot change anything.
             'viewers': {int(item) for item in data.get('viewers', [])} - admins,
-            'digest': data.get('digest') if data.get('digest') in ('daily', 'weekly') else 'off',
+            'digest': CRON_ALIASES.get(digest, digest),
             'api_base': str(data.get('api_base') or 'https://api.telegram.org')}
 
 
@@ -673,6 +760,18 @@ class Bot:
         self.show(chat, self.t('renew_done', name=name, when=when), [[(self.t('b_clients'), f'c:{iface}:{name}')]], message_id)
         self.tell_owner(c, self.t('n_user_renewed', name=name, when=when))
 
+    def tell_id(self, user):
+        asked = getattr(self, 'id_asked', {})
+        now = self.clock()
+        self.id_asked = {key: stamp for key, stamp in asked.items() if now - stamp < 30}
+        if user in self.id_asked:
+            return                                        # one answer per person every 30 seconds
+        self.id_asked[user] = now
+        try:
+            self.api.call('sendMessage', chat_id=user, parse_mode='HTML', text=self.t('your_id', id=user))
+        except BotError as exc:
+            log(f'cannot answer /id: {exc}')
+
     def tell_owner(self, c, text):
         """A message to the person whose Telegram ID is on the client; never fatal."""
         owner = str(c.get('telegram_id') or '')
@@ -709,6 +808,11 @@ class Bot:
                                                                          str(query.get('data', '')), message.get('message_id')))
         elif 'message' in update:
             message = update['message']
+            sender, chat = message.get('from') or {}, message.get('chat') or {}
+            command = str(message.get('text') or '').strip().split('@')[0].lower()
+            if command == '/id' and chat.get('type') == 'private' and sender.get('id'):
+                self.tell_id(int(sender['id']))           # anyone may learn their own ID, to give it to the administrator
+                return
             if not self.authorized(message.get('from'), message.get('chat')):
                 # Strangers and group chats get no reply at all; a client owner gets their status.
                 self.serve_owner(message.get('from'), message.get('chat'))
@@ -913,19 +1017,25 @@ class Bot:
 
     def tick(self):
         """Look for things worth telling the administrators about. Called once a minute."""
-        notify = self.config['notify']
         try:
-            self.check_audit(notify)
+            self.check_audit()
         except Exception as exc:              # a failed check must not stop the bot
             log(f'audit check failed: {type(exc).__name__}: {exc}')
         try:                                      # runs always: owners are warned about expiry even with admin groups off
-            self.check_servers(notify)
+            self.check_servers()
         except Exception as exc:
             log(f'server check failed: {type(exc).__name__}: {exc}')
+        try:
+            self.check_host()
+        except Exception as exc:
+            log(f'host check failed: {type(exc).__name__}: {exc}')
         self.own_actions = {key: stamp for key, stamp in self.own_actions.items() if self.clock() - stamp < 600}
         self._save_state()
 
-    def check_audit(self, notify):
+    def on(self, event):
+        return bool(self.config.get('events', {}).get(event, True))
+
+    def check_audit(self):
         entries = self.ctl('audit-list').get('entries', [])
         seen = self.state.get('audit_seen')
         stamps = [str(e.get('timestamp', '')) for e in entries]
@@ -938,22 +1048,22 @@ class Bot:
             return
         self.state['audit_seen'] = max(str(e.get('timestamp', '')) for e in fresh)
         failed = [e for e in fresh if e.get('event') == 'login_failed']
-        if failed and notify['security']:
+        if failed and self.on('login_failed'):
             self.notify(self.t('n_login_failed', count=len(failed), target=failed[-1].get('target', '')))
         for entry in fresh:
             event, target = entry.get('event'), str(entry.get('target', ''))
             if event == 'client_config_sent':
-                if notify['security']:
+                if self.on('owner_export'):
                     self.notify(self.t('n_owner_export', target=target))
                 continue
             if '(telegram ' in target:
                 continue                    # the administrator did this through the bot and already saw the result
-            if event == 'login_success' and notify['security']:
+            if event == 'login_success' and self.on('login'):
                 self.notify(self.t('n_login', target=target))
-            elif event == 'password_changed' and notify['security']:
+            elif event == 'password_changed' and self.on('password'):
                 self.notify(self.t('n_password'))
             elif event in ('client_disabled', 'client_enabled') and target.endswith('(auto)'):
-                if notify['clients']:
+                if self.on('client_auto'):
                     self.notify(self.t('n_disabled' if event == 'client_disabled' else 'n_enabled', target=target[:-len('(auto)')].strip()))
                 found = self.find_client(target)
                 if found and event == 'client_enabled':
@@ -961,7 +1071,7 @@ class Bot:
                 elif found:
                     reason = 'why_quota' if found[1].get('disabled_reason') == 'quota' else 'why_expired'
                     self.tell_owner(found[1], self.t('n_user_disabled', name=found[1]['name'], reason=self.plain(reason)))
-            elif event == 'backup_created' and notify['backups'] and target.endswith('.gpg'):
+            elif event == 'backup_created' and self.config.get('backup_file', True) and target.endswith('.gpg'):
                 # An encrypted archive is safe to keep in Telegram: it goes to the administrators as a file.
                 content = base64.b64decode(self.ctl('backup-export-encrypted', {'name': target})['content'])
                 for admin in sorted(self.config['admins']):
@@ -969,40 +1079,41 @@ class Bot:
                         self.api.send_file('sendDocument', 'document', admin, target, content, self.plain('n_backup_file'))
                     except BotError as exc:
                         log(f'cannot send the backup to {admin}: {exc}')
-            elif event == 'backup_created' and notify['backups'] and not self.recently_own('backup:' + target, 600):
+            elif event == 'backup_created' and self.on('backup_created') and not self.recently_own('backup:' + target, 600):
                 self.notify(self.t('n_backup', target=target))
-            elif event == 'backup_failed' and notify['backups']:
+            elif event == 'backup_failed' and self.on('backup_failed'):
                 self.notify(self.t('n_backup_failed', target=target))
-            elif event == 'backup_upload_failed' and notify['backups']:
+            elif event == 'backup_upload_failed' and self.on('upload_failed'):
                 self.notify(self.t('n_upload_failed', target=target))
 
-    def check_servers(self, notify):
+    def check_servers(self):
         servers = self.servers()
         known = self.state.setdefault('running', {})
         for s in servers:
             iface, running = s['interface'], bool(s.get('running'))
             before = known.get(iface)
             known[iface] = running
-            if notify['server'] and before is not None and before != running and not self.recently_own(f'server:{iface}'):
+            if self.on('server_state') and before is not None and before != running and not self.recently_own(f'server:{iface}'):
                 self.notify(self.t('n_up' if running else 'n_down', iface=iface))
         for iface in [name for name in known if name not in {s['interface'] for s in servers}]:
             known.pop(iface)
-        if notify['server'] and servers:
+        if servers and (self.on('module') or self.on('panel') or self.on('kernel')):
             diag = self.ctl('diagnostics', {'interface': servers[0]['interface']})
-            for key, part, bad_text, ok_text in (('module_ok', 'loaded_module', 'n_module_bad', 'n_module_ok'),
-                                                 ('panel_ok', 'panel', 'n_panel_bad', 'n_panel_ok')):
+            for key, part, event, bad_text, ok_text in (('module_ok', 'loaded_module', 'module', 'n_module_bad', 'n_module_ok'),
+                                                        ('panel_ok', 'panel', 'panel', 'n_panel_bad', 'n_panel_ok')):
                 item = diag.get(part) or {}
                 healthy = bool(item.get('ok')) and (part != 'panel' or item.get('output') == 'active')
                 before = self.state.get(key)
                 self.state[key] = healthy
-                if before is not None and before != healthy:
+                if before is not None and before != healthy and self.on(event):
                     self.notify(self.t(ok_text) if healthy else self.t(bad_text, detail=item.get('output') or 'not loaded'))
             # A newer kernel is installed but the module is not built for it: said once, before the reboot.
             upcoming = diag.get('next_kernel') or {}
             problem = '' if upcoming.get('ok', True) else str(upcoming.get('output') or '?')
             if problem != self.state.get('next_kernel_problem', ''):
                 self.state['next_kernel_problem'] = problem
-                self.notify(self.t('n_next_kernel_bad', version=problem) if problem else self.t('n_next_kernel_ok'))
+                if self.on('kernel'):
+                    self.notify(self.t('n_next_kernel_bad', version=problem) if problem else self.t('n_next_kernel_ok'))
         warned = self.state.setdefault('expiry_warned', {})
         quota_warned = self.state.setdefault('quota_warned', {})
         now = datetime.fromtimestamp(self.clock(), timezone.utc)
@@ -1017,7 +1128,7 @@ class Bot:
                     if quota_warned.get(quota_key) != limit:
                         quota_warned[quota_key] = limit
                         values = dict(name=c['name'], percent=int(used * 100 / limit), used=human_size(used), quota=human_size(limit))
-                        if notify['clients']:
+                        if self.on('client_quota'):
                             self.notify(self.t('n_quota', iface=s['interface'], **values))
                         self.tell_owner(c, self.t('n_user_quota', **values))
                 elif used < limit * QUOTA_WARNING or not limit:
@@ -1035,27 +1146,104 @@ class Bot:
                     moment = moment.replace(tzinfo=timezone.utc)
                 if now < moment <= now + EXPIRY_WARNING and key not in warned:
                     warned[key] = True
-                    if notify['clients']:
+                    if self.on('client_expiring'):
                         self.notify(self.t('n_expiring', name=c['name'], iface=s['interface'], when=expiry[:10]))
                     self.tell_owner(c, self.t('n_user_expiring', name=c['name'], when=expiry[:10]))
         for key in [k for k in warned if k not in current]:
             warned.pop(key)
         self.maybe_digest(servers, snapshot)
 
+    def host_sample(self):
+        """CPU counters, memory and the root file system, read the same way as the panel does."""
+        sample = {}
+        try:
+            counters = [int(v) for v in Path('/proc/stat').read_text().split('\n', 1)[0].split()[1:]]
+            sample['cpu'] = (sum(counters), counters[3] + counters[4])
+        except (OSError, ValueError, IndexError):
+            pass
+        try:
+            memory = {}
+            for line in Path('/proc/meminfo').read_text().splitlines():
+                key, _, raw = line.partition(':')
+                if key in ('MemTotal', 'MemAvailable'):
+                    memory[key] = int(raw.split()[0]) * 1024
+            sample['memory'] = (memory['MemTotal'], memory['MemAvailable'])
+        except (OSError, ValueError, IndexError, KeyError):
+            pass
+        try:
+            fs = os.statvfs('/')
+            sample['disk'] = (fs.f_blocks * fs.f_frsize, fs.f_bavail * fs.f_frsize)
+        except OSError:
+            pass
+        return sample
+
+    def check_host(self):
+        """CPU, memory and disk above the thresholds set in the panel: told once, and once when it passes."""
+        keys = [key for key in ('cpu', 'memory', 'disk') if self.on(key)]
+        alarms = self.state.setdefault('host_alarm', {})
+        for key in [k for k in alarms if k not in keys]:
+            alarms.pop(key)
+        if not keys:
+            return
+        sample, limits = self.host_sample(), self.config.get('thresholds', THRESHOLDS)
+        values, free = {}, {}
+        previous, self.cpu_previous = getattr(self, 'cpu_previous', None), sample.get('cpu')
+        if previous and sample.get('cpu') and sample['cpu'][0] > previous[0]:
+            busy = 1 - (sample['cpu'][1] - previous[1]) / (sample['cpu'][0] - previous[0])
+            values['cpu'] = max(0, min(100, round(busy * 100)))
+        for key in ('memory', 'disk'):
+            total, available = sample.get(key) or (0, 0)
+            if total:
+                values[key], free[key] = round((1 - available / total) * 100), human_size(available)
+        streak = getattr(self, 'cpu_streak', 0)
+        if 'cpu' in values:
+            streak = streak + 1 if values['cpu'] >= limits['cpu'] else 0
+        self.cpu_streak = streak
+        for key in keys:
+            if key not in values:
+                continue
+            value, limit = values[key], limits[key]
+            high = streak >= LOAD_MINUTES if key == 'cpu' else value >= limit
+            if high and not alarms.get(key):
+                alarms[key] = True
+                self.notify(self.t('n_' + key, value=value, limit=limit, minutes=streak, free=free.get(key, '')))
+            elif alarms.get(key) and value < limit - 5:        # a margin, so a value near the line does not chatter
+                alarms[key] = False
+                self.notify(self.t(f'n_{key}_ok', value=value))
+
+    def period_text(self, seconds):
+        hours = seconds / 3600
+        if hours < 1.5:
+            return self.plain('dg_hour')
+        if 20 <= hours <= 28:
+            return self.plain('dg_day')
+        if 6 * 24 <= hours <= 8 * 24:
+            return self.plain('dg_week')
+        if hours < 48:
+            return self.plain('dg_hours', n=round(hours))
+        return self.plain('dg_days', n=round(hours / 24))
+
     def maybe_digest(self, servers, snapshot):
-        """Daily or weekly (Monday) summary, once, after DIGEST_HOUR server time."""
-        mode = self.config.get('digest', 'off')
-        local = time.localtime(self.clock())
-        today = time.strftime('%Y-%m-%d', local)
-        if mode == 'off' or local.tm_hour < DIGEST_HOUR or self.state.get('digest_day') == today:
+        """The summary on the crontab schedule set in the panel (server local time)."""
+        schedule = self.config.get('digest', 'off')
+        if schedule == 'off':
+            self.state.pop('digest_minute', None)
             return
-        if mode == 'weekly' and local.tm_wday != 0:
+        fields = cron_fields(schedule)
+        now = self.clock()
+        minute = int(now // 60)
+        last = self.state.get('digest_minute')
+        self.state['digest_minute'] = minute
+        if last is None:
+            return                     # just switched on or first start: wait for the next scheduled minute
+        # The loop can run a little late: look at every minute since the last check (at most three hours).
+        if not any(cron_due(fields, time.localtime(m * 60)) for m in range(max(int(last) + 1, minute - 180), minute + 1)):
             return
-        self.state['digest_day'] = today
+        since = self.state.get('digest_at')
+        self.state['digest_at'] = now
         before = self.state.get('digest_used')
         self.state['digest_used'] = {f"{s['interface']}/{c['name']}": int(c.get('used_bytes') or 0) for s, c in snapshot}
-        now = self.clock()
-        lines = [self.t('dg_title', period=self.plain('dg_week' if mode == 'weekly' else 'dg_day'))]
+        lines = [self.t('dg_title', period=self.period_text(now - since) if since else '')]
         for s in servers:
             mine = [c for server, c in snapshot if server is s]
             online = sum(1 for c in mine if c.get('enabled') and int((c.get('stats') or {}).get('handshake') or 0) > now - 180)

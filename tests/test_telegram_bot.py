@@ -349,7 +349,7 @@ def test_expiry_warning_is_sent_once(env):
 
 def test_disabled_notification_groups_stay_silent(env):
     bot, api, controller, _ = env
-    bot.config['notify'] = {'server': False, 'clients': False, 'security': False, 'backups': False}
+    bot.config['events'] = {key: False for key in bot_module.EVENTS}
     bot.tick()
     controller.running['awg0'] = False
     for event in ('login_success', 'login_failed', 'password_changed', 'backup_created'):
@@ -389,7 +389,10 @@ def test_config_without_administrators_is_refused(tmp_path):
     path.write_text(json.dumps({'token': TOKEN, 'admins': [ADMIN], 'lang': 'xx', 'notify': {'security': False}}))
     config = bot_module.load_config(path)
     assert config['admins'] == {ADMIN} and config['lang'] == 'ru'
-    assert config['notify'] == {'server': True, 'clients': True, 'security': False, 'backups': True}
+    # Older settings had one switch per group: every event of the group follows it.
+    assert {k for k, v in config['events'].items() if not v} == {'login', 'login_failed', 'password', 'owner_export'}
+    assert config['thresholds'] == {'cpu': 90, 'memory': 90, 'disk': 90} and config['digest'] == 'off'
+    assert config['backup_file'] is True
 
 
 class TelegramStub(BaseHTTPRequestHandler):
@@ -532,7 +535,7 @@ def test_admin_sets_and_clears_the_owner_from_the_bot(env):
 def test_owner_is_warned_about_expiry_even_when_admin_notifications_are_off(env):
     bot, api, controller, now = env
     from datetime import datetime, timedelta, timezone
-    bot.config['notify'] = {'server': False, 'clients': False, 'security': False, 'backups': False}
+    bot.config['events'] = {key: False for key in bot_module.EVENTS}
     soon = (datetime.fromtimestamp(now[0], timezone.utc) + timedelta(hours=20)).isoformat()
     controller.clients['awg0']['alice'].update(telegram_id=str(OWNER), expires_at=soon)
     bot.tick()

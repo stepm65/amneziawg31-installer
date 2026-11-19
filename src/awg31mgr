@@ -28,7 +28,7 @@ ADMIN = {'servers', 'server-create', 'server-start', 'server-stop', 'server-rest
          'profile-import','audit','audit-list','password-change','diagnostics',
          'backup-delete','backup-policy','backup-policy-set','backup-run','password-reset',
          'session-revoke','obfuscation-generate','totp-enable','totp-disable','totp-reset',
-         'telegram-status','telegram-connect','telegram-disconnect','telegram-set',
+         'telegram-status','telegram-connect','telegram-disconnect','telegram-set','telegram-test',
          'backup-encryption','backup-encryption-set','backup-export-encrypted',
          'backup-encryption-change','backup-remote','backup-remote-set','backup-remote-test'}
 
@@ -151,7 +151,7 @@ def main():
     # Terminal invocations without JSON must not wait forever for EOF.
     # The web API still sends structured JSON through a non-TTY pipe.
     no_payload = {'servers', 'sample-all', 'backup-create', 'backup-list', 'backup-policy', 'backup-run', 'audit-list',
-                  'session-revoke', 'obfuscation-generate', 'totp-reset', 'telegram-status', 'telegram-disconnect',
+                  'session-revoke', 'obfuscation-generate', 'totp-reset', 'telegram-status', 'telegram-test',
                   'backup-encryption', 'backup-remote', 'backup-remote-test'}
     raw = '' if op in no_payload or sys.stdin.isatty() else sys.stdin.read(32768)
     data=json.loads(raw) if raw.strip() else {}
@@ -168,6 +168,7 @@ def main():
     if op=='telegram-connect': return admin.telegram_connect(data)
     if op=='telegram-disconnect': return admin.telegram_disconnect(data)
     if op=='telegram-set': return admin.telegram_set(data)
+    if op=='telegram-test': return admin.telegram_test(data)
     if op=='backup-encryption': return admin.backup_encryption()
     if op=='backup-encryption-set': return admin.backup_encryption_set(data)
     if op=='backup-export-encrypted': return admin.export_backup(data,encrypted_only=True)

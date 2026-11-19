@@ -1055,3 +1055,70 @@ body {background:var(--ui-bg);font-size:14px;line-height:1.48;}
 .cps-preset .field input{width:100%}
 .config-stale{display:flex;align-items:center;gap:4px;margin-top:4px;color:#ffca75;font-size:11px}
 .config-stale .icon{flex:none}
+
+/* Telegram block (Maintenance → Telegram): two tabs, label left and control right, event cards. */
+.tg-block {margin-top:-4px}
+.tg-tabs .tg-state {margin-left:auto;align-self:center}
+.tg-state {display:inline-flex;align-items:center;gap:7px;white-space:nowrap;padding:5px 11px;border-radius:999px;background:#262b32;border:1px solid #39404a;color:#aeb6c1;font-size:12.5px;font-weight:600}
+.tg-state::before {content:"";width:8px;height:8px;border-radius:50%;background:#7b8490}
+.tg-state.is-on {color:#bfe9cf;border-color:#2f5a42;background:#18291f}
+.tg-state.is-on::before {background:#4cc98a;box-shadow:0 0 0 3px rgba(76,201,138,.18)}
+.tg-notice {display:flex;align-items:center;gap:8px;margin:0 0 6px;padding:10px 13px;border-radius:10px;background:#16261d;border:1px solid #2c5a40;color:#c9f0d8!important}
+.tg-notice .icon {color:#4cc98a}
+.tg-tabs {margin:0 0 4px;flex-wrap:wrap;row-gap:0}
+.cfgx-tab {display:inline-flex;align-items:center;gap:8px}
+.tg-tab-panel[hidden] {display:none!important}
+.tg-row {display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.05fr);gap:10px 28px;align-items:center;padding:15px 2px;border-bottom:1px solid #2b3139}
+.tg-row-text strong {display:block;color:#e8ecf0;font-size:14px;font-weight:650}
+.tg-row-text small {display:block;margin-top:4px;color:#98a2ae;font-size:12.5px;line-height:1.5}
+.tg-row-control {min-width:0}
+.tg-row-control input:not([type=checkbox]),.tg-row-control select,.tg-password input {width:100%;min-width:0;height:42px;padding:0 13px;border-radius:9px;border:1px solid #38404a;background:#14171b;color:#eef1f4;font-size:13.5px}
+.tg-row-control input:focus,.tg-row-control select:focus,.tg-password input:focus {border-color:var(--amber);outline:none;box-shadow:0 0 0 3px rgba(243,172,33,.16)}
+.tg-row-control input::placeholder,.tg-password input::placeholder {color:#6f7883}
+.tg-inline {display:flex;gap:8px;align-items:center}
+.tg-inline input {flex:1 1 auto}
+.tg-inline .btn {height:42px;min-height:42px;flex:none;white-space:nowrap}
+.tg-eye {width:42px;padding:0!important;justify-content:center}
+.tg-eye.is-active {color:var(--amber);border-color:var(--amber)}
+.tg-switch {position:relative;display:inline-block;width:46px;height:26px;cursor:pointer}
+.tg-switch input {position:absolute;inset:0;opacity:0;margin:0;cursor:pointer}
+.tg-switch span {position:absolute;inset:0;border-radius:999px;background:#3a414b;transition:background .15s}
+.tg-switch span::after {content:"";position:absolute;top:3px;left:3px;width:20px;height:20px;border-radius:50%;background:#f2f4f7;transition:transform .15s}
+.tg-switch input:checked + span {background:var(--amber)}
+.tg-switch input:checked + span::after {transform:translateX(20px);background:#1b1f24}
+.tg-switch input:focus-visible + span {outline:3px solid var(--amber);outline-offset:3px}
+.tg-custom {display:grid;gap:6px;margin-top:10px}
+.tg-custom[hidden] {display:none}
+.tg-custom span {color:#98a2ae;font-size:12px;line-height:1.45}
+.tg-custom input {font-family:var(--font-mono)}
+.tg-row-events {grid-template-columns:1fr;align-items:start}
+.tg-cards {display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:12px;margin-top:4px}
+.tg-card {margin:0;padding:0;min-width:0;border:1px solid #333a43;border-radius:12px;background:#171b20}
+.tg-legend {position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
+.tg-card-head {display:flex;align-items:center;gap:8px;padding:11px 13px;border-bottom:1px solid #2b3139;color:#e8ecf0}
+.tg-card-head .icon {color:var(--amber);flex:none}
+.tg-card-head strong {font-size:13.5px;font-weight:650;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.tg-count {margin-left:auto;padding:1px 8px;border-radius:6px;background:#262c34;border:1px solid #363d47;color:#b9c1cb;font:600 11.5px/1.6 var(--font-mono)}
+.tg-card.is-off .tg-count {color:#7d8792}
+.tg-group-toggle,.tg-check input {width:17px;height:17px;margin:0;flex:none;accent-color:var(--amber);cursor:pointer}
+.tg-card-body {display:grid;gap:9px;padding:12px 13px 14px}
+.tg-check {display:flex;align-items:flex-start;gap:10px;color:#d6dbe1;font-size:13px;line-height:1.35;cursor:pointer}
+.tg-check input {margin-top:1px}
+.tg-check-line {display:flex;align-items:center;justify-content:space-between;gap:10px}
+.tg-threshold {display:flex;align-items:center;gap:6px;flex:none;color:#98a2ae;font-size:12.5px}
+.tg-threshold input {width:66px;height:30px;padding:0 9px;border-radius:8px;border:1px solid #38404a;background:#14171b;color:#eef1f4;font:13px var(--font-mono)}
+.tg-threshold input:focus {border-color:var(--amber);outline:none}
+.tg-footer {display:flex;align-items:flex-end;justify-content:space-between;gap:16px 24px;flex-wrap:wrap;margin-top:18px}
+.tg-password {display:grid;gap:6px;flex:0 1 360px;min-width:0}
+.tg-password span {color:#e8ecf0;font-size:13px;font-weight:650}
+.tg-password small {color:#98a2ae;font-size:12px;line-height:1.45}
+.tg-actions {display:flex;gap:10px;flex-wrap:wrap}
+@media (max-width:760px) {
+  .tg-row {grid-template-columns:1fr;gap:10px;padding:14px 0}
+  .tg-cards {grid-template-columns:1fr}
+  .tg-inline {flex-wrap:wrap}
+  .tg-inline input {flex-basis:100%}
+  .tg-footer {align-items:stretch}
+  .tg-password {flex-basis:100%}
+  .tg-actions .btn {flex:1 1 auto;justify-content:center}
+}

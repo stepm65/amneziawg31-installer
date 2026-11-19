@@ -576,6 +576,9 @@ ICONS = {
     'terminal': '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="m7 9 4 3-4 3m6 0h4"/>',
     'key': '<circle cx="8" cy="15" r="4"/><path d="m11 12 10-10m-5 5 3 3"/>',
     'list': '<path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/>',
+    'bell': '<path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/>',
+    'send': '<path d="M22 2 11 13M22 2l-7 20-4-9-9-4z"/>',
+    'eye': '<path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/>',
     'cpu': '<rect x="5" y="5" width="14" height="14" rx="2"/><path d="M9 9h6v6H9zM9 1v4M15 1v4M9 19v4M15 19v4M1 9h4M1 15h4M19 9h4M19 15h4"/>',
     'hard-drive': '<rect x="2" y="7" width="20" height="11" rx="2"/><path d="M6 14h.01M10 14h.01"/>',
     'route': '<circle cx="5" cy="6" r="2"/><circle cx="19" cy="18" r="2"/><path d="M5 8v7a3 3 0 0 0 3 3h9M19 16V9a3 3 0 0 0-3-3H9"/>',
@@ -613,6 +616,17 @@ def controller_message(lang, message):
 # that needs the server list three times asks the controller once. A change made
 # in the same request forgets everything read so far.
 NOTIFY_GROUPS = ('server', 'clients', 'security', 'backups')
+# The Telegram notification cards: (group, icon, events). Same keys as awg31bot.EVENTS.
+TG_EVENT_GROUPS = (
+    ('server', 'server', ('server_state', 'module', 'kernel', 'panel')),
+    ('clients', 'users', ('client_auto', 'client_expiring', 'client_quota')),
+    ('security', 'shield', ('login', 'login_failed', 'password', 'owner_export')),
+    ('backups', 'archive', ('backup_created', 'backup_failed', 'upload_failed')),
+    ('system', 'cpu', ('cpu', 'memory', 'disk')),
+)
+TG_THRESHOLD_EVENTS = ('cpu', 'memory', 'disk')
+TG_SCHEDULES = (('0 * * * *', 'tg_s_hourly'), ('0 */6 * * *', 'tg_s_6h'), ('0 */12 * * *', 'tg_s_12h'),
+                ('0 9 * * *', 'tg_s_daily9'), ('0 21 * * *', 'tg_s_daily21'), ('0 9 * * 1', 'tg_s_weekly'))
 READ_ONLY_OPS = frozenset({'servers', 'list', 'status', 'diagnostics', 'history', 'host-history', 'backup-list',
                            'backup-policy', 'backup-encryption', 'backup-remote', 'telegram-status', 'audit-list'})
 _REQUEST_CACHE = contextvars.ContextVar('awg31_ctl_cache', default=None)
@@ -1407,6 +1421,33 @@ TEXT['ru'].update({
     'enc_passphrase_hint':'От 16 до 200 символов. Сохраните пароль отдельно: он понадобится при восстановлении на новом сервере. Пароль не отображается в панели.',
     'enc_disable_confirm':'Отключить шифрование новых резервных копий? Старые .gpg-архивы останутся зашифрованными.',
     'tg_token_hint':'Формат токена Telegram: цифры:строка',
+    'tg_title':'Telegram-бот', 'tg_tab_panel':'Панель', 'tg_tab_notify':'Уведомления',
+    'tg_running':'Работает', 'tg_stopped':'Остановлен', 'tg_not_connected':'Не подключён',
+    'tg_enable':'Включить Telegram-бота', 'tg_enable_hint':'Управление серверами и клиентами через бота. Выключение останавливает службу, настройки и токен сохраняются.',
+    'tg_token':'Telegram-токен', 'tg_token_set':'Настроен; оставьте пустым, чтобы сохранить текущий токен.',
+    'tg_token_placeholder':'Настроен — введите новый токен для замены',
+    'tg_reveal':'Показать или скрыть', 'tg_clear':'Очистить',
+    'tg_clear_confirm':'Отключить бота? Служба остановится, токен будет удалён с сервера. Нужен пароль панели.',
+    'tg_admins_hint':'Один или несколько числовых ID через запятую. Свой ID человек узнает командой /id в этом боте или у @userinfobot.',
+    'tg_viewers_hint':'Видят состояние и получают уведомления, но ничего не меняют.',
+    'tg_api':'Сервер Telegram API', 'tg_api_hint':'Оставьте пустым для api.telegram.org. Свой сервер Bot API: https://… (http:// только для 127.0.0.1).',
+    'tg_password_row':'Пароль панели', 'tg_password_row_hint':'Нужен при смене токена, администраторов, наблюдателей или сервера API, и для «Очистить».',
+    'tg_test':'Отправить тестовое сообщение', 'tg_saved':'Настройки бота сохранены.', 'tg_tested':'Тестовое сообщение отправлено администраторам.',
+    'tg_schedule':'Частота отчётов', 'tg_schedule_hint':'Сводка администраторам: клиенты на связи, трафик за период, самые активные, у кого скоро истекает срок. Время сервера.',
+    'tg_custom':'Своё расписание (crontab)', 'tg_custom_hint':'Пять полей: минута, час, день, месяц, день недели. Например 30 8 * * 1-5 — по будням в 08:30.',
+    'tg_s_off':'Не присылать', 'tg_s_hourly':'каждый час', 'tg_s_6h':'каждые 6 часов', 'tg_s_12h':'каждые 12 часов',
+    'tg_s_daily9':'каждый день в 09:00', 'tg_s_daily21':'каждый день в 21:00', 'tg_s_weekly':'по понедельникам в 09:00',
+    'tg_backup_file':'Резервные копии файлом', 'tg_backup_file_on':'Каждая новая зашифрованная копия приходит администраторам файлом.',
+    'tg_backup_file_off':'Сейчас шифрование копий выключено: незашифрованная копия содержит ключи и в Telegram не отправляется. Включите шифрование в разделе «Резервные копии».',
+    'tg_events':'Уведомления о событиях', 'tg_events_hint':'Что бот сообщает администраторам и наблюдателям. Владельцы клиентов получают свои предупреждения всегда.',
+    'tg_all':'Все в группе',
+    'tg_g_server':'Серверы', 'tg_g_clients':'Клиенты', 'tg_g_security':'Безопасность', 'tg_g_backups':'Резервные копии', 'tg_g_system':'Система',
+    'tg_e_server_state':'Сервер остановлен или снова работает', 'tg_e_module':'Модуль ядра недоступен', 'tg_e_kernel':'Новое ядро без модуля',
+    'tg_e_panel':'Веб-панель не работает', 'tg_e_client_auto':'Отключён или включён автоматически', 'tg_e_client_expiring':'Срок истекает в течение 3 дней',
+    'tg_e_client_quota':'Израсходовано 80% лимита', 'tg_e_login':'Вход в панель', 'tg_e_login_failed':'Неудачные попытки входа',
+    'tg_e_password':'Смена пароля панели', 'tg_e_owner_export':'Владелец получил конфигурацию', 'tg_e_backup_created':'Копия создана',
+    'tg_e_backup_failed':'Копия не создана', 'tg_e_upload_failed':'Не отправлена во внешнее хранилище',
+    'tg_e_cpu':'Загрузка CPU выше', 'tg_e_memory':'Занятая память выше', 'tg_e_disk':'Заполнение диска выше',
     'tg_connect':'Проверить токен и найти администратора', 'tg_connect_hint':'Создайте бота у @BotFather, вставьте токен и заранее отправьте новому боту /start в личном чате. Найденный отправитель потребует отдельного подтверждения.',
     'tg_confirm_title':'Подтвердите администратора Telegram',
     'tg_confirm_hint':'Отправьте /start новому боту в личном чате и повторите проверку, если список пуст. Выберите свою учётную запись: только она станет первым администратором.',
@@ -1454,6 +1495,33 @@ TEXT['en'].update({
     'enc_passphrase_hint':'16–200 characters. Store this passphrase separately: it is needed to restore on a new server. The panel does not display it.',
     'enc_disable_confirm':'Disable encryption of new backups? Existing .gpg archives will remain encrypted.',
     'tg_token_hint':'Telegram token format: digits:string',
+    'tg_title':'Telegram bot', 'tg_tab_panel':'Panel', 'tg_tab_notify':'Notifications',
+    'tg_running':'Running', 'tg_stopped':'Stopped', 'tg_not_connected':'Not connected',
+    'tg_enable':'Enable the Telegram bot', 'tg_enable_hint':'Manage servers and clients through the bot. Switching it off stops the service; settings and token are kept.',
+    'tg_token':'Telegram token', 'tg_token_set':'Set; leave empty to keep the current token.',
+    'tg_token_placeholder':'Set — enter a new token to replace it',
+    'tg_reveal':'Show or hide', 'tg_clear':'Clear',
+    'tg_clear_confirm':'Disconnect the bot? The service stops and the token is removed from the server. The panel password is needed.',
+    'tg_admins_hint':'One or more numeric IDs separated by commas. A person learns their ID with /id in this bot or from @userinfobot.',
+    'tg_viewers_hint':'See the state and get notifications but cannot change anything.',
+    'tg_api':'Telegram API server', 'tg_api_hint':'Leave empty for api.telegram.org. Your own Bot API server: https://… (http:// only for 127.0.0.1).',
+    'tg_password_row':'Panel password', 'tg_password_row_hint':'Needed to change the token, administrators, viewers or API server, and for “Clear”.',
+    'tg_test':'Send a test message', 'tg_saved':'Bot settings saved.', 'tg_tested':'The test message was sent to the administrators.',
+    'tg_schedule':'Report frequency', 'tg_schedule_hint':'A summary for administrators: clients online, traffic for the period, the most active, who expires soon. Server time.',
+    'tg_custom':'Custom schedule (crontab)', 'tg_custom_hint':'Five fields: minute, hour, day, month, weekday. For example 30 8 * * 1-5 is weekdays at 08:30.',
+    'tg_s_off':'Do not send', 'tg_s_hourly':'every hour', 'tg_s_6h':'every 6 hours', 'tg_s_12h':'every 12 hours',
+    'tg_s_daily9':'every day at 09:00', 'tg_s_daily21':'every day at 21:00', 'tg_s_weekly':'Mondays at 09:00',
+    'tg_backup_file':'Backups as files', 'tg_backup_file_on':'Every new encrypted backup is sent to the administrators as a file.',
+    'tg_backup_file_off':'Backup encryption is off now: an unencrypted backup holds keys and is never sent to Telegram. Turn encryption on under Backups.',
+    'tg_events':'Event notifications', 'tg_events_hint':'What the bot reports to administrators and viewers. Client owners always get their own warnings.',
+    'tg_all':'All in the group',
+    'tg_g_server':'Servers', 'tg_g_clients':'Clients', 'tg_g_security':'Security', 'tg_g_backups':'Backups', 'tg_g_system':'System',
+    'tg_e_server_state':'Server stopped or running again', 'tg_e_module':'Kernel module unavailable', 'tg_e_kernel':'New kernel without the module',
+    'tg_e_panel':'Web panel is down', 'tg_e_client_auto':'Disabled or enabled automatically', 'tg_e_client_expiring':'Expires within 3 days',
+    'tg_e_client_quota':'80% of the quota used', 'tg_e_login':'Sign-in to the panel', 'tg_e_login_failed':'Failed sign-in attempts',
+    'tg_e_password':'Panel password changed', 'tg_e_owner_export':'Owner fetched the configuration', 'tg_e_backup_created':'Backup created',
+    'tg_e_backup_failed':'Backup not created', 'tg_e_upload_failed':'Not sent to the remote storage',
+    'tg_e_cpu':'CPU load above', 'tg_e_memory':'Memory use above', 'tg_e_disk':'Disk use above',
     'tg_connect':'Check token and find administrator', 'tg_connect_hint':'Create a bot with @BotFather, paste its token, then send /start to the new bot in a private chat. You will separately confirm the sender.',
     'tg_confirm_title':'Confirm the Telegram administrator',
     'tg_confirm_hint':'Send /start to the new bot in a private chat and retry if the list is empty. Select your own account: it will become the first administrator.',
@@ -2568,43 +2636,110 @@ def maintenance(request: Request, tab: str = 'diagnostics'):
                 <button class="btn btn-primary" type="submit">{icon('shield',18)}{h(t('totp_enable'))}</button></form></section>'''
         elif tab=='telegram':
             bot=ctl('telegram-status',{})
-            if not bot.get('configured'):
-                body+=f'''<section class="maint-form-panel">
-                <h3>{icon('radio',19)}{h(t('maint_telegram'))}</h3>
-                <p class="info-line">{h(t('maint_telegram_hint'))}</p>
-                <div class="telegram-setup-form">
-                <form method="post" action="/maintenance/telegram/connect">{csrf(request)}
-                <label class="field telegram-token-field"><span>{'Токен от @BotFather' if lang=='ru' else 'Token from @BotFather'}</span>
-                 <input type="password" name="token" maxlength="100" required autocomplete="off" spellcheck="false"
-                       pattern="[0-9]{{5,14}}:[a-zA-Z0-9_\\-]{{30,60}}" title="{h(t('tg_token_hint'))}"></label>
-                 <p class="info-line">{h(t('tg_connect_hint'))}</p>
-                 <label class="field"><span>{h(t('panel_password'))}</span><input type="password" name="password" required autocomplete="current-password"></label>
-                 <button class="btn btn-primary" type="submit">{icon('radio',16)}{h(t('tg_connect'))}</button>
-                </form>
-                </div></section>'''
+            sub='notify' if request.query_params.get('sub')=='notify' and bot.get('configured') else 'panel'
+            def tg_row(title, hint, control, row_class=''):
+                return (f'<div class="tg-row{" "+row_class if row_class else ""}"><div class="tg-row-text"><strong>{h(title)}</strong>'
+                        f'{"<small>"+h(hint)+"</small>" if hint else ""}</div><div class="tg-row-control">{control}</div></div>')
+            def tg_switch(name, checked, label):
+                return (f'<label class="tg-switch"><input type="checkbox" role="switch" name="{name}" value="1"'
+                        f'{" checked" if checked else ""} aria-label="{h(label)}"><span aria-hidden="true"></span></label>')
+            def tg_lang_select(current):
+                return ('<select name="lang">'+''.join(f'<option value="{v}"{" selected" if v==current else ""}>{label}</option>'
+                                                       for v,label in (('ru','Русский'),('en','English')))+'</select>')
+            def tg_token(placeholder, required):
+                return (f'<div class="tg-inline"><input id="tg-token" type="password" name="token" maxlength="100" autocomplete="off" '
+                        f'spellcheck="false"{" required" if required else ""} pattern="[0-9]{{5,14}}:[a-zA-Z0-9_\\-]{{30,60}}" '
+                        f'title="{h(t("tg_token_hint"))}" placeholder="{h(placeholder)}">'
+                        f'<button class="btn btn-secondary tg-eye" type="button" data-reveal="tg-token" aria-label="{h(t("tg_reveal"))}" '
+                        f'title="{h(t("tg_reveal"))}">{icon("eye",17)}</button>')
+            configured=bool(bot.get('configured'))
+            tabs=(f'<div class="cfgx-tabs tg-tabs" role="tablist" aria-label="{h(t("tg_title"))}">'
+                  f'<button class="cfgx-tab{" is-active" if sub=="panel" else ""}" type="button" role="tab" id="tg-tab-panel" '
+                  f'aria-controls="tg-panel-panel" aria-selected="{str(sub=="panel").lower()}" data-tab-target="tg-panel-panel" data-tab-name="panel">'
+                  f'{icon("settings",17)}<span>{h(t("tg_tab_panel"))}</span></button>'
+                  f'<button class="cfgx-tab{" is-active" if sub=="notify" else ""}" type="button" role="tab" id="tg-tab-notify" '
+                  f'aria-controls="tg-panel-notify" aria-selected="{str(sub=="notify").lower()}" data-tab-target="tg-panel-notify" data-tab-name="notify"'
+                  f'{"" if configured else " disabled"}>{icon("bell",17)}<span>{h(t("tg_tab_notify"))}</span></button>@@STATE@@</div>')
+            notice={'saved':'tg_saved','tested':'tg_tested'}.get(request.query_params.get('done',''))
+            notice_html=f'<p class="tg-notice" role="status">{icon("check",16)}{h(t(notice))}</p>' if notice and configured else ''
+            if not configured:
+                rows=''.join((
+                    tg_row(t('tg_token'),t('tg_connect_hint'),tg_token('123456789:AA…',True)+'</div>'),
+                    tg_row(t('tg_lang'),'',tg_lang_select(lang)),
+                    tg_row(t('panel_password'),'','<input type="password" name="password" required autocomplete="current-password">'),
+                ))
+                tabs=tabs.replace('@@STATE@@',f'<span class="tg-state">{h(t("tg_not_connected"))}</span>')
+                body+=(f'<section class="tg-block">'
+                       f'<form method="post" action="/maintenance/telegram/connect">{csrf(request)}{tabs}'
+                       f'<div class="tg-tab-panel" id="tg-panel-panel" role="tabpanel" aria-labelledby="tg-tab-panel">{rows}</div>'
+                       f'<div class="tg-footer"><div class="tg-actions"><button class="btn btn-primary" type="submit">{icon("radio",16)}{h(t("tg_connect"))}</button></div></div>'
+                       f'</form></section>')
             else:
-                def options(current, values, prefix=''):
-                    return ''.join(f'<option value="{v}"{" selected" if current==v else ""}>{h(t(prefix+v) if prefix else v)}</option>' for v in values)
-                checks=''.join(f'<label class="check-field"><input type="checkbox" name="notify_{g}" value="1"'
-                               f'{" checked" if bot["notify"].get(g) else ""}><span>{h(t("tg_n_"+g))}</span></label>'
-                               for g in ('server','clients','security','backups'))
-                body+=f'''<section class="maint-form-panel"><p>{h(t('tg_state'))}: <strong>{h(bot.get('active',''))}</strong></p>
-                <details class="cps-details"><summary>{icon('trash',14)}{'Отключить бота' if lang=='ru' else 'Disconnect bot'}</summary>
-                <form method="post" action="/maintenance/telegram/disconnect">{csrf(request)}
-                <p class="info-line">{'Служба бота остановится, токен будет удалён с сервера.' if lang=='ru' else 'The bot service stops and the token is removed from the server.'}</p>
-                <div class="fields-grid"><label class="field"><span>{h(t('panel_password'))}</span><input type="password" name="password" required autocomplete="current-password"></label></div>
-                <button class="btn btn-danger" type="submit">{'Отключить бота' if lang=='ru' else 'Disconnect bot'}</button></form></details>
-                <p class="info-line">{h(t('tg_ids_hint'))}</p>
-                <form method="post" action="/maintenance/telegram">{csrf(request)}
-                <div class="fields-grid">
-                {form_field('admins',', '.join(str(x) for x in bot['admins']),t('tg_admins'),field_id='tg-admins')}
-                {form_field('viewers',', '.join(str(x) for x in bot['viewers']),t('tg_viewers'),required=False,field_id='tg-viewers')}
-                <label class="field" for="tg-lang"><span>{h(t('tg_lang'))}</span><select id="tg-lang" name="lang">{options(bot['lang'],('ru','en'))}</select></label>
-                <label class="field" for="tg-digest"><span>{h(t('tg_digest'))}</span><select id="tg-digest" name="digest">{options(bot['digest'],('off','daily','weekly'),'tg_d_')}</select></label>
-                </div><p>{h(t('tg_notify'))}</p>{checks}
-                <div class="fields-grid"><label class="field"><span>{h(t('panel_password'))}</span>
-                <input type="password" name="password" autocomplete="current-password"><small>{h(t('tg_password_when'))}</small></label></div>
-                <button class="btn btn-primary" type="submit">{icon('check',18)}{h(t('tg_save'))}</button></form></section>'''
+                running=bot.get('active')=='active'
+                state=(f'<span class="tg-state{" is-on" if running else ""}">{h(t("tg_running") if running else t("tg_stopped"))}'
+                       f'{" · @"+h(bot["username"]) if bot.get("username") else ""}</span>')
+                ids=lambda key:', '.join(str(x) for x in bot[key])
+                api_value='' if bot.get('api_base')=='https://api.telegram.org' else bot.get('api_base','')
+                panel_rows=''.join((
+                    tg_row(t('tg_enable'),t('tg_enable_hint'),tg_switch('enabled',bot.get('enabled'),t('tg_enable'))),
+                    tg_row(t('tg_token'),t('tg_token_set'),tg_token(t('tg_token_placeholder'),False)
+                           +f'<button class="btn btn-secondary" type="submit" formaction="/maintenance/telegram/disconnect" formnovalidate '
+                            f'data-confirm-submit="{h(t("tg_clear_confirm"))}">{h(t("tg_clear"))}</button></div>'),
+                    tg_row(t('tg_admins'),t('tg_admins_hint'),f'<input name="admins" required value="{h(ids("admins"))}" placeholder="123456789" spellcheck="false">'),
+                    tg_row(t('tg_viewers'),t('tg_viewers_hint'),f'<input name="viewers" value="{h(ids("viewers"))}" spellcheck="false">'),
+                    tg_row(t('tg_lang'),'',tg_lang_select(bot['lang'])),
+                    tg_row(t('tg_api'),t('tg_api_hint'),f'<input name="api_base" value="{h(api_value)}" placeholder="https://api.telegram.org" spellcheck="false" autocomplete="off">'),
+                ))
+                groups=bot.get('notify') or {}
+                chosen=bot.get('events') or {e:bool(groups.get(g,True)) for g,_,events in TG_EVENT_GROUPS for e in events}
+                limits=bot.get('thresholds') or {}
+                presets=dict(TG_SCHEDULES)
+                current={'daily':'0 9 * * *','weekly':'0 9 * * 1'}.get(bot.get('digest','off'),bot.get('digest','off'))
+                custom=current!='off' and current not in presets
+                schedule=(f'<select name="digest_preset" id="tg-schedule" data-tg-schedule>'
+                          f'<option value="off"{" selected" if current=="off" else ""}>{h(t("tg_s_off"))}</option>'
+                          +''.join(f'<option value="{h(cron)}"{" selected" if cron==current else ""}>{h(cron)} — {h(t(key))}</option>' for cron,key in TG_SCHEDULES)
+                          +f'<option value="custom"{" selected" if custom else ""}>{h(t("tg_custom"))}</option></select>'
+                          +f'<label class="tg-custom" data-tg-custom><span>{h(t("tg_custom_hint"))}</span>'
+                          +f'<input name="digest_custom" value="{h(current if custom else "")}" placeholder="30 8 * * 1-5" spellcheck="false" autocomplete="off"></label>')
+                cards=''
+                for group,glyph,events in TG_EVENT_GROUPS:
+                    items=''
+                    for event in events:
+                        on=chosen.get(event)
+                        check=(f'<label class="tg-check"><input type="checkbox" name="ev_{event}" value="1"{" checked" if on else ""} data-tg-event>'
+                               f'<span>{h(t("tg_e_"+event))}</span></label>')
+                        if event in TG_THRESHOLD_EVENTS:     # "CPU load above [90] %" on one line
+                            check=(f'<div class="tg-check-line">{check}<label class="tg-threshold"><input type="number" name="th_{event}" '
+                                   f'min="10" max="100" step="1" required value="{int(limits.get(event,90))}" '
+                                   f'aria-label="{h(t("tg_e_"+event))}, %"><span>%</span></label></div>')
+                        items+=check
+                    count=sum(1 for e in events if chosen.get(e))
+                    title=h(t('tg_g_'+group))
+                    cards+=(f'<fieldset class="tg-card" data-tg-group><legend class="tg-legend">{title}</legend>'
+                            f'<div class="tg-card-head" aria-hidden="false">{icon(glyph,17)}<strong aria-hidden="true">{title}</strong>'
+                            f'<span class="tg-count" data-tg-count>{count}/{len(events)}</span>'
+                            f'<input type="checkbox" class="tg-group-toggle" data-tg-all aria-label="{h(t("tg_all"))}: {title}"'
+                            f'{" checked" if count==len(events) else ""}></div><div class="tg-card-body">{items}</div></fieldset>')
+                notify_rows=''.join((
+                    tg_row(t('tg_schedule'),t('tg_schedule_hint'),schedule),
+                    tg_row(t('tg_backup_file'),t('tg_backup_file_on') if bot.get('encrypted_backups') else t('tg_backup_file_off'),
+                           tg_switch('backup_file',bot.get('backup_file'),t('tg_backup_file'))),
+                    f'<div class="tg-row tg-row-events"><div class="tg-row-text"><strong>{h(t("tg_events"))}</strong><small>{h(t("tg_events_hint"))}</small></div>'
+                    f'<div class="tg-cards">{cards}</div></div>',
+                ))
+                tabs=tabs.replace('@@STATE@@',state)
+                body+=(f'<section class="tg-block">{notice_html}'
+                       f'<form method="post" action="/maintenance/telegram" id="tg-form">{csrf(request)}'
+                       f'<input type="hidden" name="sub" value="{sub}" data-tab-memory>'
+                       f'<input type="hidden" name="events_form" value="1">{tabs}'
+                       f'<div class="tg-tab-panel" id="tg-panel-panel" role="tabpanel" aria-labelledby="tg-tab-panel"{" hidden" if sub!="panel" else ""}>{panel_rows}</div>'
+                       f'<div class="tg-tab-panel" id="tg-panel-notify" role="tabpanel" aria-labelledby="tg-tab-notify"{" hidden" if sub!="notify" else ""}>{notify_rows}</div>'
+                       f'<div class="tg-footer"><label class="tg-password"><span>{h(t("tg_password_row"))}</span>'
+                       f'<input type="password" name="password" autocomplete="current-password"><small>{h(t("tg_password_row_hint"))}</small></label>'
+                       f'<div class="tg-actions"><button class="btn btn-primary" type="submit">{icon("check",17)}{h(t("tg_save"))}</button>'
+                       f'<button class="btn btn-secondary" type="submit" formaction="/maintenance/telegram/test" formnovalidate>{icon("send",16)}{h(t("tg_test"))}</button>'
+                       f'</div></div></form></section>')
         elif tab=='audit':
             entries=ctl('audit-list',{}).get('entries',[])
             rows=''.join(f'''<li class="audit-entry"><span class="audit-time">{h(item.get('timestamp',''))}</span>
@@ -2747,13 +2882,33 @@ async def totp_change(request: Request, action: str):
 async def telegram_update(request: Request):
     form=await request.form()
     require_csrf(request,form.get('csrf',''))
-    payload={'admins':str(form.get('admins','')),'viewers':str(form.get('viewers','')),'lang':str(form.get('lang','ru')),
-             'digest':str(form.get('digest','off')),
-             'notify':{g:form.get('notify_'+g)=='1' for g in ('server','clients','security','backups')}}
+    payload={'admins':str(form.get('admins','')),'viewers':str(form.get('viewers','')),'lang':str(form.get('lang','ru'))}
+    if form.get('events_form')=='1':
+        preset=str(form.get('digest_preset','off'))
+        payload.update(
+            digest=str(form.get('digest_custom','')).strip() if preset=='custom' else preset,
+            enabled=form.get('enabled')=='1', backup_file=form.get('backup_file')=='1',
+            api_base=str(form.get('api_base','')).strip(), token=str(form.get('token','')).strip(),
+            events={event:form.get('ev_'+event)=='1' for _,_,events in TG_EVENT_GROUPS for event in events},
+            thresholds={event:str(form.get('th_'+event,'')).strip() for event in TG_THRESHOLD_EVENTS})
+    else:                                   # an older page still open in a browser tab
+        payload.update(digest=str(form.get('digest','off')),
+                       notify={g:form.get('notify_'+g)=='1' for g in NOTIFY_GROUPS})
     if form.get('password'): payload['password']=str(form.get('password'))
     try: ctl('telegram-set',payload)
     except RuntimeError as exc: return error_page(request,tr(lang_of(request),'maintenance_error'),exc)
-    return RedirectResponse('/maintenance?tab=telegram',status_code=303)
+    sub='notify' if form.get('sub')=='notify' else 'panel'
+    return RedirectResponse(f'/maintenance?tab=telegram&sub={sub}&done=saved',status_code=303)
+
+
+@app.post('/maintenance/telegram/test')
+async def telegram_test(request: Request):
+    form=await request.form()
+    require_csrf(request,form.get('csrf',''))
+    try: ctl('telegram-test',{})
+    except RuntimeError as exc: return error_page(request,tr(lang_of(request),'maintenance_error'),exc)
+    sub='notify' if form.get('sub')=='notify' else 'panel'
+    return RedirectResponse(f'/maintenance?tab=telegram&sub={sub}&done=tested',status_code=303)
 
 
 @app.post('/maintenance/telegram/connect')

@@ -190,13 +190,27 @@
   const close = () => modal.close();
   modal.querySelector('[data-cancel]').addEventListener('click', close);
   let confirmedForm = null;
+  let confirmedSubmitter = null;
   modal.querySelector('[data-accept]').addEventListener('click', () => {
-    const form = confirmedForm;
-    confirmedForm = null;
+    const form = confirmedForm, submitter = confirmedSubmitter;
+    confirmedForm = null; confirmedSubmitter = null;
     close();
-    if (form) { form.dataset.confirmed = '1'; form.requestSubmit(); }
+    if (!form) return;
+    if (form.dataset.confirm) form.dataset.confirmed = '1';    // lets the form's own confirmation pass once
+    submitter ? form.requestSubmit(submitter) : form.requestSubmit();
   });
-  modal.addEventListener('close', () => { confirmedForm = null; });
+  modal.addEventListener('close', () => { confirmedForm = null; confirmedSubmitter = null; });
+  // A single button that needs confirmation (for example "Clear" next to the Telegram token).
+  for (const button of document.querySelectorAll('button[data-confirm-submit]')) {
+    button.addEventListener('click', (event) => {
+      const form = button.form;
+      if (!form) return;
+      event.preventDefault();
+      confirmedForm = form; confirmedSubmitter = button;
+      modal.querySelector('p').textContent = button.dataset.confirmSubmit;
+      modal.showModal();
+    });
+  }
   for (const form of document.querySelectorAll('form[data-confirm]')) {
     form.addEventListener('submit', (event) => {
       if (form.dataset.confirmed === '1') { delete form.dataset.confirmed; return; }
@@ -356,21 +370,31 @@
 (() => {
   'use strict';
   const tabs = [...document.querySelectorAll('[data-tab-target]')];
+  const siblings = (tab) => [...(tab.closest('[role="tablist"]') || document).querySelectorAll('[data-tab-target]')];
   const setTab = (tab) => {
     if (!tab || tab.disabled) return;
-    for (const button of tabs) {
+    for (const button of siblings(tab)) {
       const active = button === tab;
       button.classList.toggle('is-active', active);
       button.setAttribute('aria-selected', String(active));
       const panel = document.getElementById(button.dataset.tabTarget);
       if (panel) panel.hidden = !active;
     }
+    // Remember the tab: the form sends it back and a reload opens the same one.
+    const memory = tab.closest('form')?.querySelector('[data-tab-memory]');
+    if (memory && tab.dataset.tabName) {
+      memory.value = tab.dataset.tabName;
+      const url = new URL(window.location.href);
+      url.searchParams.set('sub', tab.dataset.tabName);
+      url.searchParams.delete('done');
+      window.history.replaceState(null, '', url);
+    }
   };
   for (const tab of tabs) {
     tab.addEventListener('click', () => setTab(tab));
     tab.addEventListener('keydown', (event) => {
       if (!['ArrowRight', 'ArrowLeft'].includes(event.key)) return;
-      const available = tabs.filter((button) => !button.disabled);
+      const available = siblings(tab).filter((button) => !button.disabled);
       const i = available.indexOf(tab);
       if (i < 0) return;
       const step = event.key === 'ArrowRight' ? 1 : -1;
@@ -747,3 +771,41 @@
   });
 })();
 
+// Telegram block: token visibility, group switches with counters, custom schedule.
+(() => {
+  'use strict';
+  for (const button of document.querySelectorAll('[data-reveal]')) {
+    button.addEventListener('click', () => {
+      const input = document.getElementById(button.dataset.reveal);
+      if (!input) return;
+      input.type = input.type === 'password' ? 'text' : 'password';
+      button.classList.toggle('is-active', input.type === 'text');
+    });
+  }
+  for (const card of document.querySelectorAll('[data-tg-group]')) {
+    const all = card.querySelector('[data-tg-all]');
+    const items = [...card.querySelectorAll('[data-tg-event]')];
+    const count = card.querySelector('[data-tg-count]');
+    const update = () => {
+      const on = items.filter((item) => item.checked).length;
+      if (count) count.textContent = `${on}/${items.length}`;
+      if (all) { all.checked = on === items.length; all.indeterminate = on > 0 && on < items.length; }
+      card.classList.toggle('is-off', on === 0);
+    };
+    all?.addEventListener('change', () => { items.forEach((item) => { item.checked = all.checked; }); update(); });
+    items.forEach((item) => item.addEventListener('change', update));
+    update();
+  }
+  const schedule = document.querySelector('[data-tg-schedule]');
+  const custom = document.querySelector('[data-tg-custom]');
+  if (schedule && custom) {
+    const field = custom.querySelector('input');
+    const sync = () => {
+      const on = schedule.value === 'custom';
+      custom.hidden = !on;
+      if (field) field.required = on;
+    };
+    schedule.addEventListener('change', () => { sync(); if (schedule.value === 'custom') field?.focus(); });
+    sync();
+  }
+})();

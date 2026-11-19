@@ -4,7 +4,7 @@
 
 An installer and a web console for running **AmneziaWG 3.1** on your own server: a kernel module built with DKMS, an interactive setup wizard and a bilingual (EN/RU) panel for servers, clients, traffic and backups. No Docker, no control plane in the cloud, nothing loaded from a CDN.
 
-Version **0.12.7** · MIT licence · not affiliated with the AmneziaVPN developers.
+Version **0.13.0** · MIT licence · not affiliated with the AmneziaVPN developers.
 
 ![Infrastructure overview](docs/screenshots/en-dashboard.png)
 
@@ -193,9 +193,14 @@ Only the numeric Telegram IDs you list are administrators, and only in a private
 
 ### Roles, digest and settings in the panel
 
-**Maintenance → Telegram bot** in the panel shows whether the bot runs and edits who may use it and what it reports; the token is never shown there. Besides administrators there are **viewers**: they see the same screens and get the notifications, but have no action buttons and cannot change anything. A **digest** can be sent every day or every Monday after 09:00 server time: servers, clients online, traffic since the previous digest, the most active clients, who expires within a week and who has not connected for a month.
+**Maintenance → Telegram bot** in the panel has two tabs.
 
-When backup encryption is on (`sudo awg31 backup-encryption on`), every new backup is sent to the administrators as a `.gpg` file. Unencrypted archives are never sent.
+- **Panel:** switch the bot on and off (the token and settings are kept), replace the token (the field never shows the current one; **Clear** disconnects the bot and deletes the token), administrators and **viewers**, the bot language, your own [Bot API server](https://core.telegram.org/bots/api#using-a-local-bot-api-server) instead of api.telegram.org, and **Send a test message**. Viewers see the same screens and get the notifications, but have no action buttons and cannot change anything. Anyone can send `/id` to the bot in a private chat to learn their numeric ID.
+- **Notifications:** how often the **report** comes (every hour, every 6 or 12 hours, daily, Mondays, or any crontab line such as `30 8 * * 1-5`; server time): servers, clients online, traffic since the previous report, the most active clients, who expires within a week and who has not connected for a month. Then **backups as files** and a card per group of events — servers, clients, security, backups, system — each event with its own switch. The system card warns when CPU load stays above its threshold for three minutes, or memory or disk use is above theirs, and once more when it is back below.
+
+A new token, other administrators or viewers, another API server and **Clear** ask for the panel password again.
+
+When backup encryption is on (`sudo awg31 backup-encryption on`) and **backups as files** is on, every new backup is sent to the administrators as a `.gpg` file. Unencrypted archives are never sent.
 
 ### Client owners
 

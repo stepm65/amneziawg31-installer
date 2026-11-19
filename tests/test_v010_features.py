@@ -424,7 +424,7 @@ def test_panel_edits_bot_settings_but_never_sees_the_token(tmp_path, monkeypatch
     saved = json.loads(config.read_text())
     assert saved['token'] == token_value and saved['api_base'] == 'http://x', 'token and API address are kept'
     assert saved['admins'] == [111222333, 444555666] and saved['viewers'] == [777888999], 'an administrator is not also a viewer'
-    assert saved['notify'] == {'server': True, 'clients': False, 'security': False, 'backups': True} and saved['digest'] == 'weekly'
+    assert saved['notify'] == {'server': True, 'clients': False, 'security': False, 'backups': True} and saved['digest'] == '0 9 * * 1'
     assert config.stat().st_mode & 0o777 == 0o640
     for bad in ({'admins': ''}, {'admins': '@durov'}, {'admins': '111222333', 'lang': 'de'}, {'admins': '111222333', 'digest': 'hourly'},
                 {'admins': ','.join(str(1000 + n) for n in range(11))}):
@@ -441,17 +441,31 @@ def test_telegram_tab_shows_the_form_and_posts_the_settings(ui):
     page = client.get('/maintenance?tab=telegram')
     assert 'action="/maintenance/telegram/connect"' in page.text
     original = app.ctl
+    # A status from an older controller: one switch per group, no events or thresholds yet.
     app.ctl = lambda op, data=None: ({'configured': True, 'active': 'active', 'admins': [111222333], 'viewers': [], 'lang': 'ru',
                                       'digest': 'off', 'notify': {'server': True, 'clients': False, 'security': True, 'backups': False}}
                                      if op == 'telegram-status' else original(op, data))
     page = client.get('/maintenance?tab=telegram')
-    assert 'value="111222333"' in page.text and 'name="notify_server" value="1" checked' in page.text
-    assert 'name="notify_clients" value="1">' in page.text
+    assert page.status_code == 200 and 'value="111222333"' in page.text
+    assert 'name="ev_server_state" value="1" checked' in page.text and 'name="ev_client_auto" value="1" data-tg-event' in page.text
+    assert 'name="th_cpu" min="10" max="100" step="1" required value="90"' in page.text
+    form = {'csrf': token(page), 'events_form': '1', 'sub': 'notify', 'admins': '111222333', 'viewers': '42424242', 'lang': 'en',
+            'enabled': '1', 'token': '', 'api_base': '', 'digest_preset': 'custom', 'digest_custom': ' 30 8 * * 1-5 ',
+            'ev_login': '1', 'ev_cpu': '1', 'th_cpu': '85', 'th_memory': '90', 'th_disk': '95'}
+    reply = client.post('/maintenance/telegram', data=form, follow_redirects=False)
+    assert reply.status_code == 303 and reply.headers['location'] == '/maintenance?tab=telegram&sub=notify&done=saved'
+    sent = [data for op, data in calls if op == 'telegram-set'][-1]
+    assert sent['digest'] == '30 8 * * 1-5' and sent['enabled'] is True and sent['backup_file'] is False and sent['token'] == ''
+    assert {k for k, v in sent['events'].items() if v} == {'login', 'cpu'} and len(sent['events']) == 17
+    assert sent['thresholds'] == {'cpu': '85', 'memory': '90', 'disk': '95'} and 'password' not in sent
+    # A page from the previous version still saves its fields.
     reply = client.post('/maintenance/telegram', data={'csrf': token(page), 'admins': '111222333', 'viewers': '42424242', 'lang': 'en',
                                                        'digest': 'daily', 'notify_backups': '1'}, follow_redirects=False)
     assert reply.status_code == 303
     assert ('telegram-set', {'admins': '111222333', 'viewers': '42424242', 'lang': 'en', 'digest': 'daily',
                              'notify': {'server': False, 'clients': False, 'security': False, 'backups': True}}) in calls
+    reply = client.post('/maintenance/telegram/test', data={'csrf': token(page), 'sub': 'panel'}, follow_redirects=False)
+    assert reply.status_code == 303 and reply.headers['location'].endswith('done=tested') and ('telegram-test', {}) in calls
 
 
 # ------------------------------------------------------------------ bot: viewers, renewal, owner messages, digest, backup file
@@ -630,7 +644,8 @@ def test_digest_is_sent_once_a_day_after_nine_with_traffic_since_the_last_one(en
     assert not any('Digest' in text for text in notifications(api, start))
     now[0] = datetime(2026, 6, 8, 10, 0, tzinfo=timezone.utc).timestamp()
     bot.tick()
-    assert any('for the last week' in text for text in notifications(api, start))
+    # The title names the real time since the previous digest (the last daily one was on Wednesday).
+    assert any('Digest for the last 5 days' in text for text in notifications(api, start))
 
 
 def test_admin_sets_a_speed_limit_from_the_bot(env):
@@ -648,7 +663,7 @@ def test_sudo_lists_keep_console_only_operations_out():
     allowed = set(subprocess.run(['bash', '-c', script], capture_output=True, text=True, check=True).stdout.split())
     assert not allowed & {'totp-reset', 'password-reset', 'init', 'sample-all', 'backup-run', 'backup-remote-set'}
     # These reach the panel, but ask for the panel password again (tests/test_password_guards.py).
-    assert {'totp-enable', 'totp-disable', 'telegram-status', 'telegram-connect', 'telegram-disconnect', 'telegram-set',
+    assert {'totp-enable', 'totp-disable', 'telegram-status', 'telegram-connect', 'telegram-disconnect', 'telegram-set', 'telegram-test',
             'add-batch', 'backup-encryption', 'backup-encryption-set', 'backup-encryption-change'} <= allowed
 
 

@@ -467,6 +467,49 @@ def bot_config_file():
 
 NOTIFY_GROUPS=('server','clients','security','backups')
 TELEGRAM_PENDING_TTL=900
+# The same switches as in awg31bot.py (a test keeps the two lists equal).
+TELEGRAM_EVENTS={
+    'server_state':'server','module':'server','kernel':'server','panel':'server',
+    'client_auto':'clients','client_expiring':'clients','client_quota':'clients',
+    'login':'security','login_failed':'security','password':'security','owner_export':'security',
+    'backup_created':'backups','backup_failed':'backups','upload_failed':'backups',
+    'cpu':'system','memory':'system','disk':'system',
+}
+TELEGRAM_THRESHOLDS={'cpu':90,'memory':90,'disk':90}
+TELEGRAM_API='https://api.telegram.org'
+TELEGRAM_PROBE=Path('/usr/local/libexec/awg31/telegram-probe.py')     # a root-owned copy of awg31bot.py
+_CRON_ALIASES={'@hourly':'0 * * * *','@daily':'0 9 * * *','@weekly':'0 9 * * 1','@monthly':'0 9 1 * *',
+               'daily':'0 9 * * *','weekly':'0 9 * * 1'}
+
+
+def telegram_schedule(value):
+    """'off' or a five-field crontab line (aliases accepted); returns the stored form."""
+    text=re.sub(r'\s+',' ',str(value or 'off').strip())
+    if text in ('','off'): return 'off'
+    text=_CRON_ALIASES.get(text,text)
+    parts=text.split(' ')
+    if len(parts)!=5: raise ValueError('Report schedule: five crontab fields, e.g. 0 9 * * *')
+    for part,(low,high) in zip(parts,((0,59),(0,23),(1,31),(1,12),(0,7))):
+        for item in part.split(','):
+            match=re.fullmatch(r'(\*|[0-9]{1,2}(?:-[0-9]{1,2})?)(?:/([0-9]{1,2}))?',item)
+            if not match: raise ValueError(f'Report schedule: cannot read "{item}"')
+            base,step=match.group(1),int(match.group(2) or 1)
+            if base=='*': first,last=low,high
+            elif '-' in base: first,last=(int(x) for x in base.split('-'))
+            else: first=int(base); last=high if match.group(2) else first
+            if step<1 or not low<=first<=last<=high:
+                raise ValueError(f'Report schedule: "{item}" is out of range {low}-{high}')
+    return text
+
+
+def telegram_api_base(value):
+    """Telegram or a self-hosted Bot API server. Plain http only for one on this host."""
+    text=str(value or '').strip().rstrip('/')
+    if not text or text==TELEGRAM_API: return TELEGRAM_API
+    if len(text)>200 or not (re.fullmatch(r'https://[A-Za-z0-9.-]{1,120}(?::[0-9]{1,5})?(?:/[A-Za-z0-9._~-]+)*',text)
+                             or re.fullmatch(r'http://(?:127\.0\.0\.1|localhost|\[::1\])(?::[0-9]{1,5})?(?:/[A-Za-z0-9._~-]+)*',text)):
+        raise ValueError('API server: https://host[:port][/path], or http:// only for 127.0.0.1')
+    return text
 
 
 def _telegram_pending_file():
@@ -530,11 +573,29 @@ def telegram_status():
     try:
         active=subprocess.run(['systemctl','is-active','awg31-bot.service'],capture_output=True,text=True,timeout=10).stdout.strip()
     except (OSError,subprocess.TimeoutExpired): active='unknown'
+    try:
+        enabled=subprocess.run(['systemctl','is-enabled','awg31-bot.service'],capture_output=True,text=True,timeout=10).stdout.strip()
+    except (OSError,subprocess.TimeoutExpired): enabled='unknown'
     notify=config.get('notify') or {}
-    return {'configured':True,'active':active,'admins':[int(x) for x in config.get('admins',[])],
+    groups={g:bool(notify.get(g,True)) for g in NOTIFY_GROUPS}
+    chosen=config.get('events') if isinstance(config.get('events'),dict) else {}
+    limits=config.get('thresholds') if isinstance(config.get('thresholds'),dict) else {}
+    thresholds={}
+    for key,default in TELEGRAM_THRESHOLDS.items():
+        try: thresholds[key]=min(100,max(10,int(limits.get(key,default))))
+        except (TypeError,ValueError): thresholds[key]=default
+    try: digest=telegram_schedule(config.get('digest','off'))
+    except ValueError: digest='off'
+    return {'configured':True,'active':active,'enabled':enabled in ('enabled','enabled-runtime') or active=='active',
+            'username':str(config.get('username','')),
+            'admins':[int(x) for x in config.get('admins',[])],
             'viewers':[int(x) for x in config.get('viewers',[])],'lang':config.get('lang','ru'),
-            'notify':{g:bool(notify.get(g,True)) for g in NOTIFY_GROUPS},
-            'digest':config.get('digest','off') if config.get('digest') in ('daily','weekly') else 'off'}
+            'notify':groups,
+            'events':{key:bool(chosen.get(key,groups.get(group,True))) for key,group in TELEGRAM_EVENTS.items()},
+            'thresholds':thresholds,'digest':digest,
+            'backup_file':bool(config.get('backup_file',groups['backups'])),
+            'encrypted_backups':backup_key_file().is_file(),
+            'api_base':str(config.get('api_base') or TELEGRAM_API)}
 
 
 def _systemctl(*args):
@@ -659,7 +720,7 @@ def telegram_connect(data):
         stat=config.stat(); ownership=(stat.st_uid,stat.st_gid)
     import sys
     python=Path(sys.executable)
-    bot=Path('/usr/local/libexec/awg31/telegram-probe.py')
+    bot=TELEGRAM_PROBE
     if not bot.is_file():
         raise ValueError('Telegram setup helper is not installed; run scripts/upgrade-core.sh')
     if not confirming:
@@ -697,9 +758,14 @@ def telegram_connect(data):
         if existing:
             old=json.loads(previous)
             viewers=[x for x in _id_list(old.get('viewers',[]),20) if x not in admins]
-            digest=old.get('digest','off') if old.get('digest') in ('daily','weekly') else 'off'
-        _atomic_private_file(config,json.dumps({'token':token,'admins':admins,'viewers':viewers,'lang':lang,
-                                                'notify':notify,'digest':digest},indent=1)+'\n',mode=0o640)
+            try: digest=telegram_schedule(old.get('digest','off'))
+            except ValueError: digest='off'
+        settings={'token':token,'admins':admins,'viewers':viewers,'lang':lang,'notify':notify,'digest':digest,
+                  'username':username}
+        if existing:                    # a new token keeps the notification choices made in the panel
+            for key in ('events','thresholds','backup_file','api_base'):
+                if key in old: settings[key]=old[key]
+        _atomic_private_file(config,json.dumps(settings,indent=1)+'\n',mode=0o640)
         os.chown(config,0,group)
         _systemctl('restart','awg31-bot.service')
         active=_systemctl('is-active','awg31-bot.service').strip()
@@ -743,12 +809,54 @@ def telegram_set(data):
         require_panel_password(data)
     lang=str(data.get('lang',config.get('lang','ru')))
     if lang not in ('ru','en'): raise ValueError('Language: ru or en')
-    digest=str(data.get('digest',config.get('digest','off')))
-    if digest not in ('off','daily','weekly'): raise ValueError('Digest: off, daily or weekly')
-    notify=data.get('notify',config.get('notify') or {})
-    if not isinstance(notify,dict): raise ValueError('Invalid notification settings')
-    config.update({'admins':admins,'viewers':viewers,'lang':lang,'digest':digest,
-                   'notify':{g:bool(notify.get(g,False)) for g in NOTIFY_GROUPS}})
+    digest=telegram_schedule(data.get('digest',config.get('digest','off')))
+    old_groups={g:bool((config.get('notify') or {}).get(g,True)) for g in NOTIFY_GROUPS}
+    events=config.get('events') if isinstance(config.get('events'),dict) else {}
+    events={key:bool(events.get(key,old_groups.get(group,True))) for key,group in TELEGRAM_EVENTS.items()}
+    if 'events' in data:
+        if not isinstance(data['events'],dict): raise ValueError('Invalid notification settings')
+        events={key:bool(data['events'].get(key,False)) for key in TELEGRAM_EVENTS}
+    elif 'notify' in data:                     # the older form: one switch per group
+        if not isinstance(data['notify'],dict): raise ValueError('Invalid notification settings')
+        events={key:bool(data['notify'].get(group,False)) if group in NOTIFY_GROUPS else events[key]
+                for key,group in TELEGRAM_EVENTS.items()}
+    thresholds=dict(TELEGRAM_THRESHOLDS)
+    if isinstance(config.get('thresholds'),dict): thresholds.update(config['thresholds'])
+    if 'thresholds' in data:
+        if not isinstance(data['thresholds'],dict): raise ValueError('Invalid thresholds')
+        thresholds.update(data['thresholds'])
+    for key in TELEGRAM_THRESHOLDS:
+        try: thresholds[key]=int(thresholds[key])
+        except (TypeError,ValueError): raise ValueError('Thresholds: whole percent from 10 to 100') from None
+        if not 10<=thresholds[key]<=100: raise ValueError('Thresholds: whole percent from 10 to 100')
+    thresholds={key:thresholds[key] for key in TELEGRAM_THRESHOLDS}
+    stored_api=str(config.get('api_base') or TELEGRAM_API)
+    api_base=stored_api
+    if 'api_base' in data:                     # an unchanged address is kept as it is, even an older free-form one
+        wanted=str(data.get('api_base') or '').strip().rstrip('/') or TELEGRAM_API
+        if wanted!=stored_api.rstrip('/'): api_base=telegram_api_base(wanted)
+    token=str(data.get('token') or '').strip()
+    # Where the token is sent and the token itself are as lasting as who the administrators are.
+    if api_base!=stored_api or token:
+        require_panel_password(data)
+    if token:
+        if not re.fullmatch(r'[0-9]{5,14}:[A-Za-z0-9_-]{30,60}',token): raise ValueError('Invalid Telegram token format')
+        import sys
+        probe=TELEGRAM_PROBE
+        if not probe.is_file(): raise ValueError('Telegram setup helper is not installed; run scripts/upgrade-core.sh')
+        cp=subprocess.run([sys.executable,str(probe),'check-token'],input=token+'\n',text=True,capture_output=True,
+                          timeout=40,check=False,env={**os.environ,'AWG31_TELEGRAM_API':api_base})
+        username=cp.stdout.strip()
+        if cp.returncode or not re.fullmatch(r'[A-Za-z0-9_]{1,32}',username):
+            raise ValueError('Telegram did not accept the new token, or the API server is unreachable')
+        config.update(token=token,username=username)
+    enabled=data.get('enabled',True) is not False
+    config.update({'admins':admins,'viewers':viewers,'lang':lang,'digest':digest,'events':events,
+                   'thresholds':thresholds,'backup_file':bool(data.get('backup_file',config.get('backup_file',old_groups['backups']))),
+                   # Group switches stay for older tools: on while any event of the group is on.
+                   'notify':{g:any(on for key,on in events.items() if TELEGRAM_EVENTS[key]==g) for g in NOTIFY_GROUPS}})
+    if api_base==TELEGRAM_API: config.pop('api_base',None)
+    else: config['api_base']=api_base
     original=file.stat()
     fd,path=tempfile.mkstemp(prefix='.telegram-',dir=file.parent)
     try:
@@ -759,8 +867,28 @@ def telegram_set(data):
         os.replace(path,file)
     finally:
         Path(path).unlink(missing_ok=True)
-    subprocess.run(['systemctl','restart','awg31-bot.service'],capture_output=True,timeout=30,check=False)
-    audit({'event':'telegram_changed','target':f'{len(admins)} admin(s), {len(viewers)} viewer(s)'})
+    if enabled:
+        subprocess.run(['systemctl','enable','awg31-bot.service'],capture_output=True,timeout=30,check=False)
+        subprocess.run(['systemctl','restart','awg31-bot.service'],capture_output=True,timeout=30,check=False)
+    else:
+        subprocess.run(['systemctl','disable','--now','awg31-bot.service'],capture_output=True,timeout=30,check=False)
+    detail=f'{len(admins)} admin(s), {len(viewers)} viewer(s)'+('' if enabled else ', bot switched off')
+    if token: detail+=f', new token @{config.get("username","")}'
+    audit({'event':'telegram_changed','target':detail})
+    return {'ok':True}
+
+
+def telegram_test(data=None):
+    """Send the test message to every administrator with the saved settings."""
+    if not bot_config_file().is_file(): raise ValueError('The bot is not connected: connect it first')
+    import sys
+    probe=TELEGRAM_PROBE
+    if not probe.is_file(): raise ValueError('Telegram setup helper is not installed; run scripts/upgrade-core.sh')
+    cp=subprocess.run([sys.executable,str(probe),'send-test'],capture_output=True,text=True,timeout=60,check=False,
+                      env={**os.environ,'AWG31_BOT_CONFIG':str(bot_config_file())})
+    if cp.returncode:
+        raise ValueError('Telegram did not deliver the message: check the token, the API server and that every '
+                         'administrator has sent /start to the bot')
     return {'ok':True}
 
 
