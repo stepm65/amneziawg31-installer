@@ -216,7 +216,7 @@ def test_the_bot_cannot_do_what_the_sudo_rule_withholds(env):
     """Even a bug in the bot cannot delete a server or restore a backup: sudo refuses."""
     panel = sudo_list('AWG31_SUDO_COMMANDS')
     withheld = {'server-delete', 'server-create', 'backup-restore', 'backup-export', 'backup-delete', 'password-change',
-                'settings', 'profile-import', 'session-revoke', 'backup-policy-set', 'delete-batch', 'client-network'}
+                'settings', 'profile-import', 'session-revoke', 'backup-policy-set', 'delete-batch', 'client-network', 'client-extra'}
     # The one command only the bot has hands out archives that are already encrypted.
     assert BOT_ALLOWED - panel == {'backup-export-encrypted'} and not BOT_ALLOWED & withheld
     rule = subprocess.run(['bash', '-c', f'. {ROOT}/scripts/sudoers.sh; awg31_render_bot_sudoers'],

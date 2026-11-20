@@ -4,7 +4,7 @@
 
 An installer and a web console for running **AmneziaWG 3.1** on your own server: a kernel module built with DKMS, an interactive setup wizard and a bilingual (EN/RU) panel for servers, clients, traffic and backups. No Docker, no control plane in the cloud, nothing loaded from a CDN.
 
-Version **0.14.1** · MIT licence · not affiliated with the AmneziaVPN developers.
+Version **0.14.2** · MIT licence · not affiliated with the AmneziaVPN developers.
 
 ![Infrastructure overview](docs/screenshots/en-dashboard.png)
 
@@ -17,6 +17,7 @@ Version **0.14.1** · MIT licence · not affiliated with the AmneziaVPN develope
 - **Per-server traffic switches:** clients may reach each other or are isolated (also from clients of the other servers); access to the private networks behind the server can be closed; the server's own services (SSH, the panel) can be closed to clients; client IPv6 can be routed into the tunnel and dropped. The cloud metadata address range is always closed to clients. Networks behind a client keep working in every state.
 - **Stale-configuration badge:** the client list shows who needs a new file after settings changed.
 - **I1–I5 packets:** a Generate button for each field and ready-made templates for `I1` (random bytes, DNS query, STUN binding request, QUIC-shaped packet). Enabling them with empty fields creates `I1` automatically.
+- **Extra [Interface] lines** for clients on a router, in a container or on a Linux gateway: `PostUp`, `PostDown`, `Table` and the like go into the `.conf`, its QR code and the bot, but not into the `vpn://` link. Ready-made templates and applying them to several clients at once.
 - **Monitoring:** host CPU, RAM, swap, disk and uplink traffic, per-server traffic charts, 30 days of history collected by a systemd timer.
 - **Backups:** full archives with checksums, download, schedule (daily or weekly), retention, restore with a safety snapshot; optional passphrase encryption (OpenPGP), after which the bot delivers every new backup to Telegram.
 - **Two-factor sign-in:** TOTP codes from any authenticator app in addition to the password.
@@ -159,6 +160,22 @@ The **audit log** has pages, filters by event, dates and text, a CSV export, and
 Short notation does not mean a small packet: `<r 1000>` is 1000 random bytes on the wire. The ClientHello template is written as a 2400-character hex string, is the same on every connection and does not fit into a QR code, so give the client the `.conf` file. You can also paste your own captured packet as `<b 0x…>`.
 
 Templates only set the shape of the first packets. Whether they help against a particular filter depends on that network, so test them where you use the VPN. After changing I1–I5, import the client configuration again.
+
+### Extra [Interface] lines
+
+A client that brings the tunnel up with `awg-quick` itself (a router, a container on MikroTik or OpenWrt, Docker, a Linux gateway) often needs its own commands in the configuration. Set them once in the “Extra [Interface] lines” block on the client page and they are in every downloaded `.conf`, its QR code and the file from the bot. They are left out of the `vpn://` link: AmneziaVPN apps do not run such commands. The commands run on the client, never on the server.
+
+Allowed are `PreUp`, `PostUp`, `PreDown`, `PostDown`, `Table` and comment lines starting with `#`. Sections and the parameters the panel manages (`Address`, `DNS`, `MTU`, `AllowedIPs`, obfuscation, `I1`–`I5`) are refused, and so is `#` inside a command: `awg-quick` would take the rest of the line for a comment.
+
+The “Insert a template ▾” menu:
+
+| Template | What it adds |
+|---|---|
+| Gateway for a local network | NAT into the tunnel, MSS clamping, `Table = 200` and a rule that sends LAN traffic into the tunnel. The LAN interface is found when the tunnel comes up (the default-route interface, otherwise the only one besides `lo` and the tunnel), so one template fits several containers with different `veth` names. |
+| MSS clamping only | fits TCP packets to the tunnel MTU |
+| NAT only | masquerades the traffic that goes into the tunnel |
+
+To give several clients the same lines, select them in the list and press “Extra lines”: the lines replace theirs or are added to them, and inserting the same lines twice does not duplicate them. Clients with extra lines carry a badge in the list and need a new `.conf` after a change.
 
 ## Server console
 

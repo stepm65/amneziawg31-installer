@@ -365,7 +365,7 @@ TEXT['ru'].update({
     'peer_network_settings':'Маршруты и имитация трафика клиента',
     'save_client_network':'Сохранить параметры клиента',
     'client_network_saved':'Параметры клиента сохранены',
-    'client_network_changed':'После изменения VPN-адреса или I1–I5 заново импортируйте .conf на клиенте. Дополнительные маршруты требуют IPv4 forwarding и корректных обратных маршрутов на самом клиенте и за ним.',
+    'client_network_changed':'После изменения VPN-адреса, I1–I5 или дополнительных строк заново импортируйте .conf на клиенте. Дополнительные маршруты требуют IPv4 forwarding и корректных обратных маршрутов на самом клиенте и за ним.',
     'routes_apply_warning':'Будут применены изменения адреса клиента и маршрутов на сервере. Активное VPN-соединение может прерваться.',
     'qr_warning':'Большой I-профиль может создать слишком плотный QR; используйте .conf при необходимости.',
 })
@@ -405,7 +405,7 @@ TEXT['en'].update({
     'peer_network_settings':'Client routing and traffic imitation',
     'save_client_network':'Save client settings',
     'client_network_saved':'Client settings saved',
-    'client_network_changed':'Re-import the client .conf after changing its VPN address or I1–I5. Behind-client networks also require IPv4 forwarding and return routes on the client and its LAN.',
+    'client_network_changed':'Re-import the client .conf after changing its VPN address, I1–I5 or the extra lines. Behind-client networks also require IPv4 forwarding and return routes on the client and its LAN.',
     'routes_apply_warning':'The client address and server routes will be updated. Active VPN connections may be interrupted.',
     'qr_warning':'Long I1–I5 settings can make QR codes too dense; use .conf if scanning fails.',
 })
@@ -1261,6 +1261,100 @@ def cps_generate(request: Request, preset: str = 'random', host: str = ''):
                     media_type='application/json', headers={'Cache-Control': 'no-store'})
 
 
+# Extra [Interface] lines: awg-quick on a router, a container or a Linux gateway.
+# The templates stay generic: the LAN interface is found when the tunnel comes up.
+EXTRA_TEMPLATES = (
+    ('gateway', (
+        'PostUp = iptables -t nat -A POSTROUTING -o %i -j MASQUERADE',
+        'PostDown = iptables -t nat -D POSTROUTING -o %i -j MASQUERADE',
+        'PostUp = iptables -A FORWARD -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu',
+        'PostDown = iptables -D FORWARD -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu',
+        'Table = 200',
+        'PostUp = dev=$(ip -o -4 route show default | awk \'{print $5; exit}\'); '
+        '[ -n "$dev" ] || dev=$(ip -o link show | awk -F\': \' \'$2 != "lo" && $2 !~ /^%i/ {sub(/@.*/, "", $2); print $2; exit}\'); '
+        'ip rule del priority 300 2>/dev/null; ip rule add priority 300 iif "$dev" lookup 200 || true',
+        'PostDown = ip rule del priority 300 lookup 200 || true',
+    )),
+    ('mss', (
+        'PostUp = iptables -A FORWARD -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu',
+        'PostDown = iptables -D FORWARD -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu',
+    )),
+    ('nat', (
+        'PostUp = iptables -t nat -A POSTROUTING -o %i -j MASQUERADE',
+        'PostDown = iptables -t nat -D POSTROUTING -o %i -j MASQUERADE',
+    )),
+)
+
+
+def extra_template_text(key, t):
+    lines = dict(EXTRA_TEMPLATES)[key]
+    return '\n'.join((f'# {t("extra_tpl_" + key + "_comment")}', *lines))
+
+
+def extra_lines_block(prefix, value, t):
+    """Textarea with the «Insert a template ▾» menu (variant B chosen by the author)."""
+    field = f'{prefix}-extra-lines'
+    items = ''.join(
+        f'<button type="button" class="extra-menu-item" role="menuitem" data-extra-target="{field}" '
+        f'data-extra-text="{h(extra_template_text(key, t))}"><strong>{h(t("extra_tpl_" + key))}</strong>'
+        f'<small>{h(t("extra_tpl_" + key + "_hint"))}</small></button>'
+        for key, _ in EXTRA_TEMPLATES)
+    return (f'<div class="extra-lines" data-extra-lines>'
+            f'<div class="extra-lines-head"><label for="{field}"><strong>{h(t("extra_title"))}</strong></label>'
+            f'<details class="extra-menu"><summary class="btn btn-secondary btn-small">{icon("plus",15)}{h(t("extra_insert"))}'
+            f'<span class="extra-caret" aria-hidden="true">▾</span></summary>'
+            f'<div class="extra-menu-list" role="menu">{items}</div></details></div>'
+            f'<textarea id="{field}" name="extra_lines" class="extra-text" rows="{min(14, value.count(chr(10)) + 2) if value else 3}" spellcheck="false" '
+            f'autocomplete="off" maxlength="4096" placeholder="PostUp = …">{h(value)}</textarea>'
+            f'<small>{h(t("extra_hint"))}</small></div>')
+
+
+TEXT['ru'].update({
+    'extra_title': 'Дополнительные строки [Interface]',
+    'extra_insert': 'Вставить шаблон',
+    'extra_hint': 'Для клиентов, которые сами поднимают туннель через awg-quick: роутер, контейнер, Linux-шлюз. '
+                  'Допустимы PreUp, PostUp, PreDown, PostDown, Table и комментарии с #. Строки попадают в .conf, его QR и в бота, '
+                  'но не в ссылку vpn:// — приложения AmneziaVPN команды не выполняют. Команды выполняются на клиенте, не на сервере.',
+    'extra_tpl_gateway': 'Шлюз для локальной сети',
+    'extra_tpl_gateway_hint': 'NAT, clamp MSS и маршрут из LAN в туннель. Интерфейс LAN находится сам — подходит для MikroTik, OpenWrt, Docker, Linux.',
+    'extra_tpl_gateway_comment': 'Шлюз для локальной сети: трафик из LAN уходит в туннель',
+    'extra_tpl_mss': 'Только clamp MSS',
+    'extra_tpl_mss_hint': 'Подгонка размера TCP-пакетов под MTU туннеля, если сайты открываются не полностью.',
+    'extra_tpl_mss_comment': 'Clamp MSS: TCP-пакеты подгоняются под MTU туннеля',
+    'extra_tpl_nat': 'Только NAT',
+    'extra_tpl_nat_hint': 'Маскарадинг трафика, который уходит в туннель.',
+    'extra_tpl_nat_comment': 'NAT: трафик за клиентом выходит с его адреса в туннеле',
+    'extra_badge': 'доп. строки', 'extra_badge_hint': 'В конфигурации есть дополнительные строки [Interface]',
+    'extra_bulk': 'Доп. строки', 'extra_bulk_title': 'Дополнительные строки для выбранных',
+    'extra_bulk_hint': 'Одни и те же строки [Interface] для всех отмеченных клиентов. После сохранения им нужно заново скачать .conf.',
+    'extra_mode_replace': 'Заменить строки клиентов', 'extra_mode_append': 'Добавить к уже заданным',
+    'extra_mode_hint': 'Пустое поле с «Заменить» удаляет дополнительные строки у выбранных.',
+    'extra_bulk_save': 'Применить к выбранным',
+})
+TEXT['en'].update({
+    'extra_title': 'Extra [Interface] lines',
+    'extra_insert': 'Insert a template',
+    'extra_hint': 'For clients that bring the tunnel up with awg-quick themselves: a router, a container, a Linux gateway. '
+                  'PreUp, PostUp, PreDown, PostDown, Table and # comments are allowed. The lines go into the .conf, its QR code and the bot, '
+                  'but not into the vpn:// link: AmneziaVPN apps do not run commands. Commands run on the client, never on the server.',
+    'extra_tpl_gateway': 'Gateway for a local network',
+    'extra_tpl_gateway_hint': 'NAT, MSS clamping and a route from the LAN into the tunnel. Finds the LAN interface itself: MikroTik, OpenWrt, Docker, Linux.',
+    'extra_tpl_gateway_comment': 'Gateway for a local network: LAN traffic goes into the tunnel',
+    'extra_tpl_mss': 'MSS clamping only',
+    'extra_tpl_mss_hint': 'Fits TCP packets to the tunnel MTU when pages load only partly.',
+    'extra_tpl_mss_comment': 'MSS clamping: TCP packets fit the tunnel MTU',
+    'extra_tpl_nat': 'NAT only',
+    'extra_tpl_nat_hint': 'Masquerades the traffic that goes into the tunnel.',
+    'extra_tpl_nat_comment': 'NAT: traffic behind the client leaves with its tunnel address',
+    'extra_badge': 'extra lines', 'extra_badge_hint': 'The configuration has extra [Interface] lines',
+    'extra_bulk': 'Extra lines', 'extra_bulk_title': 'Extra lines for the selected clients',
+    'extra_bulk_hint': 'The same [Interface] lines for every selected client. They need to download the .conf again afterwards.',
+    'extra_mode_replace': 'Replace the clients’ lines', 'extra_mode_append': 'Add to the lines they have',
+    'extra_mode_hint': 'An empty field with “Replace” removes the extra lines from the selected clients.',
+    'extra_bulk_save': 'Apply to the selected',
+})
+
+
 def cps_block(prefix, values, checked, lang, extra=''):
     """I1–I5 editor shared by the new-client and client-detail forms."""
     t = lambda key: tr(lang, key)
@@ -1810,7 +1904,9 @@ def server_content(request: Request, section: str = 'overview'):
                    '</div>')
         traffic_total = int(st.get('received', 0) or 0) + int(st.get('sent', 0) or 0)
         rows += (f'<tr class="client-row" data-name="{h(c["name"].lower())}" data-ip="{h(c["ip"])}" data-enabled="{int(active)}" '
-                 f'data-handshake="{int(st.get("handshake") or 0)}" data-traffic="{traffic_total}"><td><input class="peer-select" type="checkbox" form="bulk-delete-form" name="names" value="{name}" aria-label="{name}"></td><td class="client-name">{icon("server",16)}<span>{h(c["name"])}</span></td>'
+                 f'data-handshake="{int(st.get("handshake") or 0)}" data-traffic="{traffic_total}"><td><input class="peer-select" type="checkbox" form="bulk-delete-form" name="names" value="{name}" aria-label="{name}"></td><td class="client-name">{icon("server",16)}<span>{h(c["name"])}</span>'
+                 + (f'<small class="extra-badge" title="{h(t("extra_badge_hint"))}">{h(t("extra_badge"))}</small>' if c.get('extra_lines') is True else '')
+                 + '</td>'
                  f'<td><code class="ip-pill">{h(c["ip"])}</code>'
                  f'<small class="peer-routes-compact">{h(c.get("routed_subnets", ""))}</small></td>'
                  f'<td><span class="pill pill-{status_class}"><span class="dot"></span>'
@@ -1841,10 +1937,11 @@ def server_content(request: Request, section: str = 'overview'):
         <span class="table-count mono">{len(clients_all)} {h('клиентов' if lang=='ru' else 'peers')}</span></div>
         <form id="bulk-delete-form" method="post" action="/servers/{h(state['interface'])}/clients/bulk-delete" data-confirm="{h(t('bulk_delete_confirm'))}">{csrf(request)}
         <div class="bulk-toolbar"><span id="bulk-selection-count">{h(t('selected_count'))}: 0</span>
+        <button id="bulk-extra-button" type="button" class="btn btn-secondary btn-small" data-modal-open="bulk-extra-modal" disabled>{icon('file',16)}{h(t('extra_bulk'))}</button>
         <button id="bulk-delete-button" type="submit" class="btn btn-danger btn-small" disabled>{icon('trash',16)}{h(t('bulk_delete'))}</button></div></form>
         <div class="table-scroll"><table><thead><tr>
         <th><input type="checkbox" id="select-all-peers" aria-label="{h(t('select_all'))}"></th>{sort_head('name',t('name'))}{sort_head('ip',t('vpn_ip'))}{sort_head('status',t('status'))}
-        {sort_head('traffic',t('traffic'))}<th>{h(t('actions'))}</th></tr></thead><tbody data-sortable-clients>{rows}</tbody></table></div>
+        {sort_head('traffic',t('traffic'))}<th class="actions-head">{h(t('actions'))}</th></tr></thead><tbody data-sortable-clients>{rows}</tbody></table></div>
         </section>
 
         <!-- Add client modal -->
@@ -1871,6 +1968,24 @@ def server_content(request: Request, section: str = 'overview'):
             {cps_block('new', {}, False, lang)}
           </div>
           <div class="modal-footer"><button class="btn btn-primary" type="submit">{icon('plus',16)}{h(t('add_client_submit'))}</button></div>
+          </form>
+          </div>
+        </dialog>
+
+        <!-- Extra [Interface] lines for the selected clients -->
+        <dialog id="bulk-extra-modal" class="awg-modal">
+          <div class="modal-header"><h2>{icon('file',20)}{h(t('extra_bulk_title'))}</h2>
+          <button type="button" class="icon-btn modal-close" aria-label="{h(t('close_window'))}">{icon('x',20)}</button></div>
+          <div class="modal-body">
+          <form id="bulk-extra-form" class="add-client-form" method="post" action="/servers/{h(state['interface'])}/clients/bulk-extra" data-bulk-names>{csrf(request)}
+          <p class="info-line">{h(t('extra_bulk_hint'))}</p>
+          <p class="bulk-extra-count mono" data-bulk-names-count></p>
+          {extra_lines_block('bulk', '', t)}
+          <fieldset class="extra-mode"><legend class="sr-only">{h(t('extra_bulk'))}</legend>
+          <label class="check-field"><input type="radio" name="mode" value="replace" checked><span>{h(t('extra_mode_replace'))}</span></label>
+          <label class="check-field"><input type="radio" name="mode" value="append"><span>{h(t('extra_mode_append'))}</span></label>
+          <small>{h(t('extra_mode_hint'))}</small></fieldset>
+          <div class="modal-footer"><button class="btn btn-primary" type="submit">{icon('check',16)}{h(t('extra_bulk_save'))}</button></div>
           </form>
           </div>
         </dialog>
@@ -2236,7 +2351,8 @@ def gib_format(value):
 
 def build_client_link(obj, name):
     # The controller supplies only the one requested peer's data after auth.
-    return build_vpn_uri(obj['config'], name=name, server_ip=obj['server_ip'],
+    # The link carries the configuration without the admin's awg-quick lines.
+    return build_vpn_uri(obj.get('link_config') or obj['config'], name=name, server_ip=obj['server_ip'],
                          subnet=obj['subnet'], client_public_key=obj['client_public_key'])
 
 
@@ -2313,6 +2429,7 @@ def detail(request: Request, name: str, interface: str = ''):
           <textarea id="edit-routed-subnets" name="routed_subnets" rows="3" placeholder="192.168.50.0/24">{h(obj.get('routed_subnets',''))}</textarea>
           <small>{h(t('peer_routes_hint'))}</small></label>
           {cps_block('detail', obj, obj.get('i_enabled'), lang, extra=long_cps_warning)}
+          {extra_lines_block('detail', obj.get('extra_lines', ''), t)}
           <p class="info-line">{h(t('client_network_changed'))}</p>
           <button type="submit" class="btn btn-primary">{icon('check',16)}{h(t('save_client_network'))}</button>
         </form></section>'''
@@ -2342,6 +2459,8 @@ async def client_network(request: Request, name: str, interface: str = ''):
     payload = {'name':name, 'routed_subnets':str(data.get('routed_subnets','')),
                'i_enabled':'1' if data.get('i_enabled')=='1' else '0',
                **{f'i{n}':str(data.get(f'i{n}','')) for n in range(1,6)}}
+    if 'extra_lines' in data:
+        payload['extra_lines'] = str(data.get('extra_lines',''))
     address = str(data.get('ip','')).strip()
     if address:
         payload['ip'] = address
@@ -2444,6 +2563,25 @@ async def clients_bulk_delete(request: Request, interface: str = ''):
         control(request, 'delete-batch', {'names': names})
         for name in names:
             audit_event('client_deleted', f'{selected_server(request)}/{name}')
+    except RuntimeError as exc:
+        return error_page(request, tr(lang_of(request), 'error'), exc)
+    return RedirectResponse(scoped_prefix(request)+'/clients' if scoped_prefix(request) else '/servers/'+selected_server(request)+'/clients', status_code=303)
+
+
+@app.post('/servers/{interface}/clients/bulk-extra')
+async def clients_bulk_extra(request: Request, interface: str = ''):
+    form = await request.form()
+    require_csrf(request, form.get('csrf', ''))
+    names = form.getlist('names')
+    mode = str(form.get('mode', 'replace'))
+    if (not 1 <= len(names) <= 256 or len(set(names)) != len(names) or mode not in ('replace', 'append')
+            or any(not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_-]{0,31}', name) for name in names)):
+        raise HTTPException(422, detail='Invalid client selection')
+    try:
+        result = control(request, 'client-extra', {'names': names, 'mode': mode,
+                                                   'extra_lines': str(form.get('extra_lines', ''))})
+        for name in result.get('updated', []):
+            audit_event('client_modified', f'{selected_server(request)}/{name}')
     except RuntimeError as exc:
         return error_page(request, tr(lang_of(request), 'error'), exc)
     return RedirectResponse(scoped_prefix(request)+'/clients' if scoped_prefix(request) else '/servers/'+selected_server(request)+'/clients', status_code=303)

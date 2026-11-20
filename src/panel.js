@@ -228,6 +228,8 @@
   function updatePeerSelection() {
     const selected = peerCheckboxes.filter(x => x.checked).length;
     if (bulkButton) bulkButton.disabled = selected === 0;
+    const extraButton = byId('bulk-extra-button');
+    if (extraButton) extraButton.disabled = selected === 0;
     if (bulkCount) bulkCount.textContent = (isRu ? 'Выбрано: ' : 'Selected: ') + selected;
     if (allPeers) {
       allPeers.checked = peerCheckboxes.length > 0 && selected === peerCheckboxes.length;
@@ -893,4 +895,62 @@
     });
   }
   if (saved && value[saved.key]) apply(saved.key, saved.direction === 'desc' ? 'desc' : 'asc', false);
+})();
+
+// Extra [Interface] lines: the «Insert a template ▾» menu and the bulk form.
+(() => {
+  for (const item of document.querySelectorAll('[data-extra-target]')) {
+    item.addEventListener('click', () => {
+      const area = document.getElementById(item.dataset.extraTarget);
+      if (!area) return;
+      const text = item.dataset.extraText || '';
+      const current = area.value.replace(/\s+$/, '');
+      // Inserting the same template twice must not double the commands.
+      if (!('\n' + current + '\n').includes('\n' + text + '\n')) {
+        area.value = current ? current + '\n' + text : text;
+      }
+      area.rows = Math.min(14, Math.max(area.rows, area.value.split('\n').length + 1));
+      item.closest('details')?.removeAttribute('open');
+      area.focus();
+      area.setSelectionRange(area.value.length, area.value.length);
+      area.scrollLeft = 0;   // long commands: keep the start of the lines in view
+      area.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+  }
+  document.addEventListener('click', event => {
+    for (const menu of document.querySelectorAll('details.extra-menu[open]')) {
+      if (!menu.contains(event.target)) menu.removeAttribute('open');
+    }
+  });
+  document.addEventListener('keydown', event => {
+    if (event.key !== 'Escape') return;
+    for (const menu of document.querySelectorAll('details.extra-menu[open]')) {
+      menu.removeAttribute('open');
+      menu.querySelector('summary')?.focus();
+      event.preventDefault();
+      event.stopPropagation();
+    }
+  }, true);
+  const isRu = document.documentElement.lang === 'ru';
+  const selected = () => [...document.querySelectorAll('.peer-select:checked')].map(x => x.value);
+  for (const form of document.querySelectorAll('form[data-bulk-names]')) {
+    const count = form.querySelector('[data-bulk-names-count]');
+    const dialog = form.closest('dialog');
+    const refresh = () => {
+      const names = selected();
+      if (count) count.textContent = (isRu ? 'Клиенты: ' : 'Clients: ') + (names.join(', ') || '—');
+    };
+    dialog?.addEventListener('close', refresh);
+    document.querySelector(`[data-modal-open="${dialog?.id}"]`)?.addEventListener('click', refresh);
+    form.addEventListener('submit', event => {
+      form.querySelectorAll('input[data-bulk-name]').forEach(x => x.remove());
+      const names = selected();
+      if (!names.length) { event.preventDefault(); return; }
+      for (const name of names) {
+        const input = document.createElement('input');
+        input.type = 'hidden'; input.name = 'names'; input.value = name; input.dataset.bulkName = '1';
+        form.append(input);
+      }
+    });
+  }
 })();

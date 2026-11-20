@@ -11,7 +11,7 @@
 AWG31_SUDO_COMMANDS=(
   servers server-create server-start server-stop server-restart server-delete
   status list add download enable disable delete delete-batch settings
-  client-network client-policy history sessions host-history diagnostics
+  client-network client-extra client-policy history sessions host-history diagnostics
   profile-export profile-import
   backup-create backup-list backup-export backup-delete backup-policy
   backup-policy-set backup-check backup-restore

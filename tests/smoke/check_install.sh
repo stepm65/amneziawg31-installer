@@ -155,6 +155,19 @@ echo '{"interface":"awg0","prefix":"team","count":3,"quota_period":"monthly","tr
   | python3 -c 'import json,sys; c=json.load(sys.stdin)["clients"]; assert [x["name"] for x in c]==["team-01","team-02","team-03"] and all("PrivateKey" in x["config"] for x in c)'
 awg show awg0 | grep -c '^peer' | grep -qx 5 || fail 'expected five peers after the batch'
 
+step 'Extra [Interface] lines for router clients'
+echo '{"interface":"awg0","names":["team-01","team-02"],"mode":"replace","extra_lines":"postup = echo up\nTable = 200"}' \
+  | runuser -u awgpanel -- sudo -n "$MGR" client-extra | grep -q '"team-01"' || fail 'the panel cannot set extra lines'
+echo '{"interface":"awg0","name":"team-01"}' | "$MGR" download | python3 -c '
+import json, sys
+x = json.load(sys.stdin)
+head = x["config"].split("[Peer]")[0]
+assert "PostUp = echo up" in head and "Table = 200" in head, head
+assert "PostUp" not in x["link_config"] and "Table" not in x["link_config"]'
+echo '{"interface":"awg0","names":["team-01"],"extra_lines":"[Peer]"}' | "$MGR" client-extra >/dev/null 2>&1 \
+  && fail 'a section in the extra lines was accepted'
+"$MGR" list <<<'{"interface":"awg0"}' | python3 -c 'import json,sys; c={x["name"]:x for x in json.load(sys.stdin)["clients"]}; assert c["team-01"]["extra_lines"] and not c["team-03"]["extra_lines"]'
+
 step 'Second server next to the first one'
 uplink="$(ip -4 route show default | awk '{print $5; exit}')"
 echo "{\"interface\":\"awg1\",\"subnet\":\"10.88.0.0/24\",\"port\":\"51999\",\"mtu\":\"1280\",\"endpoint\":\"203.0.113.10\",\"dns\":\"1.1.1.1\",\"mode\":\"split\",\"uplink\":\"$uplink\"}" | "$MGR" server-create >/dev/null

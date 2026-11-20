@@ -137,6 +137,7 @@ def get_conn(create=False):
     if columns:
         new_columns = {'routed_subnets': "TEXT NOT NULL DEFAULT ''",
                        'i_enabled': 'INTEGER NOT NULL DEFAULT 0',
+                       'extra_lines': "TEXT NOT NULL DEFAULT ''",
                        **{f'i{x}': "TEXT NOT NULL DEFAULT ''" for x in range(1, 6)},
                        'comment': "TEXT NOT NULL DEFAULT ''",
                        'expires_at': "TEXT NOT NULL DEFAULT ''",
@@ -462,6 +463,66 @@ def reconcile_routed(old, new):
             run('iptables','-w','-I','FORWARD','1',*rule.split())
 
 
+# Extra [Interface] lines for clients that run awg-quick themselves (a router,
+# a container, a Linux gateway). They run on the client, never on this server.
+EXTRA_KEYS = {key.lower(): key for key in ('PreUp', 'PostUp', 'PreDown', 'PostDown', 'Table')}
+EXTRA_MANAGED = {'privatekey', 'address', 'dns', 'mtu', 'listenport', 'fwmark', 'saveconfig',
+                 'publickey', 'presharedkey', 'endpoint', 'allowedips', 'persistentkeepalive',
+                 'jc', 'jmin', 'jmax', 'headerprotectionkey', 'contentpaddingaddition',
+                 'randomtrailers', 'disablecookies', *I_KEYS}
+EXTRA_TABLE = re.compile(r'^(?:off|auto|[0-9]{1,10}|[A-Za-z_][A-Za-z0-9_-]{0,31})$')
+EXTRA_MAX_LINES = 40
+EXTRA_MAX_CHARS = 4096
+
+
+def validate_extra_lines(raw):
+    """Normalise the text the admin typed; refuse anything awg-quick would misread."""
+    text = str(raw or '').replace('\r\n', '\n').replace('\r', '\n')
+    if len(text) > EXTRA_MAX_CHARS:
+        raise ValueError(f'Дополнительные строки: не длиннее {EXTRA_MAX_CHARS} символов')
+    lines, table = [], False
+    for number, line in enumerate(text.split('\n'), 1):
+        line = line.strip()
+        if not line:
+            continue
+        if any(ord(ch) < 32 or ord(ch) == 127 for ch in line.replace('\t', ' ')):
+            raise ValueError(f'Строка {number}: недопустимые управляющие символы')
+        if line.startswith('#'):
+            lines.append(line)
+            continue
+        if line.startswith('['):
+            raise ValueError(f'Строка {number}: разделы добавлять нельзя, только строки внутри [Interface]')
+        key, sep, value = line.partition('=')
+        key, value = key.strip(), value.strip()
+        lowered = key.lower()
+        if not sep or not key:
+            raise ValueError(f'Строка {number}: ожидается «Ключ = значение» или комментарий с #')
+        if lowered in EXTRA_MANAGED or lowered in {k.lower() for k in S_KEYS + H_KEYS + TIMING_KEYS}:
+            raise ValueError(f'Строка {number}: {key} задаёт панель — измените его в настройках сервера или клиента')
+        if lowered not in EXTRA_KEYS:
+            raise ValueError(f'Строка {number}: допустимы PreUp, PostUp, PreDown, PostDown и Table')
+        if not value:
+            raise ValueError(f'Строка {number}: пустое значение')
+        if '#' in value:
+            # awg-quick cuts everything after # — the command would silently change.
+            raise ValueError(f'Строка {number}: символ # в значении awg-quick примет за комментарий')
+        if lowered == 'table':
+            if table:
+                raise ValueError(f'Строка {number}: Table можно указать только один раз')
+            if not EXTRA_TABLE.fullmatch(value):
+                raise ValueError(f'Строка {number}: Table — off, auto, номер или имя таблицы')
+            table = True
+        lines.append(f'{EXTRA_KEYS[lowered]} = {value}')
+    if len(lines) > EXTRA_MAX_LINES:
+        raise ValueError(f'Дополнительные строки: не больше {EXTRA_MAX_LINES}')
+    return '\n'.join(lines)
+
+
+def extra_lines(peer):
+    text = peer.get('extra_lines') or ''
+    return text.split('\n') if text else []
+
+
 def i_lines(peer):
     if not peer.get('i_enabled'):
         return []
@@ -653,12 +714,15 @@ def client_allowed_ips(cfg, p, peers=()):
     return ', '.join(networks)
 
 
-def client_config(cfg, p, peers=()):
+def client_config(cfg, p, peers=(), extra=True):
+    """The client's .conf. extra=False leaves out the admin's awg-quick lines:
+    the AmneziaVPN link and apps cannot run PostUp commands."""
     allowed = client_allowed_ips(cfg, p, peers)
     return '\n'.join([
         '[Interface]', f'PrivateKey = {p["private_key"]}',
         f'Address = {p["ip"]}/32', f'DNS = {cfg["dns"]}',
         f'MTU = {cfg["mtu"]}', *awg_lines(cfg, True), *i_lines(p),
+        *(extra_lines(p) if extra else ()),
         '', '[Peer]', f'PublicKey = {cfg["public_key"]}',
         f'PresharedKey = {p["psk"]}',
         f'Endpoint = {cfg["endpoint"]}:{cfg["port"]}',
@@ -978,6 +1042,8 @@ def clients_action(con, which):
             con.execute('UPDATE clients SET exported_hash=? WHERE name=?',(config_fingerprint(exported),name))
             con.commit()
         return {'name':name,'ip':row['ip'],'config':exported,
+                'link_config':client_config(cfg,dict(row),peer_rows(con),extra=False),
+                'extra_lines':row['extra_lines'],
                 'routed_subnets':row['routed_subnets'],
                 'server_ip':cfg['server_ip'], 'subnet':cfg['subnet'],
                 'client_public_key':row['public_key'],
@@ -1045,6 +1111,58 @@ def validate_client_address(raw, cfg, con, owner):
     return str(address)
 
 
+def peer_backup(con, label):
+    """A copy of server.conf and the database before a client edit."""
+    backup_dir = Path(os.environ.get('AWG31_PEER_BACKUPS', '/var/backups/awg31-panel/peers'))
+    backup = backup_dir / (datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S') + '-' + IFACE + '-' + label + '-' + secrets.token_hex(3))
+    backup.mkdir(parents=True, mode=0o700, exist_ok=False)
+    os.chmod(backup, 0o700)
+    if CONF.exists():
+        shutil.copy2(CONF, backup/'server.conf')
+        os.chmod(backup/'server.conf', 0o600)
+    with sqlite3.connect(backup/'state.sqlite3') as target:
+        con.backup(target)
+    os.chmod(backup/'state.sqlite3', 0o600)
+
+
+def client_extra_update(con):
+    """Set (or append) the same extra [Interface] lines on a selection of clients."""
+    data = read_json()
+    names = data.get('names')
+    if (not isinstance(names, list) or not 1 <= len(names) <= 256
+            or any(not isinstance(name, str) or not NAME_RE.fullmatch(name) for name in names)
+            or len(set(names)) != len(names)):
+        raise ValueError('Invalid client selection')
+    mode = str(data.get('mode', 'replace'))
+    if mode not in ('replace', 'append'):
+        raise ValueError('mode: replace или append')
+    lines = validate_extra_lines(data.get('extra_lines', ''))
+    rows = {row['name']: row['extra_lines'] for row in con.execute(
+        'SELECT name, extra_lines FROM clients WHERE name IN (' + ','.join('?' for _ in names) + ')', names)}
+    if set(rows) != set(names):
+        raise ValueError('One or more clients no longer exist')
+    updates = {}
+    for name in names:
+        current = rows[name]
+        if mode == 'append' and current and lines:
+            # Applying the same template twice must not double the commands.
+            present = ('\n' + lines + '\n') in ('\n' + current + '\n')
+            new = current if present else current + '\n' + lines
+            try:
+                new = validate_extra_lines(new)
+            except ValueError as exc:
+                raise ValueError(f'{name}: {exc}') from None
+        else:
+            new = current if mode == 'append' and not lines else lines
+        if new != current:
+            updates[name] = new
+    if updates:
+        peer_backup(con, 'extra-' + str(len(updates)))
+        con.executemany('UPDATE clients SET extra_lines=? WHERE name=?', ((v, k) for k, v in updates.items()))
+        con.commit()
+    return {'ok': True, 'updated': sorted(updates), 'reimport_client': bool(updates)}
+
+
 def client_network_update(con):
     data = read_json()
     name = str(data.get('name', ''))
@@ -1058,20 +1176,12 @@ def client_network_update(con):
     address_changed = row['ip'] != address
     routes_changed = row['routed_subnets'] != routes
     cps_changed = any(row[key] != cps[key] for key in I_KEYS) or int(row['i_enabled']) != cps['i_enabled']
-    if address_changed or routes_changed or cps_changed:
-        backup_dir = Path(os.environ.get('AWG31_PEER_BACKUPS', '/var/backups/awg31-panel/peers'))
-        backup = backup_dir / (datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S') + '-' + IFACE + '-' + name + '-' + secrets.token_hex(3))
-        backup.mkdir(parents=True, mode=0o700, exist_ok=False)
-        os.chmod(backup, 0o700)
-        if CONF.exists():
-            shutil.copy2(CONF, backup/'server.conf')
-            os.chmod(backup/'server.conf', 0o600)
-        with sqlite3.connect(backup/'state.sqlite3') as target:
-            con.backup(target)
-        os.chmod(backup/'state.sqlite3', 0o600)
+    extra = validate_extra_lines(data['extra_lines']) if 'extra_lines' in data else row['extra_lines']
+    if address_changed or routes_changed or cps_changed or extra != row['extra_lines']:
+        peer_backup(con, name)
     con.execute('''UPDATE clients SET ip=?, routed_subnets=?, i_enabled=?,
-                   i1=?,i2=?,i3=?,i4=?,i5=? WHERE name=?''',
-                (address,routes,cps['i_enabled'],*(cps[key] for key in I_KEYS),name))
+                   i1=?,i2=?,i3=?,i4=?,i5=?, extra_lines=? WHERE name=?''',
+                (address,routes,cps['i_enabled'],*(cps[key] for key in I_KEYS),extra,name))
     if address_changed or routes_changed:
         apply(cfg,con)  # sync peer AllowedIPs and reconcile routes without a forced restart
     con.commit()
@@ -1221,7 +1331,8 @@ def get_status(con, with_clients=False):
         peers = peer_rows(con)
         result['clients'] = [
             {k:p[k] for k in ('name','ip','public_key','enabled','created_at','routed_subnets','i_enabled','comment','expires_at','traffic_limit_bytes','used_bytes','disabled_reason','last_handshake','telegram_id','owner_export','speed_limit_mbit','quota_period')}
-            | {'stats': (stats.get(p['public_key']) or {'handshake':p['last_handshake'],'received':p['last_rx'],'sent':p['last_tx']}),
+            | {'extra_lines': bool(p.get('extra_lines')),
+               'stats': (stats.get(p['public_key']) or {'handshake':p['last_handshake'],'received':p['last_rx'],'sent':p['last_tx']}),
                # True when the configuration handed out earlier no longer matches the server.
                'config_stale': bool(p.get('exported_hash')) and p['exported_hash'] != config_fingerprint(client_config(cfg,p,peers))}
             for p in peers]
@@ -1230,7 +1341,7 @@ def get_status(con, with_clients=False):
 
 def main():
     if os.geteuid() != 0: raise PermissionError('Контроллер требует root')
-    if len(sys.argv) != 2 or sys.argv[1] not in ('init','status','list','add','download','enable','disable','delete','delete-batch','client-network','client-policy','settings','sample','history','add-batch','sessions'):
+    if len(sys.argv) != 2 or sys.argv[1] not in ('init','status','list','add','download','enable','disable','delete','delete-batch','client-network','client-extra','client-policy','settings','sample','history','add-batch','sessions'):
         raise ValueError('Неподдерживаемая команда')
     LOCK.parent.mkdir(parents=True, exist_ok=True)
     with open(LOCK,'a+') as lock:
@@ -1245,6 +1356,7 @@ def main():
                 elif op == 'add': result = clients_add(con)
                 elif op == 'add-batch': result = clients_add_batch(con)
                 elif op == 'client-network': result = client_network_update(con)
+                elif op == 'client-extra': result = client_extra_update(con)
                 elif op == 'client-policy': result = client_policy_update(con)
                 elif op == 'sample': result = sample_usage(con)
                 elif op == 'history': result = traffic_history(con,read_json())
