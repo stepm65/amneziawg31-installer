@@ -165,3 +165,55 @@ def test_no_class_or_id_that_ad_blockers_hide_everywhere():
     risky = re.compile(r'(share|sharing|social|sponsor|advert|ads?[-_]|banner|promo|popup|cookie|newsletter|subscribe)', re.I)
     assert not sorted(name for name in names if risky.match(name))
     assert 'cfgx-text' in names and 'cfgx-config-details' in names
+
+
+def test_version_at_the_foot_of_the_sidebar_and_a_newer_release(ui, monkeypatch):
+    module, client, _ = ui
+    version = (ROOT / 'VERSION').read_text().strip()
+    assert module.panel_version() == version
+    html = client.get('/').text
+    link = f'href="https://github.com/stepm65/amneziawg31-installer/releases/tag/v{version}"'
+    assert 'class="sidebar-version"' in html and link in html and f'<span>v{version}</span>' in html
+    assert 'sidebar-update' not in html, 'no hint while nothing newer is known'
+    # The login page does not tell strangers which version runs here.
+    from fastapi.testclient import TestClient
+    assert 'sidebar-version' not in TestClient(module.app).get('/login').text
+    # A newer release found by the background check is shown; an older or equal one is not.
+    monkeypatch.setenv('AWG31_UPDATE_CHECK', '1')
+    major, minor, patch = (int(x) for x in version.split('.'))
+    module._latest.update(checked=module.time.time(), tag=f'v{major}.{minor}.{patch + 1}')
+    html = client.get('/').text
+    assert f'releases/tag/v{major}.{minor}.{patch + 1}"' in html and f'Доступна v{major}.{minor}.{patch + 1}' in html
+    module._latest.update(tag=f'v{version}')
+    assert 'sidebar-update' not in client.get('/').text
+    module._latest.update(tag='v0.0.1')
+    assert 'sidebar-update' not in client.get('/').text
+    # Switched off in the unit: no hint and no request to GitHub.
+    monkeypatch.setenv('AWG31_UPDATE_CHECK', '0')
+    module._latest.update(checked=0.0, tag=f'v{major + 1}.0.0')
+    started = []
+    monkeypatch.setattr(module, '_fetch_latest_release', lambda: started.append(1))
+    assert 'sidebar-update' not in client.get('/').text and not started
+
+
+def test_release_check_asks_github_at_most_twice_a_day(ui, monkeypatch):
+    module, client, _ = ui
+    monkeypatch.setenv('AWG31_UPDATE_CHECK', '1')
+    started = []
+
+    class Thread:
+        def __init__(self, target, **_):
+            self.target = target
+
+        def start(self):
+            started.append(1)
+            module._latest['busy'] = False
+    import threading
+    monkeypatch.setattr(threading, 'Thread', Thread)
+    module._latest.update(checked=0.0, tag='', busy=False)
+    for _ in range(3):
+        module.newer_release()
+    assert len(started) == 1
+    module._latest['checked'] -= 13 * 3600
+    module.newer_release()
+    assert len(started) == 2

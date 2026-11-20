@@ -4,7 +4,7 @@
 
 An installer and a web console for running **AmneziaWG 3.1** on your own server: a kernel module built with DKMS, an interactive setup wizard and a bilingual (EN/RU) panel for servers, clients, traffic and backups. No Docker, no control plane in the cloud, nothing loaded from a CDN.
 
-Version **0.13.0** · MIT licence · not affiliated with the AmneziaVPN developers.
+Version **0.13.1** · MIT licence · not affiliated with the AmneziaVPN developers.
 
 ![Infrastructure overview](docs/screenshots/en-dashboard.png)
 
@@ -221,6 +221,8 @@ sudo awg31 update dev-latest # rolling build from main
 ```
 
 Running the Quick Start command again on a server that already has the console does the same thing. `awg31 update` uses the installer that came with the installed release, and refuses to install an older version unless `--allow-downgrade` is given. The update replaces the panel, the controller, fonts and the `sudo` allowlist, and refreshes the Python packages within the supported version ranges. Interfaces, keys, clients and firewall rules are left as they are. A copy of the replaced files and databases is kept in `/var/backups/awg31-upgrade.*`.
+
+The installed version is shown at the foot of the panel's sidebar and links to its release notes. When a newer release is published, a **vX.Y.Z is available** hint appears above it. The panel asks GitHub for the latest release in the background at most twice a day; `Environment=AWG31_UPDATE_CHECK=0` in `awg31-panel.service` switches that off.
 
 If your installed `awg31` has no `update` command yet, run `bash <(curl -Ls https://raw.githubusercontent.com/stepm65/amneziawg31-installer/main/install.sh) --upgrade` once.
 

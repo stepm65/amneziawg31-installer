@@ -1122,3 +1122,21 @@ body {background:var(--ui-bg);font-size:14px;line-height:1.48;}
   .tg-password {flex-basis:100%}
   .tg-actions .btn {flex:1 1 auto;justify-content:center}
 }
+
+/* Version at the foot of the sidebar (as in 3x-ui), with a hint when a newer release is published. */
+.sidebar-version {margin-top:auto;padding:14px 4px 0;border-top:1px solid #262b32;display:flex;flex-direction:column;gap:8px}
+.sidebar-version-link,.sidebar-update {display:flex;align-items:center;gap:9px;min-height:34px;padding:6px 10px;border-radius:9px;font-size:12.5px;font-weight:600;white-space:nowrap;overflow:hidden}
+.sidebar-version-link {color:#8f99a5;font-family:var(--font-mono)}
+.sidebar-version-link .icon {color:#7d8792;flex:none}
+.sidebar-version-link:hover {background:#22262c;color:#e8ecf0}
+.sidebar-update {color:#ffcd83;background:rgba(248,180,68,.11);border:1px solid rgba(248,180,68,.24)}
+.sidebar-update .icon {flex:none}
+.sidebar-update:hover {background:rgba(248,180,68,.18)}
+.sidebar-version-link span,.sidebar-update span {overflow:hidden;text-overflow:ellipsis}
+body.nav-collapsed .sidebar .sidebar-version {align-items:center;padding:12px 0 0}
+body.nav-collapsed .sidebar .sidebar-version span {display:none}
+body.nav-collapsed .sidebar .sidebar-version a {justify-content:center;width:44px;padding:6px 0}
+@media (max-width:860px) {
+  body.nav-collapsed .sidebar .sidebar-version span {display:inline}
+  body.nav-collapsed .sidebar .sidebar-version a {justify-content:flex-start;width:auto;padding:6px 10px}
+}

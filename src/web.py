@@ -48,6 +48,54 @@ def asset_version(name):
     except OSError:
         return '0'
 COOKIE_SECURE = os.environ.get('AWG31_COOKIE_SECURE', '1') == '1'
+REPOSITORY = 'stepm65/amneziawg31-installer'
+_latest = {'checked': 0.0, 'tag': '', 'busy': False}
+
+
+def panel_version():
+    """The installed release: VERSION next to web.py (installed) or at the project root (checkout)."""
+    for path in (Path(__file__).with_name('VERSION'), Path(__file__).resolve().parent.parent / 'VERSION'):
+        try:
+            text = path.read_text(encoding='utf-8').strip()
+        except OSError:
+            continue
+        if re.fullmatch(r'[0-9]+\.[0-9]+\.[0-9]+', text):
+            return text
+    return ''
+
+
+def _version_tuple(text):
+    match = re.fullmatch(r'v?([0-9]+)\.([0-9]+)\.([0-9]+)', str(text or ''))
+    return tuple(int(x) for x in match.groups()) if match else None
+
+
+def _fetch_latest_release():
+    import urllib.request
+    try:
+        request = urllib.request.Request(f'https://api.github.com/repos/{REPOSITORY}/releases/latest',
+                                         headers={'Accept': 'application/vnd.github+json', 'User-Agent': 'awg31-console'})
+        with urllib.request.urlopen(request, timeout=8) as reply:
+            tag = str(json.loads(reply.read(262144)).get('tag_name', ''))
+        if _version_tuple(tag):
+            _latest['tag'] = tag
+    except Exception:
+        pass                                   # offline, rate-limited or blocked: simply no hint
+    finally:
+        _latest['busy'] = False
+
+
+def newer_release():
+    """A newer published release, if one is known. GitHub is asked in the background at most twice a day;
+    AWG31_UPDATE_CHECK=0 in the panel's unit switches the check off."""
+    if os.environ.get('AWG31_UPDATE_CHECK', '1') == '0':
+        return ''
+    now = time.time()
+    if now - _latest['checked'] > 12 * 3600 and not _latest['busy']:
+        import threading
+        _latest.update(checked=now, busy=True)
+        threading.Thread(target=_fetch_latest_release, name='release-check', daemon=True).start()
+    installed, latest = _version_tuple(panel_version()), _version_tuple(_latest['tag'])
+    return _latest['tag'] if installed and latest and latest > installed else ''
 app = FastAPI(title='AWG 3.1 Panel', docs_url=None, redoc_url=None, openapi_url=None)
 app.add_middleware(SessionMiddleware, secret_key=AUTH['session_key'],
                    session_cookie='awg31_session', max_age=3600,
@@ -66,6 +114,8 @@ TEXT = {
         'new_server_note':'Создание второго сервера не изменяет awg0. Подсети и UDP-порты не должны пересекаться.',
         'server_create_failed':'Не удалось создать сервер',
         'dashboard': 'Управление сервером', 'clients': 'Клиенты', 'settings': 'Настройки сервера',
+        'version_notes': 'Что нового в этой версии (GitHub)', 'version_available': 'Доступна {version}',
+        'version_update_hint': 'Обновление: sudo awg31 update',
         'documentation': 'Документация', 'logout': 'Выход', 'sign_in': 'Вход администратора',
         'login': 'Войти', 'password': 'Пароль администратора', 'login_error': 'Неверный пароль',
         'login_intro':'Управляйте VPN-серверами, клиентами и безопасными подключениями в одной консоли.',
@@ -129,6 +179,8 @@ TEXT = {
         'new_server_note':'Creating another server does not change awg0. Subnets and UDP ports must be unique.',
         'server_create_failed':'Could not create server',
         'dashboard': 'Server overview', 'clients': 'Clients', 'settings': 'Server settings',
+        'version_notes': 'What is new in this version (GitHub)', 'version_available': '{version} is available',
+        'version_update_hint': 'To update: sudo awg31 update',
         'documentation': 'Documentation', 'logout': 'Log out', 'sign_in': 'Administrator sign in',
         'login': 'Sign in', 'password': 'Administrator password', 'login_error': 'Incorrect password',
         'login_intro':'Manage VPN servers, clients and secure connections from one console.',
@@ -570,6 +622,8 @@ ICONS = {
     'chevron-left': '<path d="m15 18-6-6 6-6"/>',
     'chevron-right': '<path d="m9 18 6-6-6-6"/>',
     'download': '<path d="M12 3v12m-4-4 4 4 4-4M4 17v4h16v-4"/>',
+    'tag': '<path d="M3 12V4a1 1 0 0 1 1-1h8l9 9-9 9z"/><circle cx="7.5" cy="7.5" r="1.5"/>',
+    'arrow-up': '<path d="M12 19V5M5 12l7-7 7 7"/>',
     'archive': '<rect x="3" y="4" width="18" height="5" rx="1"/><path d="M5 9v12h14V9M10 14h4"/>',
     'alert': '<path d="M12 3 2 21h20L12 3zM12 9v5M12 18h.01"/>',
     'more': '<circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/>',
@@ -840,6 +894,18 @@ def page(title, content, request):
     if path == '/servers': section = 'servers'
     if path == '/': section = 'overview'
 
+    def version_block():
+        # Shown to signed-in administrators only, at the foot of the sidebar (as in 3x-ui).
+        version = panel_version()
+        if not version:
+            return ''
+        newer = newer_release()
+        update = (f'<a class="sidebar-update" href="https://github.com/{REPOSITORY}/releases/tag/{h(newer)}" target="_blank" '
+                  f'rel="noopener noreferrer" title="{h(t("version_update_hint"))}">{icon("arrow-up",14)}'
+                  f'<span>{h(t("version_available").format(version=newer))}</span></a>') if newer else ''
+        return (f'<div class="sidebar-version{" has-update" if newer else ""}">{update}'
+                f'<a class="sidebar-version-link" href="https://github.com/{REPOSITORY}/releases/tag/v{h(version)}" target="_blank" '
+                f'rel="noopener noreferrer" title="{h(t("version_notes"))}">{icon("tag",15)}<span>v{h(version)}</span></a></div>')
     def nav_link(label, href, icon_name, nav_key):
         active = ((href == '/' and path == '/') or (href == '/servers' and path == '/servers')
                   or (nav_key == 'maintenance' and path.startswith('/maintenance')))
@@ -888,7 +954,7 @@ def page(title, content, request):
               <div class="instance-nav-list">{server_links}</div></div>
             <div class="nav-group"><div class="nav-group-label">{h(t('nav_group_system'))}</div>
               {nav_link(t('nav_maintenance_short'),'/maintenance?tab=diagnostics','settings','maintenance')}</div>
-          </nav></aside>'''
+          </nav>{version_block()}</aside>'''
         nav_overlay = '<button type="button" class="nav-scrim" id="nav-scrim" aria-label="'+h(t('nav_close'))+'" tabindex="-1"></button>'
         if scoped and active_metadata:
             active_section = section if section in ('overview','clients','monitoring','settings') else 'clients'

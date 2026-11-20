@@ -54,7 +54,9 @@ value = __import__('json').load(opener.open(base + '/api/cps/generate?preset=qui
 post('/servers/awg0/clients', csrf=token, name='smoke', i_enabled='1', i1=value, quota_gib='0', comment='smoke test')
 config = opener.open(base + '/servers/awg0/clients/smoke/download', timeout=30).read().decode()
 assert 'AllowedIPs = 0.0.0.0/0' in config and 'I1 = <b 0x' in config and 'PrivateKey' in config
-assert opener.open(base + '/', timeout=30).status == 200
+home = opener.open(base + '/', timeout=30).read().decode()
+installed = open('/opt/awg31-panel/VERSION').read().strip()
+assert f'<span>v{installed}</span>' in home, 'the installed version is not shown in the sidebar'
 opener.open(base + '/logout', timeout=30)
 try:
     final = opener.open(base + '/servers/awg0/clients', timeout=30).geturl()
