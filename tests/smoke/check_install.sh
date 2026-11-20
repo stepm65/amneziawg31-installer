@@ -368,7 +368,11 @@ echo '{"interface":"awg0","name":"ci-client"}' | "$MGR" sessions | python3 -c 'i
 debug="$(echo '{"enable":true}' | "$MGR" handshake-debug 2>&1 || :)"
 if [[ "$debug" == *'"enabled": true'* ]]; then
     grep -q 'amneziawg.*=p' /sys/kernel/debug/dynamic_debug/control || fail 'handshake debug is on but the kernel does not print'
-    systemctl list-timers --all --no-pager | grep -q awg31-debug-off || fail 'nothing switches handshake debug off again'
+    if ! systemctl is-active --quiet awg31-debug-off.timer; then
+        systemctl status --no-pager awg31-debug-off.timer awg31-debug-off.service 2>&1 | head -20 || :
+        systemctl list-timers --all --no-pager 2>&1 | head -20 || :
+        fail 'nothing switches handshake debug off again'
+    fi
     echo '{"enable":false}' | "$MGR" handshake-debug >/dev/null
     if grep -q 'amneziawg.*=p' /sys/kernel/debug/dynamic_debug/control; then fail 'handshake debug stayed on'; fi
     echo "handshake debug: on and off"
