@@ -28,6 +28,8 @@ def load_snapshot(root, monkeypatch):
 
 def write(path, text, mode=0o644):
     path.parent.mkdir(parents=True, exist_ok=True)
+    if path.exists():
+        path.unlink()                          # a read-only file (a sudo rule) is replaced, not rewritten
     path.write_text(text)
     path.chmod(mode)
 
