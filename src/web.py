@@ -1264,24 +1264,26 @@ def cps_generate(request: Request, preset: str = 'random', host: str = ''):
 # Extra [Interface] lines: awg-quick on a router, a container or a Linux gateway.
 # The templates stay generic: the LAN interface is found when the tunnel comes up.
 EXTRA_TEMPLATES = (
+    # awg-quick runs every hook as (eval "$hook") under set -e -o pipefail: any
+    # failing step, even an expected one, tears the whole tunnel down again.
     ('gateway', (
         'PostUp = iptables -t nat -A POSTROUTING -o %i -j MASQUERADE',
-        'PostDown = iptables -t nat -D POSTROUTING -o %i -j MASQUERADE',
+        'PostDown = iptables -t nat -D POSTROUTING -o %i -j MASQUERADE || true',
         'PostUp = iptables -A FORWARD -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu',
-        'PostDown = iptables -D FORWARD -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu',
+        'PostDown = iptables -D FORWARD -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu || true',
         'Table = 200',
-        'PostUp = dev=$(ip -o -4 route show default | awk \'{print $5; exit}\'); '
-        '[ -n "$dev" ] || dev=$(ip -o link show | awk -F\': \' \'$2 != "lo" && $2 !~ /^%i/ {sub(/@.*/, "", $2); print $2; exit}\'); '
-        'ip rule del priority 300 2>/dev/null; ip rule add priority 300 iif "$dev" lookup 200 || true',
-        'PostDown = ip rule del priority 300 lookup 200 || true',
+        'PostUp = dev=$(ip -o -4 route show default | awk \'{print $5; exit}\' || true); '
+        '[ -n "$dev" ] || dev=$(ip -o link show | awk -F\': \' \'$2 != "lo" && $2 !~ /^%i/ {sub(/@.*/, "", $2); print $2; exit}\' || true); '
+        'ip rule del priority 300 2>/dev/null || true; ip rule add priority 300 iif "$dev" lookup 200 || true',
+        'PostDown = ip rule del priority 300 2>/dev/null || true',
     )),
     ('mss', (
         'PostUp = iptables -A FORWARD -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu',
-        'PostDown = iptables -D FORWARD -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu',
+        'PostDown = iptables -D FORWARD -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu || true',
     )),
     ('nat', (
         'PostUp = iptables -t nat -A POSTROUTING -o %i -j MASQUERADE',
-        'PostDown = iptables -t nat -D POSTROUTING -o %i -j MASQUERADE',
+        'PostDown = iptables -t nat -D POSTROUTING -o %i -j MASQUERADE || true',
     )),
 )
 

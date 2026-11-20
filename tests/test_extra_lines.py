@@ -43,24 +43,65 @@ def test_every_template_passes_validation_and_is_valid_shell(tmp_path, monkeypat
     assert gateway.count('\n#') == 0 and gateway.startswith('# ')
 
 
-def test_gateway_hook_finds_the_lan_interface_by_itself(tmp_path):
-    """The default-route interface wins; without one, the only non-loopback, non-tunnel link."""
-    hook = [line for line in ctl.validate_extra_lines(
-        'PostUp = dev=$(ip -o -4 route show default | awk \'{print $5; exit}\'); '
-        '[ -n "$dev" ] || dev=$(ip -o link show | awk -F\': \' \'$2 != "lo" && $2 !~ /^%i/ {sub(/@.*/, "", $2); print $2; exit}\'); '
-        'echo "$dev"').split('\n')][0].partition('=')[2].strip().replace('%i', 'fi-awg')
+FAKE_IP = r"""#!/bin/bash
+state="$STATE"
+case "$1 $2 $3" in
+  "-o -4 route") printf "%s" "$ROUTE" ;;
+  "-o link show") printf "%s\n" "1: lo: <LOOPBACK,UP> mtu 65536" "2: fi-awg: <POINTOPOINT> mtu 1380" "44: veth3@if44: <BROADCAST> mtu 1500" ;;
+  "rule del priority")
+    # Like iproute2: deleting a rule that does not exist fails.
+    [ -s "$state/rule" ] || { echo "RTNETLINK answers: No such file or directory" >&2; exit 2; }
+    : > "$state/rule" ;;
+  "rule add priority") echo "$*" > "$state/rule" ;;
+  *) echo "unexpected ip $*" >&2; exit 9 ;;
+esac
+"""
+FAKE_IPTABLES = r"""#!/bin/bash
+echo "$*" >> "$STATE/iptables"
+case " $* " in *" -D "*) grep -qxF -- "${*/-D/-A}" "$STATE/iptables" || exit 1 ;; esac
+"""
+
+
+def awg_quick_hooks(text, kind):
+    return [line.partition('=')[2].strip().replace('%i', 'fi-awg')
+            for line in text.split('\n') if line.startswith(kind + ' ')]
+
+
+def run_like_awg_quick(hooks, env):
+    """awg-quick: set -e -o pipefail, then (eval "$hook") for each hook in turn."""
+    script = 'set -e -o pipefail\nfor hook in "$@"; do (eval "$hook"); done\n'
+    return subprocess.run(['bash', '-c', script, 'awg-quick', *hooks], env=env, capture_output=True, text=True)
+
+
+@pytest.mark.parametrize('route, lan', [('default via 172.17.99.1 dev veth3\n', 'veth3'),
+                                        ('default via 10.0.0.1 dev veth7\n', 'veth7'),
+                                        ('', 'veth3')])
+def test_templates_survive_awg_quick_up_and_down(tmp_path, monkeypatch, route, lan):
+    """Regression: a failing «ip rule del» on the first start used to tear the tunnel down."""
+    from test_web import create_app
+    create_app(tmp_path, monkeypatch)
+    _, texts = template_texts()
     fake = tmp_path / 'bin'
     fake.mkdir()
-    (fake / 'ip').write_text('#!/bin/bash\n'
-                             'if [ "$3" = route ]; then printf "%s" "$ROUTE"; else printf "%s\\n" '
-                             '"1: lo: <LOOPBACK,UP> mtu 65536" "2: fi-awg: <POINTOPOINT> mtu 1380" "44: veth3@if43: <BROADCAST> mtu 1500"; fi\n')
-    (fake / 'ip').chmod(0o755)
-    env = {'PATH': f'{fake}:/usr/bin:/bin'}
-    routed = subprocess.run(['bash', '-c', hook], env={**env, 'ROUTE': 'default via 172.17.99.1 dev veth7\n'},
-                            capture_output=True, text=True, check=True).stdout.strip()
-    assert routed == 'veth7'
-    fallback = subprocess.run(['bash', '-c', hook], env={**env, 'ROUTE': ''}, capture_output=True, text=True, check=True).stdout.strip()
-    assert fallback == 'veth3'
+    for name, body in (('ip', FAKE_IP), ('iptables', FAKE_IPTABLES)):
+        (fake / name).write_text(body)
+        (fake / name).chmod(0o755)
+    state = tmp_path / 'state'
+    state.mkdir()
+    env = {'PATH': f'{fake}:/usr/bin:/bin', 'STATE': str(state), 'ROUTE': route}
+    gateway = texts['gateway']
+    up = run_like_awg_quick(awg_quick_hooks(gateway, 'PostUp'), env)
+    assert up.returncode == 0, up.stderr
+    assert (state / 'rule').read_text().split() == ['rule', 'add', 'priority', '300', 'iif', lan, 'lookup', '200']
+    again = run_like_awg_quick(awg_quick_hooks(gateway, 'PostUp'), env)          # restart without a down
+    assert again.returncode == 0, again.stderr
+    down = run_like_awg_quick(awg_quick_hooks(gateway, 'PostDown'), env)
+    assert down.returncode == 0, down.stderr
+    assert (state / 'rule').read_text() == ''
+    (state / 'iptables').unlink()
+    for key in ('gateway', 'mss', 'nat'):                                         # down without an up
+        down = run_like_awg_quick(awg_quick_hooks(texts[key], 'PostDown'), env)
+        assert down.returncode == 0, (key, down.stderr)
 
 
 @pytest.mark.parametrize('text, message', [
