@@ -19,6 +19,7 @@ jobs:
             update: dnf -y -q update kernel kernel-core kernel-modules && dnf -y -q install tar
             # SELinux keeps Nginx off a non-standard port without an interactive consent.
             nginx: 'no'
+            from_previous: 'no'
           - name: ubuntu2604
             images: >-
               https://cloud-images.ubuntu.com/releases/resolute/release/ubuntu-26.04-server-cloudimg-amd64.img
@@ -28,6 +29,8 @@ jobs:
               export DEBIAN_FRONTEND=noninteractive; cloud-init status --wait >/dev/null 2>&1 || true;
               apt-get -qq update && apt-get -y -qq -o Dpkg::Options::=--force-confold full-upgrade
             nginx: 'yes'
+            # Here the run starts from the previous release: update, rollback, update again.
+            from_previous: 'yes'
     name: ${{ matrix.name }}
     steps:
       - uses: actions/checkout@v4
@@ -82,11 +85,23 @@ jobs:
           sleep 20
           for attempt in $(seq 1 60); do ./vm true 2>/dev/null && break; sleep 5; done
           ./vm 'uname -r'
+      - name: Previous release to update from
+        id: previous
+        if: matrix.from_previous == 'yes'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          current="v$(tr -d '[:space:]' < VERSION)"
+          tag="$(gh api "repos/${{ github.repository }}/releases?per_page=20" --jq '.[] | select(.draft == false and .prerelease == false) | .tag_name' \
+                 | python3 -c 'import re,sys; cur=sys.argv[1]; key=lambda t: tuple(map(int, re.findall(r"[0-9]+", t))); print(next((t for t in (l.strip() for l in sys.stdin) if re.fullmatch(r"v[0-9]+\.[0-9]+\.[0-9]+", t) and key(t) < key(cur)), ""))' "$current")"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "updating from: ${tag:-none}"
       - name: Install, exercise and purge
         run: |
           set -eu
           tar --exclude=.git --exclude=disk.img --exclude=seed.img --exclude=vmkey --exclude=serial.log -c . | ./vm 'mkdir -p /root/src && tar -x -C /root/src'
-          ./vm "cd /root/src && CI=true AWG31_SMOKE_NGINX=${{ matrix.nginx }} bash tests/smoke/check_install.sh"
+          ./vm "cd /root/src && CI=true AWG31_SMOKE_NGINX=${{ matrix.nginx }} AWG31_SMOKE_FROM=${{ steps.previous.outputs.tag }} bash tests/smoke/check_install.sh"
       - name: Logs on failure
         if: failure()
         run: |

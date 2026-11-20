@@ -189,7 +189,7 @@ def test_version_at_the_foot_of_the_sidebar_and_a_newer_release(ui, monkeypatch)
     major, minor, patch = (int(x) for x in version.split('.'))
     module._latest.update(checked=module.time.time(), tag=f'v{major}.{minor}.{patch + 1}')
     html = client.get('/').text
-    assert f'releases/tag/v{major}.{minor}.{patch + 1}"' in html and f'Доступна v{major}.{minor}.{patch + 1}' in html
+    assert 'class="sidebar-update" href="/maintenance?tab=update"' in html and f'Доступна v{major}.{minor}.{patch + 1}' in html
     module._latest.update(tag=f'v{version}')
     assert 'sidebar-update' not in client.get('/').text
     module._latest.update(tag='v0.0.1')

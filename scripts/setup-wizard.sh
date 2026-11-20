@@ -174,6 +174,8 @@ install -o root -g root -m 644 "$DIR/src/awg31admin.py" /usr/local/sbin/awg31adm
 install -d -o root -g root -m 755 /usr/local/libexec/awg31/scripts
 install -o root -g root -m 755 "$DIR/src/awg31bot.py" /usr/local/libexec/awg31/telegram-probe.py
 install -o root -g root -m 755 "$DIR/scripts/restore-backup.py" /usr/local/libexec/awg31/scripts/restore-backup.py
+install -o root -g root -m 755 "$DIR/scripts/awg31-snapshot.py" /usr/local/libexec/awg31/scripts/awg31-snapshot.py
+install -o root -g root -m 755 "$DIR/scripts/update-run.sh" /usr/local/libexec/awg31/scripts/update-run.sh
 install -o root -g root -m 644 "$DIR/src/web.py" /opt/awg31-panel/web.py
 install -o root -g root -m 644 "$DIR/src/awg31client.py" /opt/awg31-panel/awg31client.py
 install -o root -g root -m 644 "$DIR/src/amnezialink.py" /opt/awg31-panel/amnezialink.py

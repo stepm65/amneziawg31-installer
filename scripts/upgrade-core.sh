@@ -21,42 +21,16 @@ done
 compgen -G "$DIR/src/fonts/*.woff2" >/dev/null || die 'Missing src/fonts/*.woff2'
 "$APP/.venv/bin/python3" -m py_compile "$DIR/src/web.py" "$DIR/src/amnezialink.py" "$DIR/src/quicinitial.py"
 python3 -m py_compile "$DIR/src/awg31ctl" "$DIR/src/awg31mgr" "$DIR/src/awg31admin.py" "$DIR/src/awg31helper" "$DIR/src/awg31client.py"
-backup="$(mktemp -d /var/backups/awg31-upgrade.XXXXXXXX)"
-chmod 700 "$backup"
-for spec in "$APP/web.py:web.py" "$APP/amnezialink.py:amnezialink.py" "$APP/quicinitial.py:quicinitial.py" "$APP/awg31client.py:awg31client.py" "$APP/panel.css:panel.css" "$APP/md3.css:md3.css" "$APP/panel.js:panel.js" \
-            "$CTR:awg31ctl" "$MGR:awg31mgr" "/usr/local/sbin/awg31admin.py:awg31admin.py" "$SUD:sudoers"; do
-    src="${spec%%:*}"; dst="${spec#*:}"
-    if [[ -f "$src" ]]; then cp -p -- "$src" "$backup/$dst"; fi
-done
-# Snapshot all existing SQLite databases and configs before code or schema migration.
-# This is recovery material, not an automatic restore: the running VPS must not
-# have its VPN DB overwritten during a failed web-only upgrade.
-AWG31_PRE_UPGRADE_BACKUP="$backup" python3 - <<'PY_BACKUP'
-import os, sqlite3, shutil
-from pathlib import Path
-root=Path(os.environ['AWG31_PRE_UPGRADE_BACKUP'])
-base=Path('/var/lib/awg31-panel')
-for source in [base/'state.sqlite3', *(base/'servers').glob('awg*.sqlite3')]:
-    if not source.is_file(): continue
-    dest=root/'databases'/source.name
-    dest.parent.mkdir(parents=True,exist_ok=True)
-    with sqlite3.connect(source) as s,sqlite3.connect(dest) as d: s.backup(d)
-    dest.chmod(0o600)
-for source in Path('/etc/amnezia/amneziawg').glob('awg*.conf'):
-    dest=root/'configs'/source.name
-    dest.parent.mkdir(parents=True,exist_ok=True)
-    shutil.copy2(source,dest)
-    dest.chmod(0o600)
-PY_BACKUP
+# A snapshot of the whole installed program (and, as recovery material, the
+# databases and server configurations): a failed update returns to it at once,
+# and `sudo awg31 rollback` returns to it later. The newest five are kept.
+[[ -f "$DIR/scripts/awg31-snapshot.py" ]] || die 'Missing scripts/awg31-snapshot.py'
+backup="$(python3 "$DIR/scripts/awg31-snapshot.py" create --reason upgrade --to "$(tr -d '[:space:]' < "$DIR/VERSION" 2>/dev/null || :)")" ||
+    die 'Cannot take a snapshot of the installed version; nothing was changed'
+say "Snapshot of the installed version: $backup"
 restore(){
-    say "Rolling back application files from $backup"
-    for spec in "$APP/web.py:web.py" "$APP/amnezialink.py:amnezialink.py" "$APP/quicinitial.py:quicinitial.py" "$APP/awg31client.py:awg31client.py" "$APP/panel.css:panel.css" "$APP/md3.css:md3.css" "$APP/panel.js:panel.js" \
-                "$CTR:awg31ctl" "$MGR:awg31mgr" "/usr/local/sbin/awg31admin.py:awg31admin.py" "$SUD:sudoers"; do
-        dst="${spec%%:*}"; name="${spec#*:}"
-        if [[ -e "$backup/$name" ]]; then cp -p -- "$backup/$name" "$dst";
-        else rm -f -- "$dst"; fi
-    done
-    systemctl restart awg31-panel.service || true
+    say "Update failed: restoring the previous version from $backup"
+    python3 "$DIR/scripts/awg31-snapshot.py" restore "$(basename -- "$backup")" --no-snapshot || say 'WARNING: automatic restore failed; see sudo awg31 rollback'
 }
 completed=0
 trap 'if [[ $completed -eq 0 ]]; then restore; fi' EXIT
@@ -67,6 +41,8 @@ install -o root -g root -m 644 "$DIR/src/awg31admin.py" /usr/local/sbin/awg31adm
 install -d -o root -g root -m 755 /usr/local/libexec/awg31/scripts
 install -o root -g root -m 755 "$DIR/src/awg31bot.py" /usr/local/libexec/awg31/telegram-probe.py
 install -o root -g root -m 755 "$DIR/scripts/restore-backup.py" /usr/local/libexec/awg31/scripts/restore-backup.py
+install -o root -g root -m 755 "$DIR/scripts/awg31-snapshot.py" /usr/local/libexec/awg31/scripts/awg31-snapshot.py
+install -o root -g root -m 755 "$DIR/scripts/update-run.sh" /usr/local/libexec/awg31/scripts/update-run.sh
 say 'Checking existing server inventory'
 "$MGR" servers </dev/null
 say 'Installing narrowly scoped sudo permission'

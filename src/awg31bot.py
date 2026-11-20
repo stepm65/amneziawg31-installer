@@ -49,7 +49,7 @@ EVENTS = {
     'server_state': 'server', 'module': 'server', 'kernel': 'server', 'panel': 'server',
     'client_auto': 'clients', 'client_expiring': 'clients', 'client_quota': 'clients',
     'login': 'security', 'login_failed': 'security', 'password': 'security', 'owner_export': 'security',
-    'totp_recovery': 'security', 'invite': 'clients',
+    'totp_recovery': 'security', 'invite': 'clients', 'update': 'server',
     'backup_created': 'backups', 'backup_failed': 'backups', 'upload_failed': 'backups',
     'cpu': 'system', 'memory': 'system', 'disk': 'system',
 }
@@ -205,6 +205,8 @@ TEXT = {
         'invite_wait': 'Слишком много попыток. Попробуйте позже.',
         'n_invite': '✉️ Приглашение использовано: <b>{name}</b> ({iface}) теперь у {who}.',
         'n_totp_recovery': '🔐 Вход в веб-панель по резервному коду. Осталось кодов: {left}.',
+        'n_updated': '⬆️ Панель обновлена: {target}.', 'n_update_failed': '⚠️ Обновление панели не удалось: {target}. Ход — в «Обслуживание → Обновление».',
+        'n_rolled_back': '↩️ Панель откачена: {target}.',
         'confirm_rekey': ('Выпустить для <b>{name}</b> новый ключ? Текущая конфигурация перестанет работать сразу, '
                           'клиенту нужно будет импортировать новую. Адрес, лимиты, срок и владелец сохранятся.'),
         'rekeyed': '🔑 Ключ <b>{name}</b> перевыпущен. Новая конфигурация ниже.',
@@ -314,6 +316,8 @@ TEXT = {
         'invite_wait': 'Too many attempts. Try again later.',
         'n_invite': '✉️ Invitation used: <b>{name}</b> ({iface}) now belongs to {who}.',
         'n_totp_recovery': '🔐 Sign-in to the web panel with a recovery code. Codes left: {left}.',
+        'n_updated': '⬆️ The panel was updated: {target}.', 'n_update_failed': '⚠️ The panel update failed: {target}. The log is under Maintenance → Update.',
+        'n_rolled_back': '↩️ The panel was rolled back: {target}.',
         'confirm_rekey': ('Issue a new key for <b>{name}</b>? The current configuration stops working at once and '
                           'the client must import the new one. Address, limits, expiry and owner stay.'),
         'rekeyed': '🔑 The key of <b>{name}</b> was replaced. The new configuration follows.',
@@ -1191,6 +1195,9 @@ class Bot:
                 continue                    # the administrator did this through the bot and already saw the result
             if event == 'login_success' and self.on('login'):
                 self.notify(self.t('n_login', target=target))
+            elif event in ('panel_updated', 'panel_update_failed', 'panel_rolled_back') and self.on('update'):
+                key = {'panel_updated': 'n_updated', 'panel_update_failed': 'n_update_failed', 'panel_rolled_back': 'n_rolled_back'}[event]
+                self.notify(self.t(key, target=target or '?'))
             elif event == 'totp_recovery_used' and self.on('totp_recovery'):
                 self.notify(self.t('n_totp_recovery', left=target.split()[0] if target else '?'))
             elif event == 'password_changed' and self.on('password'):

@@ -14,8 +14,35 @@ CONF=/etc/amnezia/amneziawg/awg0.conf
 panel(){ curl --noproxy '*' -fsS --max-time 10 "http://127.0.0.1:$1/health" >/dev/null; }
 forward(){ iptables -w -S FORWARD; }
 
-step 'Unattended installation'
-bash "$ROOT/install.sh"
+if [[ -n "${AWG31_SMOKE_FROM:-}" ]]; then
+    # Update from the previous release, roll back to it, and update again: the
+    # rest of the checks then run on an installation that went through all three.
+    step "Installing the previous release $AWG31_SMOKE_FROM from GitHub"
+    bash "$ROOT/install.sh" "$AWG31_SMOKE_FROM"
+    [[ "v$(awg31 version)" == "$AWG31_SMOKE_FROM" ]] || fail "the previous release is not installed: $(awg31 version)"
+    clients_before="$("$MGR" list <<<'{"interface":"awg0"}' | python3 -c 'import json,sys; print(sorted((c["name"],c["public_key"]) for c in json.load(sys.stdin)["clients"]))')"
+    conf_before="$(sha256sum "$CONF" | cut -d' ' -f1)"
+    step "Updating $AWG31_SMOKE_FROM to $(cat "$ROOT/VERSION")"
+    bash "$ROOT/install.sh"
+    [[ "$(awg31 version)" == "$(cat "$ROOT/VERSION")" ]] || fail 'the update did not install the new version'
+    panel 18080 || fail 'panel is down after the update from the previous release'
+    [[ "$(sha256sum "$CONF" | cut -d' ' -f1)" == "$conf_before" ]] || fail 'the update changed the VPN configuration'
+    clients_now="$("$MGR" list <<<'{"interface":"awg0"}' | python3 -c 'import json,sys; print(sorted((c["name"],c["public_key"]) for c in json.load(sys.stdin)["clients"]))')"
+    [[ "$clients_now" == "$clients_before" ]] || fail 'clients changed during the update'
+    step "Rolling back to $AWG31_SMOKE_FROM"
+    awg31 rollback --yes || fail 'rollback to the previous release failed'
+    [[ "v$(awg31 version)" == "$AWG31_SMOKE_FROM" ]] || fail "rollback did not bring back $AWG31_SMOKE_FROM: $(awg31 version)"
+    panel 18080 || fail 'panel is down after the rollback'
+    runuser -u awgpanel -- sudo -n "$MGR" servers </dev/null >/dev/null || fail 'panel sudo permission broken after the rollback'
+    [[ "$(sha256sum "$CONF" | cut -d' ' -f1)" == "$conf_before" ]] || fail 'the rollback changed the VPN configuration'
+    step 'Updating again to the version under test'
+    bash "$ROOT/install.sh"
+    [[ "$(awg31 version)" == "$(cat "$ROOT/VERSION")" ]] || fail 'the second update did not install the new version'
+    step 'Unattended installation (done through the update above)'
+else
+    step 'Unattended installation'
+    bash "$ROOT/install.sh"
+fi
 awg show awg0 >/dev/null || fail 'awg0 is not up'
 panel 18080 || fail 'panel does not answer'
 [[ -s /root/awg31-initial-password.txt && "$(stat -c %a /root/awg31-initial-password.txt)" == 600 ]] || fail 'password file missing or not 0600'
@@ -523,6 +550,40 @@ panel 18081 || fail 'panel is down after the update'
 systemctl is-active --quiet awg31-bot.service || fail 'bot is down after the update'
 tg_push "$(tg_text '/servers' 4242)"
 tg_wait 40 '"text": "<b>Servers</b>"' || fail 'bot does not answer after the update'
+
+step 'Snapshots, rollback from the panel and from the console'
+SNAP=/usr/local/libexec/awg31/scripts/awg31-snapshot.py
+current="$(cat /opt/awg31-panel/VERSION)"
+latest="$(python3 "$SNAP" list --json | python3 -c 'import json,sys; s=[x for x in json.load(sys.stdin) if x["usable"]]; print(s[0]["name"] if s else "")')"
+[[ -n "$latest" ]] || fail 'the update did not leave a snapshot'
+python3 "$SNAP" list --json | python3 -c "import json,sys; s=json.load(sys.stdin)[0]; assert s['version']=='$current' and s['reason']=='upgrade', s"
+tar -tf "/var/backups/$latest/code.tar" | grep -qx 'opt/awg31-panel/web.py' || fail 'the snapshot lacks the panel'
+if tar -tf "/var/backups/$latest/code.tar" | grep -q '\.venv/'; then fail 'the snapshot holds the virtualenv'; fi
+# Only a newer release may be installed from the panel, and only with the password.
+reply="$(PW="$panel_password" V="v$current" python3 -c 'import json,os; print(json.dumps({"action":"update","target":os.environ["V"],"password":os.environ["PW"]}))')"
+panel_call update-start "$reply" | grep -q 'Only a newer release' || fail 'the panel offered to reinstall the same version'
+panel_call update-start '{"action":"rollback","target":"'"$latest"'","password":"wrong-password-0"}' | grep -q 'Incorrect' \
+  || fail 'a rollback started without the panel password'
+reply="$(PW="$panel_password" N="$latest" python3 -c 'import json,os; print(json.dumps({"action":"rollback","target":os.environ["N"],"password":os.environ["PW"]}))')"
+panel_call update-start "$reply" | grep -q '^0 ' || fail 'the panel could not start a rollback'
+for attempt in $(seq 1 90); do
+    state="$(panel_call update-status '{}' 2>/dev/null | sed -nE 's/.*"status": "([a-z]+)".*/\1/p' | head -n1)"
+    [[ "$state" == ok || "$state" == failed ]] && break
+    sleep 2
+done
+[[ "$state" == ok ]] || { cat /var/log/awg31-panel/update.log; fail "the rollback from the panel ended as: ${state:-unknown}"; }
+grep -q 'Rolled back' /var/log/awg31-panel/update.log || fail 'the rollback log is empty'
+grep -q 'panel_rolled_back' /var/log/awg31-panel/audit.jsonl || fail 'the rollback is not in the audit log'
+panel 18081 || fail 'panel is down after the rollback'
+[[ "$(sha256sum "$CONF" | cut -d' ' -f1)" == "$keys_before" ]] || fail 'the rollback changed the VPN configuration'
+python3 "$SNAP" list | grep -q 'before rollback' || fail 'the state before the rollback was not saved'
+# The console command goes back to the state before that rollback.
+awg31 rollback --yes >/tmp/awg31-rollback.txt 2>&1 || { cat /tmp/awg31-rollback.txt; fail 'awg31 rollback failed'; }
+panel 18081 || fail 'panel is down after the console rollback'
+[[ "$(awg31 version)" == "$current" ]] || fail 'the console rollback changed the version unexpectedly'
+runuser -u awgpanel -- sudo -n "$MGR" servers </dev/null >/dev/null || fail 'panel sudo permission broken after the rollback'
+systemctl is-active --quiet awg31-helper.service awg31-bot.service || fail 'helper or bot is down after the rollback'
+[[ "$(python3 "$SNAP" list --json | python3 -c 'import json,sys; print(len(json.load(sys.stdin)))')" -le 5 ]] || fail 'more than five snapshots are kept'
 
 step 'Uninstall with purge'
 bash /usr/local/libexec/awg31/scripts/uninstall.sh --purge --yes

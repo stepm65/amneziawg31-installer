@@ -54,10 +54,13 @@ def page(ui):
 ])
 def test_single_expiry_input_calendar_and_manual_entry(page, path, field_id):
     page.goto('http://panel.test' + path)
+    if field_id == 'new-expires':
+        page.locator('[data-modal-open="add-client-modal"]').click()      # the new-client form is a dialog
     field = page.locator('#' + field_id)
     button = page.locator('[data-expiry-open="' + field_id + '"]')
     calendar = page.locator('#' + field_id + '-calendar')
-    assert page.locator('.expiry-input input').count() == 1
+    # One text field per expiry control (the list page also has the batch form's control).
+    assert field.locator('xpath=ancestor::*[contains(@class,"expiry-input")][1]').locator('input').count() == 1
     field.fill('29.02.2028')
     button.click()
     assert 'февраль' in calendar.locator('strong').inner_text().lower()
@@ -129,15 +132,16 @@ def test_client_detail_alignment_and_visible_network_settings(page, width):
     assert page.locator('#edit-routed-subnets').is_visible()
     assert page.locator('.client-options form > button[type="submit"]').is_visible()
     cards = page.locator('.client-detail > .detail-card')
-    assert cards.count() == 3
+    assert cards.count() >= 3
     bounds = [card.bounding_box() for card in cards.all()]
     assert max(box['x'] for box in bounds) - min(box['x'] for box in bounds) < 1
     assert max(box['width'] for box in bounds) - min(box['width'] for box in bounds) < 1
-    gaps = [bounds[i+1]['y'] - bounds[i]['y'] - bounds[i]['height'] for i in range(2)]
-    assert abs(gaps[0] - gaps[1]) < 1
-    inputs = page.locator('.client-policy input:not([type="hidden"])')
+    gaps = [bounds[i+1]['y'] - bounds[i]['y'] - bounds[i]['height'] for i in range(len(bounds) - 1)]
+    assert max(gaps) - min(gaps) < 1
+    inputs = page.locator('.client-policy input:not([type="hidden"]):not([type="checkbox"])')
     input_bounds = [field.bounding_box() for field in inputs.all()]
     assert max(box['width'] for box in input_bounds) - min(box['width'] for box in input_bounds) < 1
     assert max(box['height'] for box in input_bounds) - min(box['height'] for box in input_bounds) < 1
     if width == 1600:
-        assert max(box['y'] for box in input_bounds) - min(box['y'] for box in input_bounds) < 1
+        # The policy fields stand in a grid: a wide screen fits them in a couple of rows.
+        assert len({round(box['y']) for box in input_bounds}) <= 3

@@ -962,3 +962,48 @@
     });
   }
 })();
+
+// Update from the panel: follow the run while the panel itself restarts.
+(() => {
+  const box = document.getElementById('update-progress');
+  if (!box) return;
+  const log = document.getElementById('update-log');
+  const label = box.querySelector('[data-update-label]');
+  const reload = box.querySelector('[data-update-reload]');
+  const startVersion = box.dataset.updateVersion || '';
+  let active = box.dataset.updateRunning === '1' || box.dataset.updateStatus === 'running';
+  let misses = 0;
+  const show = (status, text) => {
+    label.className = 'update-state is-' + status;
+    label.textContent = text;
+  };
+  const scroll = () => { if (log) log.scrollTop = log.scrollHeight; };
+  scroll();
+  if (!active) return;
+  const tick = async () => {
+    try {
+      const reply = await fetch('/api/update-status', { headers: { Accept: 'application/json' }, cache: 'no-store', credentials: 'same-origin' });
+      if (reply.status === 401) { window.location.reload(); return; }
+      if (!reply.ok) throw new Error(String(reply.status));
+      const data = await reply.json();
+      misses = 0;
+      if (log && typeof data.log === 'string' && data.log !== log.textContent) { log.textContent = data.log; scroll(); }
+      const status = (data.state && data.state.status) || 'running';
+      if (data.running || status === 'running') {
+        show('running', box.dataset.textRunning);
+      } else {
+        show(status, status === 'ok' ? box.dataset.textOk : box.dataset.textFailed);
+        if (reload) reload.hidden = false;
+        // A new version of the panel is serving now: load its page.
+        if (status === 'ok' && data.version && data.version !== startVersion) setTimeout(() => window.location.reload(), 2500);
+        return;
+      }
+    } catch (error) {
+      misses += 1;
+      show('running', box.dataset.textRestarting);         // the panel is restarting: keep asking
+      if (misses > 300) return;
+    }
+    setTimeout(tick, 2000);
+  };
+  setTimeout(tick, 1500);
+})();

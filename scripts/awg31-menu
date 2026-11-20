@@ -59,6 +59,30 @@ case "${1:-menu}" in
     rm -f -- "$runner"
     exit "$status"
     ;;
+  rollback)
+    # Back to the version before the last update (or to a named snapshot). Only
+    # the program changes: VPN interfaces, keys, clients and settings stay.
+    tool=/usr/local/libexec/awg31/scripts/awg31-snapshot.py
+    [[ -f "$tool" ]] || { echo 'Rollback arrives with version 0.16; update first: sudo awg31 update' >&2; exit 1; }
+    shift || true
+    yes=0; name=latest
+    for arg in "$@"; do
+        case "$arg" in
+            --yes|-y) yes=1 ;;
+            list) python3 "$tool" list; exit 0 ;;
+            awg31-upgrade.*) name="$arg" ;;
+            *) echo 'Usage: awg31 rollback [list | SNAPSHOT] [--yes]' >&2; exit 2 ;;
+        esac
+    done
+    python3 "$tool" list
+    if [[ $yes -ne 1 ]]; then
+        echo
+        echo "Roll back to ${name/latest/the newest snapshot above}? The panel restarts; VPN clients stay connected."
+        read -r -p 'Type ROLLBACK to proceed: ' answer
+        [[ "$answer" == ROLLBACK ]] || { echo 'Canceled'; exit 1; }
+    fi
+    exec python3 "$tool" restore "$name"
+    ;;
   port)
     [[ $# -eq 2 && "$2" =~ ^[0-9]{1,5}$ ]] && ((10#$2 >= 1 && 10#$2 <= 65535)) ||
       { echo 'Usage: awg31 port NEW_PORT   (local TCP port of the panel, 1-65535)' >&2; exit 2; }
@@ -248,6 +272,7 @@ AmneziaWG 3.1 local management
   sudo awg31 restore NAME    Restore after confirmation (VPN downtime)
   sudo awg31 doctor          Check kernel/DKMS and interface
   sudo awg31 update [VER]    Update panel and controller (latest release, vX.Y.Z or dev-latest)
+  sudo awg31 rollback [list|NAME]  Return to the version before the last update
   sudo awg31 version         Show the installed version
   sudo awg31 reset-password  Set a new panel password (forgotten password)
   sudo awg31 totp-off        Turn off two-factor sign-in (lost authenticator)

@@ -1257,3 +1257,35 @@ tr:hover .extra-dot {box-shadow:0 0 0 2px #1e2228}
 .recovery-box strong {color:#f3c06b}
 .recovery-codes {display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:8px 18px;margin:16px 0;padding-left:24px;font-size:16px;letter-spacing:.04em}
 .recovery-box .totp-regenerate {border:0;padding:0;margin:0;background:none}
+
+/* 0.16: Maintenance → Update. */
+.update-card, .update-progress, .update-rollback {display:grid;gap:12px}
+.update-versions {display:flex;gap:36px;align-items:flex-start;flex-wrap:wrap}
+.update-versions > div {display:grid;gap:3px}
+.update-versions strong {font-size:20px}
+.update-versions small {color:#8a939d;font-size:12px}
+.update-label {color:#9aa3ad;font-size:12px;text-transform:uppercase;letter-spacing:.06em}
+.update-check {margin-left:auto}
+.update-new {display:grid;gap:10px;padding:14px 16px;border:1px solid rgba(243,165,30,.35);border-radius:12px;background:rgba(243,165,30,.05)}
+.update-new h3, .update-progress h3, .update-rollback h3 {display:flex;align-items:center;gap:8px;margin:0;font-size:15px}
+.update-new h3 svg {color:var(--amber)}
+.release-notes {margin:0;max-height:260px;overflow:auto;padding:12px 14px;border-radius:10px;background:#111418;color:#cfd5db;font:12.5px/1.55 var(--font-mono);white-space:pre-wrap;overflow-wrap:anywhere}
+.update-form {display:flex;gap:12px;align-items:flex-end;flex-wrap:wrap}
+.update-form .field, .update-rollback .field {min-width:240px;max-width:360px;margin:0}
+.update-rollback form {display:grid;gap:12px;justify-items:start}
+.update-rollback .update-snapshots {justify-self:stretch;margin-bottom:0}
+.update-latest-ok {display:flex;align-items:center;gap:8px;margin:0;color:#8fd3ae}
+.update-progress header {display:flex;align-items:center;justify-content:space-between;gap:12px}
+.update-state {padding:3px 10px;border-radius:999px;font-size:12px;border:1px solid #3a414b;color:#cfd5db}
+.update-state.is-running {border-color:rgba(243,165,30,.5);color:#f3c06b}
+.update-state.is-ok {border-color:rgba(110,200,150,.5);color:#8fd3ae}
+.update-state.is-failed {border-color:rgba(240,110,110,.5);color:#f29a9a}
+.update-log {margin:0;max-height:360px;min-height:120px;overflow:auto;padding:12px 14px;border-radius:10px;background:#0d0f12;color:#c8ced5;font:12px/1.5 var(--font-mono);white-space:pre-wrap;overflow-wrap:anywhere}
+.update-snapshots {display:grid;gap:6px;margin-bottom:12px}
+.update-snapshot {display:grid;grid-template-columns:auto auto 1fr auto;gap:10px;align-items:center;padding:9px 12px;border:1px solid #2c3139;border-radius:10px;cursor:pointer}
+.update-snapshot:has(input:checked) {border-color:var(--amber);background:rgba(243,165,30,.05)}
+.update-snapshot span {color:#aeb6bf;font-size:13px}
+.update-snapshot small {color:#8a939d}
+.bulk-notice.is-warn {border-color:rgba(243,165,30,.4);background:rgba(243,165,30,.07);color:#f3d9a8}
+.bulk-notice.is-warn svg {color:#f3c06b}
+@media (max-width:640px) {.update-snapshot {grid-template-columns:auto 1fr} .update-snapshot small {grid-column:2} .update-check {margin-left:0}}

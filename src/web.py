@@ -50,7 +50,7 @@ def asset_version(name):
         return '0'
 COOKIE_SECURE = os.environ.get('AWG31_COOKIE_SECURE', '1') == '1'
 REPOSITORY = 'stepm65/amneziawg31-installer'
-_latest = {'checked': 0.0, 'tag': '', 'busy': False}
+_latest = {'checked': 0.0, 'tag': '', 'busy': False, 'body': '', 'url': ''}
 
 
 def panel_version():
@@ -70,17 +70,22 @@ def _version_tuple(text):
     return tuple(int(x) for x in match.groups()) if match else None
 
 
-def _fetch_latest_release():
+def _fetch_latest_release(force=False):
     import urllib.request
     try:
         request = urllib.request.Request(f'https://api.github.com/repos/{REPOSITORY}/releases/latest',
                                          headers={'Accept': 'application/vnd.github+json', 'User-Agent': 'awg31-console'})
         with urllib.request.urlopen(request, timeout=8) as reply:
-            tag = str(json.loads(reply.read(262144)).get('tag_name', ''))
+            data = json.loads(reply.read(262144))
+        tag = str(data.get('tag_name', ''))
         if _version_tuple(tag):
-            _latest['tag'] = tag
+            url = str(data.get('html_url', ''))
+            _latest.update(tag=tag, body=str(data.get('body') or '')[:20000],
+                           url=url if url.startswith(f'https://github.com/{REPOSITORY}/') else '')
+            return True
+        return False
     except Exception:
-        pass                                   # offline, rate-limited or blocked: simply no hint
+        return False                           # offline, rate-limited or blocked: simply no hint
     finally:
         _latest['busy'] = False
 
@@ -116,7 +121,7 @@ TEXT = {
         'server_create_failed':'Не удалось создать сервер',
         'dashboard': 'Управление сервером', 'clients': 'Клиенты', 'settings': 'Настройки сервера',
         'version_notes': 'Что нового в этой версии (GitHub)', 'version_available': 'Доступна {version}',
-        'version_update_hint': 'Обновление: sudo awg31 update',
+        'version_update_hint': 'Открыть «Обслуживание → Обновление»',
         'documentation': 'Документация', 'logout': 'Выход', 'sign_in': 'Вход администратора',
         'login': 'Войти', 'password': 'Пароль администратора', 'login_error': 'Неверный пароль',
         'login_intro':'Управляйте VPN-серверами, клиентами и безопасными подключениями в одной консоли.',
@@ -181,7 +186,7 @@ TEXT = {
         'server_create_failed':'Could not create server',
         'dashboard': 'Server overview', 'clients': 'Clients', 'settings': 'Server settings',
         'version_notes': 'What is new in this version (GitHub)', 'version_available': '{version} is available',
-        'version_update_hint': 'To update: sudo awg31 update',
+        'version_update_hint': 'Open Maintenance → Update',
         'documentation': 'Documentation', 'logout': 'Log out', 'sign_in': 'Administrator sign in',
         'login': 'Sign in', 'password': 'Administrator password', 'login_error': 'Incorrect password',
         'login_intro':'Manage VPN servers, clients and secure connections from one console.',
@@ -674,7 +679,7 @@ def controller_message(lang, message):
 NOTIFY_GROUPS = ('server', 'clients', 'security', 'backups')
 # The Telegram notification cards: (group, icon, events). Same keys as awg31bot.EVENTS.
 TG_EVENT_GROUPS = (
-    ('server', 'server', ('server_state', 'module', 'kernel', 'panel')),
+    ('server', 'server', ('server_state', 'module', 'kernel', 'panel', 'update')),
     ('clients', 'users', ('client_auto', 'client_expiring', 'client_quota', 'invite')),
     ('security', 'shield', ('login', 'login_failed', 'password', 'owner_export', 'totp_recovery')),
     ('backups', 'archive', ('backup_created', 'backup_failed', 'upload_failed')),
@@ -903,8 +908,8 @@ def page(title, content, request):
         if not version:
             return ''
         newer = newer_release()
-        update = (f'<a class="sidebar-update" href="https://github.com/{REPOSITORY}/releases/tag/{h(newer)}" target="_blank" '
-                  f'rel="noopener noreferrer" title="{h(t("version_update_hint"))}">{icon("arrow-up",14)}'
+        update = (f'<a class="sidebar-update" href="/maintenance?tab=update" '
+                  f'title="{h(t("version_update_hint"))}">{icon("arrow-up",14)}'
                   f'<span>{h(t("version_available").format(version=newer))}</span></a>') if newer else ''
         return (f'<div class="sidebar-version{" has-update" if newer else ""}">{update}'
                 f'<a class="sidebar-version-link" href="https://github.com/{REPOSITORY}/releases/tag/v{h(version)}" target="_blank" '
@@ -2995,6 +3000,7 @@ MAINTENANCE_TABS = (
     ('logs', 'maint_logs', 'logs'),
     ('audit', 'maint_audit', 'list'),
     ('system', 'maint_system', 'terminal'),
+    ('update', 'maint_update', 'arrow-up'),
 )
 
 DIAG_LABELS = {
@@ -3046,7 +3052,7 @@ def maintenance(request: Request, tab: str = 'diagnostics'):
         'diagnostics':'maint_diagnostics_hint','backups':'maint_backups_hint','restore':'maint_restore_hint',
         'profiles':'maint_profile_hint','security':'maint_security_hint','audit':'maint_audit_hint',
         'telegram':'maint_telegram_hint','logs':'maint_logs_hint',
-        'system':'maint_system_hint'}
+        'system':'maint_system_hint','update':'maint_update_hint'}
     section_title=next(t(label) for key,label,_ in MAINTENANCE_TABS if key==tab)
     body=f'''<div class="maint-workspace"><nav class="maint-tabs" aria-label="{h(t('maint_choose'))}">
       {nav}</nav>
@@ -3344,6 +3350,8 @@ def maintenance(request: Request, tab: str = 'diagnostics'):
                        f'</div></div></form></section>')
         elif tab=='logs':
             body+=logs_tab(request,t,lang)
+        elif tab=='update':
+            body+=update_tab(request,t,lang)
         elif tab=='audit':
             body+=audit_tab(request,t)
     except (RuntimeError,ValueError,KeyError,TypeError) as exc:
@@ -3753,6 +3761,178 @@ def sessions_section(request, name, t, lang):
     note = t('sessions_note').format(days=data.get('retention_days', 30)) + (' ' + t('sessions_paused') if not data.get('history') else '')
     return (f'<section class="card detail-card client-sessions"><div class="section-title"><h2>{icon("clock", 20)}{h(t("sessions_title"))}</h2></div>'
             f'<p class="info-line">{h(note)}</p>{table}</section>')
+
+
+# ---------------------------------------------------------------- 0.16: update and rollback from the panel
+def release_notes_text(body, limit=4000):
+    """GitHub release notes as plain text: no markup reaches the page."""
+    text = re.sub(r'\r\n?', '\n', str(body or '')).strip()
+    text = re.sub(r'^#{1,6}\s*', '', text, flags=re.M)
+    text = re.sub(r'\*\*(.+?)\*\*', r'\1', text)
+    text = re.sub(r'`([^`]+)`', r'\1', text)
+    text = re.sub(r'\[([^\]]+)\]\((https?://[^)]+)\)', r'\1', text)
+    return text[:limit] + ('…' if len(text) > limit else '')
+
+
+def nice_time(stamp):
+    return str(stamp or '').replace('T', ' ').replace('Z', ' UTC')
+
+
+def update_tab(request, t, lang):
+    status = ctl('update-status')
+    state = status.get('state') or {}
+    version = status.get('version') or panel_version()
+    newer = newer_release()
+    running = bool(status.get('running'))
+    notice = ''
+    if request.query_params.get('checked') == '1':
+        notice = (f'<p class="bulk-notice" role="status">{icon("check",16)}<span>'
+                  f'{h(t("update_checked_new").format(version=newer) if newer else t("update_checked_none"))}</span></p>')
+    elif request.query_params.get('checked') == '0':
+        notice = f'<p class="bulk-notice is-warn" role="status">{icon("alert",16)}<span>{h(t("update_check_failed"))}</span></p>'
+    check = (f'<form method="post" action="/maintenance/update/check" class="inline">{csrf(request)}'
+             f'<button class="btn btn-secondary btn-small" type="submit"{" disabled" if running else ""}>{icon("restart",15)}{h(t("update_check"))}</button></form>')
+    known = _latest.get('tag') or ''
+    checked_at = (datetime.fromtimestamp(_latest['checked'], timezone.utc).strftime('%Y-%m-%d %H:%M UTC')
+                  if _latest.get('checked') else '')
+    checked_note = f'<small>{h(t("update_checked_at").format(when=checked_at))}</small>' if checked_at else ''
+    head = (f'<section class="maint-form-panel update-card"><div class="update-versions">'
+            f'<div><span class="update-label">{h(t("update_installed"))}</span><strong class="mono">v{h(version or "?")}</strong></div>'
+            f'<div><span class="update-label">{h(t("update_latest"))}</span><strong class="mono">{h(known or "—")}</strong>'
+            f'{checked_note}</div>'
+            f'<div class="update-check">{check}</div></div>')
+    if not status.get('available'):
+        head += f'<p class="info-line">{icon("info",14)}<span>{h(t("update_unavailable"))}</span></p></section>'
+        return notice + head
+    if newer:
+        notes = release_notes_text(_latest.get('body'))
+        url = _latest.get('url') or f'https://github.com/{REPOSITORY}/releases/tag/{newer}'
+        head += (f'<div class="update-new"><h3>{icon("arrow-up",18)}{h(t("update_available").format(version=newer))}</h3>'
+                 + (f'<pre class="release-notes">{h(notes)}</pre>' if notes else '')
+                 + f'<p><a href="{h(url)}" target="_blank" rel="noopener noreferrer">{h(t("update_notes_link"))}</a></p>'
+                 f'<form method="post" action="/maintenance/update" class="update-form" data-confirm="{h(t("update_confirm").format(version=newer))}">{csrf(request)}'
+                 f'<input type="hidden" name="action" value="update"><input type="hidden" name="target" value="{h(newer)}">'
+                 f'<label class="field"><span>{h(t("password"))}</span><input type="password" name="password" required autocomplete="current-password"></label>'
+                 f'<button class="btn btn-primary" type="submit"{" disabled" if running else ""}>{icon("arrow-up",16)}{h(t("update_button").format(version=newer))}</button></form>'
+                 f'<p class="info-line">{h(t("update_how"))}</p></div>')
+    else:
+        head += f'<p class="update-latest-ok">{icon("check",16)}<span>{h(t("update_none"))}</span></p>'
+    head += '</section>'
+    # Progress of the last run (live while it runs: the page asks for it every two seconds).
+    progress = ''
+    if state:
+        label = {'running': 'update_running', 'ok': 'update_ok', 'failed': 'update_failed'}.get(state.get('status'), 'update_running')
+        what = (t('update_what_update').format(target=state.get('target', '')) if state.get('action') == 'update'
+                else t('update_what_rollback').format(target=state.get('target', '')))
+        progress = (f'<section class="maint-form-panel update-progress" id="update-progress" data-update-status="{h(state.get("status",""))}"'
+                    f' data-update-version="{h(version)}" data-update-running="{"1" if running else "0"}"'
+                    f' data-text-restarting="{h(t("update_restarting"))}" data-text-ok="{h(t("update_ok"))}"'
+                    f' data-text-failed="{h(t("update_failed"))}" data-text-running="{h(t("update_running"))}">'
+                    f'<header><h3>{icon("activity",18)}{h(what)}</h3><span class="update-state is-{h(state.get("status",""))}" data-update-label>{h(t(label))}</span></header>'
+                    f'<p class="info-line" data-update-times>{h(nice_time(state.get("started","")))}{" → " + h(nice_time(state.get("finished",""))) if state.get("finished") else ""}</p>'
+                    f'<pre class="update-log" id="update-log" tabindex="0">{h(status.get("log",""))}</pre>'
+                    f'<p class="update-reload" hidden data-update-reload><a class="btn btn-primary" href="/maintenance?tab=update">{h(t("update_reload"))}</a></p>'
+                    f'</section>')
+    usable = [x for x in status.get('snapshots', []) if x.get('usable')]
+    if usable:
+        rows = ''
+        for index, item in enumerate(usable):
+            why = (t('update_snap_before').format(version=item.get('to', '')) if item.get('reason') == 'upgrade' and item.get('to')
+                   else t('update_snap_rollback') if str(item.get('reason', '')).startswith('before rollback') else item.get('reason', ''))
+            rows += (f'<label class="update-snapshot"><input type="radio" name="target" value="{h(item["name"])}"{" checked" if index == 0 else ""}>'
+                     f'<strong class="mono">v{h(item.get("version",""))}</strong><span>{h(why)}</span>'
+                     f'<small class="mono">{h(str(item.get("created",""))[:16].replace("T", " "))} UTC</small></label>')
+        rollback = (f'<section class="maint-form-panel update-rollback"><h3>{icon("restart",18)}{h(t("update_rollback_title"))}</h3>'
+                    f'<p class="info-line">{h(t("update_rollback_hint"))}</p>'
+                    f'<form method="post" action="/maintenance/update" data-confirm="{h(t("update_rollback_confirm"))}">{csrf(request)}'
+                    f'<input type="hidden" name="action" value="rollback"><div class="update-snapshots">{rows}</div>'
+                    f'<label class="field"><span>{h(t("password"))}</span><input type="password" name="password" required autocomplete="current-password"></label>'
+                    f'<button class="btn btn-secondary" type="submit"{" disabled" if running else ""}>{icon("restart",16)}{h(t("update_rollback_button"))}</button>'
+                    f'</form></section>')
+    else:
+        rollback = (f'<section class="maint-form-panel update-rollback"><h3>{icon("restart",18)}{h(t("update_rollback_title"))}</h3>'
+                    f'<p class="info-line">{h(t("update_rollback_none"))}</p></section>')
+    return notice + head + progress + rollback
+
+
+@app.post('/maintenance/update/check')
+async def update_check(request: Request):
+    form = await request.form(); require_csrf(request, form.get('csrf', ''))
+    ok = _fetch_latest_release(force=True)
+    _latest['checked'] = time.time()
+    return RedirectResponse('/maintenance?tab=update&checked=' + ('1' if ok else '0'), status_code=303)
+
+
+@app.post('/maintenance/update')
+async def update_start_route(request: Request):
+    form = await request.form(); require_csrf(request, form.get('csrf', ''))
+    action = str(form.get('action', ''))
+    target = str(form.get('target', ''))
+    if action not in ('update', 'rollback') or not re.fullmatch(r'v[0-9]+\.[0-9]+\.[0-9]+|awg31-upgrade\.[A-Za-z0-9_.-]{4,64}', target):
+        raise HTTPException(422)
+    try:
+        ctl('update-start', {'action': action, 'target': target, 'password': str(form.get('password', ''))})
+    except RuntimeError as exc:
+        return error_page(request, tr(lang_of(request), 'maintenance_error'), exc)
+    return RedirectResponse('/maintenance?tab=update', status_code=303)
+
+
+@app.get('/api/update-status')
+def update_status_api(request: Request):
+    require_auth(request)
+    try: status = ctl('update-status')
+    except RuntimeError as exc: return JSONResponse({'error': str(exc)}, status_code=400)
+    return JSONResponse({'state': status.get('state') or {}, 'running': bool(status.get('running')),
+                         'log': status.get('log', ''), 'version': status.get('version', '')},
+                        headers={'Cache-Control': 'no-store'})
+
+
+TEXT['ru'].update({
+    'maint_update': 'Обновление',
+    'maint_update_hint': 'Обновление панели до новой версии с GitHub и откат к версии до обновления. VPN-интерфейсы, ключи и клиенты при этом не меняются.',
+    'update_installed': 'Установлена', 'update_latest': 'Последняя на GitHub', 'update_checked_at': 'проверено {when}',
+    'update_check': 'Проверить сейчас', 'update_checked_new': 'Найдена новая версия: {version}.',
+    'update_checked_none': 'Установлена последняя версия.', 'update_check_failed': 'GitHub не ответил. Проверьте выход сервера в интернет и попробуйте позже.',
+    'update_unavailable': 'Обновление из панели появится после одного обновления в консоли: sudo awg31 update.',
+    'update_available': 'Доступна {version}', 'update_notes_link': 'Описание выпуска на GitHub',
+    'update_button': 'Обновить до {version}',
+    'update_confirm': 'Обновить панель до {version}? Панель и бот перезапустятся, VPN продолжит работать. Перед обновлением сохраняется снимок для отката.',
+    'update_how': 'Архив выпуска скачивается с GitHub и проверяется по SHA256. Панель перезапустится, страница сама покажет ход и результат.',
+    'update_none': 'Установлена последняя версия.',
+    'update_what_update': 'Обновление до {target}', 'update_what_rollback': 'Откат: {target}',
+    'update_running': 'Идёт…', 'update_ok': 'Готово', 'update_failed': 'Не удалось',
+    'update_restarting': 'Панель перезапускается…', 'update_reload': 'Обновить страницу',
+    'update_rollback_title': 'Откат к версии до обновления',
+    'update_rollback_hint': 'Перед каждым обновлением сохраняется снимок программы: панели, контроллера, скриптов и правил sudo. Откат возвращает программу из снимка. Клиенты, серверы и настройки, сделанные после обновления, остаются. Хранятся пять последних снимков.',
+    'update_rollback_none': 'Снимков пока нет: первый появится при следующем обновлении.',
+    'update_rollback_button': 'Откатить',
+    'update_rollback_confirm': 'Вернуть выбранную версию программы? Панель и бот перезапустятся, VPN продолжит работать. Текущая версия тоже сохранится, к ней можно будет вернуться.',
+    'update_snap_before': 'до обновления на {version}', 'update_snap_rollback': 'перед откатом',
+    'tg_e_update': 'Обновление или откат панели',
+})
+TEXT['en'].update({
+    'maint_update': 'Update',
+    'maint_update_hint': 'Update the panel to a new version from GitHub and roll back to the version before an update. VPN interfaces, keys and clients do not change.',
+    'update_installed': 'Installed', 'update_latest': 'Latest on GitHub', 'update_checked_at': 'checked {when}',
+    'update_check': 'Check now', 'update_checked_new': 'A new version was found: {version}.',
+    'update_checked_none': 'The latest version is installed.', 'update_check_failed': 'GitHub did not answer. Check the server’s internet access and try again later.',
+    'update_unavailable': 'Updating from the panel arrives after one update in the console: sudo awg31 update.',
+    'update_available': '{version} is available', 'update_notes_link': 'Release notes on GitHub',
+    'update_button': 'Update to {version}',
+    'update_confirm': 'Update the panel to {version}? The panel and the bot restart, the VPN keeps running. A snapshot for a rollback is saved first.',
+    'update_how': 'The release archive is downloaded from GitHub and checked against its SHA256. The panel restarts; this page shows the progress and the result by itself.',
+    'update_none': 'The latest version is installed.',
+    'update_what_update': 'Update to {target}', 'update_what_rollback': 'Rollback: {target}',
+    'update_running': 'Running…', 'update_ok': 'Done', 'update_failed': 'Failed',
+    'update_restarting': 'The panel is restarting…', 'update_reload': 'Reload the page',
+    'update_rollback_title': 'Roll back to the version before an update',
+    'update_rollback_hint': 'Before every update a snapshot of the program is saved: the panel, the controller, the scripts and the sudo rules. A rollback puts the program back from it. Clients, servers and settings made after the update stay. The five newest snapshots are kept.',
+    'update_rollback_none': 'No snapshots yet: the first one is saved at the next update.',
+    'update_rollback_button': 'Roll back',
+    'update_rollback_confirm': 'Bring back the selected version of the program? The panel and the bot restart, the VPN keeps running. The current version is saved too, so you can return to it.',
+    'update_snap_before': 'before the update to {version}', 'update_snap_rollback': 'before a rollback',
+    'tg_e_update': 'Panel update or rollback',
+})
 
 
 @app.get('/api/logs')

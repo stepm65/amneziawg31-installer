@@ -28,7 +28,8 @@ VALID_AUDIT = {'login_success', 'login_failed', 'password_changed', 'client_adde
                'telegram_changed', 'backup_encryption_changed', 'backup_uploaded', 'backup_upload_failed',
                'backup_remote_changed', 'logging_changed', 'debug_changed', 'support_report',
                'client_rekeyed', 'client_invite_created', 'client_invite_used', 'totp_recovery_used',
-               'totp_recovery_new', 'clients_exported'}
+               'totp_recovery_new', 'clients_exported', 'panel_update_started', 'panel_updated',
+               'panel_update_failed', 'panel_rolled_back'}
 
 
 def _host_uplink():
@@ -533,7 +534,7 @@ TELEGRAM_EVENTS={
     'server_state':'server','module':'server','kernel':'server','panel':'server',
     'client_auto':'clients','client_expiring':'clients','client_quota':'clients',
     'login':'security','login_failed':'security','password':'security','owner_export':'security',
-    'totp_recovery':'security','invite':'clients',
+    'totp_recovery':'security','invite':'clients','update':'server',
     'backup_created':'backups','backup_failed':'backups','upload_failed':'backups',
     'cpu':'system','memory':'system','disk':'system',
 }
@@ -1611,3 +1612,87 @@ def support_report(manager):
             archive.addfile(info,io.BytesIO(raw))
     audit({'event':'support_report','target':f'{len(files)} files'})
     return {'name':f'awg31-support-{stamp}.tar.gz','data':base64.b64encode(buffer.getvalue()).decode()}
+
+
+# ------------------------------------------------------------------ update and rollback from the panel
+UPDATE_STATE=Path(os.environ.get('AWG31_UPDATE_STATE','/var/lib/awg31-panel/update-state.json'))
+UPDATE_LOG=Path(os.environ.get('AWG31_UPDATE_LOG','/var/log/awg31-panel/update.log'))
+UPDATE_RUNNER=Path(os.environ.get('AWG31_UPDATE_RUNNER','/usr/local/libexec/awg31/scripts/update-run.sh'))
+SNAPSHOT_TOOL=Path(os.environ.get('AWG31_SNAPSHOT_TOOL','/usr/local/libexec/awg31/scripts/awg31-snapshot.py'))
+UPDATE_UNIT='awg31-update'
+APP_VERSION=Path(os.environ.get('AWG31_APP_VERSION','/opt/awg31-panel/VERSION'))
+
+
+def _installed_version():
+    try: text=APP_VERSION.read_text().strip()
+    except OSError: return ''
+    return text if re.fullmatch(r'[0-9]+\.[0-9]+\.[0-9]+',text) else ''
+
+
+def _version_key(text):
+    found=re.fullmatch(r'v?([0-9]+)\.([0-9]+)\.([0-9]+)',str(text or ''))
+    return tuple(int(x) for x in found.groups()) if found else None
+
+
+def _update_running():
+    cp=subprocess.run(['systemctl','is-active','--quiet',UPDATE_UNIT],capture_output=True,timeout=10,check=False)
+    return cp.returncode==0
+
+
+def _snapshot_list():
+    if not SNAPSHOT_TOOL.exists(): return []
+    cp=subprocess.run(['python3',str(SNAPSHOT_TOOL),'list','--json'],capture_output=True,text=True,timeout=30,check=False)
+    try: items=json.loads(cp.stdout or '[]')
+    except ValueError: return []
+    return [x for x in items if isinstance(x,dict)][:20]
+
+
+def update_status(data=None):
+    """The last update or rollback started from the panel, its log, and the snapshots to roll back to."""
+    try: state=json.loads(UPDATE_STATE.read_text())
+    except (OSError,ValueError): state={}
+    running=_update_running()
+    if state.get('status')=='running' and not running:
+        state['status']='failed'                  # the unit died without writing an outcome
+    try:
+        with open(UPDATE_LOG,'rb') as log:
+            log.seek(0,2); size=log.tell(); log.seek(max(0,size-24000))
+            tail=log.read().decode('utf-8','replace')
+    except OSError:
+        tail=''
+    lines=tail.splitlines()[-200:]
+    return {'state':state,'running':running,'log':redact('\n'.join(lines)),
+            'version':_installed_version(),'snapshots':_snapshot_list(),
+            'available':UPDATE_RUNNER.exists() and SNAPSHOT_TOOL.exists()}
+
+
+def update_start(data):
+    """Start an update to a newer release, or a rollback to a snapshot, in a transient unit.
+    Releases come only from this project's GitHub page and are checked against their SHA256 by the installer."""
+    file=auth_file(); auth=json.loads(file.read_text())
+    if not _password_ok(auth,data.get('password','')): raise ValueError('Incorrect password')
+    action=str(data.get('action','')); target=str(data.get('target',''))
+    if action=='update':
+        wanted,current=_version_key(target),_version_key(_installed_version())
+        if not re.fullmatch(r'v[0-9]+\.[0-9]+\.[0-9]+',target) or not wanted: raise ValueError('Invalid version')
+        if current and wanted<=current: raise ValueError('Only a newer release can be installed here; use a rollback to go back')
+    elif action=='rollback':
+        if not re.fullmatch(r'awg31-upgrade\.[A-Za-z0-9_.-]{4,64}',target): raise ValueError('Invalid snapshot')
+        if not any(x.get('name')==target and x.get('usable') for x in _snapshot_list()): raise ValueError('No such snapshot')
+    else:
+        raise ValueError('action: update or rollback')
+    if not UPDATE_RUNNER.exists(): raise ValueError('The update runner is not installed; run sudo awg31 update once')
+    if _update_running(): raise ValueError('An update is already running')
+    # A private copy: the update replaces the installed runner while it runs.
+    fd,copy=tempfile.mkstemp(prefix='awg31-update-run.',suffix='.sh',dir='/run')
+    with os.fdopen(fd,'wb') as out: out.write(UPDATE_RUNNER.read_bytes())
+    os.chmod(copy,0o700)
+    cp=subprocess.run(['systemd-run','--quiet','--collect','--unit',UPDATE_UNIT,'--description',
+                       'AmneziaWG 3.1 Console update started from the panel',
+                       '--property=TimeoutStartSec=30min','/bin/bash','-c',f'"$0" "$1" "$2"; code=$?; rm -f "$0"; exit $code',
+                       copy,action,target],capture_output=True,text=True,timeout=20,check=False)
+    if cp.returncode:
+        os.unlink(copy)
+        raise RuntimeError('Could not start the update: '+(cp.stderr or '').strip()[:200])
+    audit({'event':'panel_update_started','target':f'{action} {target}'})
+    return {'ok':True,'action':action,'target':target}

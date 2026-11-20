@@ -4,7 +4,7 @@
 
 An installer and a web console for running **AmneziaWG 3.1** on your own server: a kernel module built with DKMS, an interactive setup wizard and a bilingual (EN/RU) panel for servers, clients, traffic and backups. No Docker, no control plane in the cloud, nothing loaded from a CDN.
 
-Version **0.15.0** · MIT licence · not affiliated with the AmneziaVPN developers.
+Version **0.16.0** · MIT licence · not affiliated with the AmneziaVPN developers.
 
 ![Infrastructure overview](docs/screenshots/en-dashboard.png)
 
@@ -188,6 +188,7 @@ To give several clients the same lines, select them in the list and press “Ext
 ```text
 sudo awg31 status           panel and VPN instances
 sudo awg31 update [VER]     update to the latest release, vX.Y.Z or dev-latest
+sudo awg31 rollback         return to the version before the last update (list: snapshots, --yes: no question)
 sudo awg31 version          installed version
 sudo awg31 servers          configured interfaces
 sudo awg31 doctor           kernel, DKMS and interface checks
@@ -263,9 +264,15 @@ sudo awg31 update v0.9.6     # a specific release
 sudo awg31 update dev-latest # rolling build from main
 ```
 
-Running the Quick Start command again on a server that already has the console does the same thing. `awg31 update` uses the installer that came with the installed release, and refuses to install an older version unless `--allow-downgrade` is given. The update replaces the panel, the controller, fonts and the `sudo` allowlist, and refreshes the Python packages within the supported version ranges. Interfaces, keys, clients and firewall rules are left as they are. A copy of the replaced files and databases is kept in `/var/backups/awg31-upgrade.*`.
+Running the Quick Start command again on a server that already has the console does the same thing. `awg31 update` uses the installer that came with the installed release, and refuses to install an older version unless `--allow-downgrade` is given. The update replaces the panel, the controller, fonts and the `sudo` allowlist, and refreshes the Python packages within the supported version ranges. Interfaces, keys, clients and firewall rules are left as they are.
 
-The installed version is shown at the foot of the panel's sidebar and links to its release notes. When a newer release is published, a **vX.Y.Z is available** hint appears above it. The panel asks GitHub for the latest release in the background at most twice a day; `Environment=AWG31_UPDATE_CHECK=0` in `awg31-panel.service` switches that off.
+Before every update a **snapshot** of the program is saved in `/var/backups/awg31-upgrade.*`: the panel (without its Python packages), the controller, the helper, the menu, the scripts, the `sudo` rules and the systemd units; next to it, as material for a manual recovery, the databases and server configurations. If an update fails, the program returns from the snapshot at once. `sudo awg31 rollback` returns to the version before the last update later: the snapshot is restored, the panel, the helper and the bot restart, the VPN keeps running. Clients, servers and settings made after the update stay: only the program goes back, not the data. The state before a rollback is saved as well, so a second `sudo awg31 rollback` goes forward again. `sudo awg31 rollback list` shows the snapshots; the five newest are kept. A rollback does not change the panel’s port.
+
+### Updating from the panel
+
+**Maintenance → Update** shows the installed and the latest version on GitHub, the notes of a new release and the button **Update to vX.Y.Z** (with the administrator password). The update runs in its own systemd unit, so it goes on while the panel, the helper and the bot restart; the page follows the installer’s log and reloads by itself once the new version is up. A **rollback** to any saved snapshot is there too. Only a newer release can be installed from the panel; the archive is checked against its SHA256 as in the console. The bot reports the outcome to the administrators (event “Panel update or rollback”). Updating from the panel is available from 0.16 on: the first update to it is made in the console.
+
+The installed version is shown at the foot of the panel's sidebar and links to its release notes. When a newer release is published, a **vX.Y.Z is available** hint appears above it, leading to Maintenance → Update. The panel asks GitHub for the latest release in the background at most twice a day; `Environment=AWG31_UPDATE_CHECK=0` in `awg31-panel.service` switches that off.
 
 If your installed `awg31` has no `update` command yet, run `bash <(curl -Ls https://raw.githubusercontent.com/stepm65/amneziawg31-installer/main/install.sh) --upgrade` once.
 

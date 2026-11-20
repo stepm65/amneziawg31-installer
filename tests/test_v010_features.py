@@ -456,7 +456,7 @@ def test_telegram_tab_shows_the_form_and_posts_the_settings(ui):
     assert reply.status_code == 303 and reply.headers['location'] == '/maintenance?tab=telegram&sub=notify&done=saved'
     sent = [data for op, data in calls if op == 'telegram-set'][-1]
     assert sent['digest'] == '30 8 * * 1-5' and sent['enabled'] is True and sent['backup_file'] is False and sent['token'] == ''
-    assert {k for k, v in sent['events'].items() if v} == {'login', 'cpu'} and len(sent['events']) == 19
+    assert {k for k, v in sent['events'].items() if v} == {'login', 'cpu'} and len(sent['events']) == 20
     assert sent['thresholds'] == {'cpu': '85', 'memory': '90', 'disk': '95'} and 'password' not in sent
     # A page from the previous version still saves its fields.
     reply = client.post('/maintenance/telegram', data={'csrf': token(page), 'admins': '111222333', 'viewers': '42424242', 'lang': 'en',
