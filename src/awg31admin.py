@@ -26,7 +26,9 @@ VALID_AUDIT = {'login_success', 'login_failed', 'password_changed', 'client_adde
                'backup_downloaded', 'backup_deleted', 'backup_policy_changed', 'backup_pruned',
                'backup_failed', 'client_config_sent', 'totp_enabled', 'totp_disabled',
                'telegram_changed', 'backup_encryption_changed', 'backup_uploaded', 'backup_upload_failed',
-               'backup_remote_changed', 'logging_changed', 'debug_changed', 'support_report'}
+               'backup_remote_changed', 'logging_changed', 'debug_changed', 'support_report',
+               'client_rekeyed', 'client_invite_created', 'client_invite_used', 'totp_recovery_used',
+               'totp_recovery_new', 'clients_exported'}
 
 
 def _host_uplink():
@@ -427,6 +429,58 @@ def require_panel_password(data):
     if not _password_ok(auth,data.get('password','')): raise ValueError('Incorrect panel password')
 
 
+RECOVERY_ALPHABET='abcdefghjkmnpqrstuvwxyz23456789'      # no 0/o, 1/l/i: read from paper without doubt
+RECOVERY_COUNT=10
+
+
+def _recovery_norm(code):
+    return re.sub(r'[\s-]','',str(code)).lower()
+
+
+def _recovery_hash(salt, code):
+    return hashlib.sha256((salt+':'+_recovery_norm(code)).encode()).hexdigest()
+
+
+def _recovery_issue(auth):
+    """Ten one-time codes for a lost phone; only their salted hashes are stored."""
+    codes=[]
+    for _ in range(RECOVERY_COUNT):
+        raw=''.join(secrets.choice(RECOVERY_ALPHABET) for _ in range(10))
+        codes.append(raw[:5]+'-'+raw[5:])
+    salt=secrets.token_hex(16)
+    auth['totp_recovery_salt']=salt
+    auth['totp_recovery']=[_recovery_hash(salt,code) for code in codes]
+    return codes
+
+
+def totp_recovery_new(data):
+    """New recovery codes (the old ones stop working): the password and a current code."""
+    file=auth_file(); auth=json.loads(file.read_text())
+    if not auth.get('totp_secret'): raise ValueError('Two-factor sign-in is off')
+    if not _password_ok(auth,data.get('password','')): raise ValueError('Incorrect password')
+    if totp_counter_for(auth['totp_secret'],data.get('code','')) is None: raise ValueError('Incorrect code')
+    codes=_recovery_issue(auth)
+    _save_auth(auth,file)
+    audit({'event':'totp_recovery_new'})
+    return {'ok':True,'recovery_codes':codes}
+
+
+def totp_recovery_use(data):
+    """Sign-in with a recovery code instead of the app: the password too, and every code works once."""
+    file=auth_file(); auth=json.loads(file.read_text())
+    if not auth.get('totp_secret') or not auth.get('totp_recovery'): raise ValueError('No recovery codes')
+    if not _password_ok(auth,data.get('password','')): raise ValueError('Incorrect password')
+    code=_recovery_norm(data.get('code',''))
+    if not re.fullmatch(r'[a-z0-9]{10}',code): raise ValueError('Incorrect recovery code')
+    wanted=_recovery_hash(auth.get('totp_recovery_salt',''),code)
+    left=[x for x in auth['totp_recovery'] if not secrets.compare_digest(x,wanted)]
+    if len(left)==len(auth['totp_recovery']): raise ValueError('Incorrect recovery code')
+    auth['totp_recovery']=left
+    _save_auth(auth,file)
+    audit({'event':'totp_recovery_used','target':f'{len(left)} left'})
+    return {'ok':True,'left':len(left)}
+
+
 def totp_enable(data):
     """Turn on the second factor, or replace its key: the password, a code from the new key and,
     when a key is already set, a code from the current one."""
@@ -441,9 +495,10 @@ def totp_enable(data):
     if totp_counter_for(secret,data.get('code','')) is None:
         raise ValueError('The code does not match: check the clock of the server and of the phone')
     auth['totp_secret']=secret
+    codes=_recovery_issue(auth)            # a new key comes with new recovery codes
     _save_auth(auth,file)
     audit({'event':'totp_enabled'})
-    return {'ok':True}
+    return {'ok':True,'recovery_codes':codes}
 
 
 def totp_disable(data):
@@ -451,7 +506,7 @@ def totp_disable(data):
     if not auth.get('totp_secret'): return {'ok':True}
     if not _password_ok(auth,data.get('password','')): raise ValueError('Incorrect password')
     if totp_counter_for(auth['totp_secret'],data.get('code','')) is None: raise ValueError('Incorrect code')
-    auth.pop('totp_secret',None)
+    for key in ('totp_secret','totp_recovery','totp_recovery_salt'): auth.pop(key,None)
     _save_auth(auth,file)
     audit({'event':'totp_disabled'})
     return {'ok':True}
@@ -460,7 +515,7 @@ def totp_disable(data):
 def totp_reset():
     """Console recovery (`sudo awg31 totp-off`): root only, not in any sudoers list."""
     file=auth_file(); auth=json.loads(file.read_text())
-    auth.pop('totp_secret',None)
+    for key in ('totp_secret','totp_recovery','totp_recovery_salt'): auth.pop(key,None)
     _save_auth(auth,file)
     audit({'event':'totp_disabled','target':'console reset'})
     return {'ok':True}
@@ -478,6 +533,7 @@ TELEGRAM_EVENTS={
     'server_state':'server','module':'server','kernel':'server','panel':'server',
     'client_auto':'clients','client_expiring':'clients','client_quota':'clients',
     'login':'security','login_failed':'security','password':'security','owner_export':'security',
+    'totp_recovery':'security','invite':'clients',
     'backup_created':'backups','backup_failed':'backups','upload_failed':'backups',
     'cpu':'system','memory':'system','disk':'system',
 }

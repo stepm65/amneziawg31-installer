@@ -4,7 +4,7 @@
 
 An installer and a web console for running **AmneziaWG 3.1** on your own server: a kernel module built with DKMS, an interactive setup wizard and a bilingual (EN/RU) panel for servers, clients, traffic and backups. No Docker, no control plane in the cloud, nothing loaded from a CDN.
 
-Version **0.14.4** · MIT licence · not affiliated with the AmneziaVPN developers.
+Version **0.15.0** · MIT licence · not affiliated with the AmneziaVPN developers.
 
 ![Infrastructure overview](docs/screenshots/en-dashboard.png)
 
@@ -13,14 +13,14 @@ Version **0.14.4** · MIT licence · not affiliated with the AmneziaVPN develope
 - **AmneziaWG 3.1 only.** The wizard builds the official kernel module (pinned commit) and tools (pinned tag) and refuses to continue with any other version.
 - **Random obfuscation per server.** `S1–S4`, `H1–H4`, `Jc`, `HeaderProtectionKey` are generated for every server, including the first one, and can be regenerated in the panel.
 - **Several independent servers** (`awg0`, `awg1`, … up to 8), each with its own keys, subnet, UDP port and clients.
-- **Clients:** `.conf` download, QR code, `vpn://` link for AmneziaVPN, comment, expiry date, traffic quota (lifetime or reset every month), speed limit, networks behind a client (site-to-site), creating up to 50 numbered clients at once with a ZIP of configurations, bulk delete.
+- **Clients:** `.conf` download, QR code, `vpn://` link for AmneziaVPN, comment, expiry date, traffic quota (lifetime or reset every month), speed limit, networks behind a client (site-to-site), creating up to 50 numbered clients at once with a ZIP of configurations, actions on the selected clients (enable, disable, extend, set a quota, delete), a CSV export of the list, key replacement with one button.
 - **Per-server traffic switches:** clients may reach each other or are isolated (also from clients of the other servers); access to the private networks behind the server can be closed; the server's own services (SSH, the panel) can be closed to clients; client IPv6 can be routed into the tunnel and dropped. The cloud metadata address range is always closed to clients. Networks behind a client keep working in every state.
 - **Stale-configuration badge:** the client list shows who needs a new file after settings changed.
 - **I1–I5 packets:** a Generate button for each field and ready-made templates for `I1` (random bytes, DNS query, STUN binding request, QUIC-shaped packet). Enabling them with empty fields creates `I1` automatically.
 - **Extra [Interface] lines** for clients on a router, in a container or on a Linux gateway: `PostUp`, `PostDown`, `Table` and the like go into the `.conf`, its QR code and the bot, but not into the `vpn://` link. Ready-made templates and applying them to several clients at once.
 - **Monitoring:** host CPU, RAM, swap, disk and uplink traffic, per-server traffic charts, 30 days of history collected by a systemd timer.
 - **Backups:** full archives with checksums, download, schedule (daily or weekly), retention, restore with a safety snapshot; optional passphrase encryption (OpenPGP), after which the bot delivers every new backup to Telegram.
-- **Two-factor sign-in:** TOTP codes from any authenticator app in addition to the password.
+- **Two-factor sign-in:** TOTP codes from any authenticator app in addition to the password, and 10 one-time recovery codes for a lost phone.
 - **Security by layout:** the panel runs as an unprivileged user on `127.0.0.1`; root actions go through one narrow `sudo` allowlist, served by a local root helper so pages stay fast with hundreds of clients; strict CSP, CSRF tokens, scrypt password hash, audit log.
 - **Telegram bot (optional):** clients, configurations with QR codes, server start and stop, backups and notifications, through its own narrower `sudo` allowlist.
 - **Optional Nginx** reverse proxy with a self-signed or your own certificate.
@@ -161,6 +161,12 @@ Short notation does not mean a small packet: `<r 1000>` is 1000 random bytes on 
 
 Templates only set the shape of the first packets. Whether they help against a particular filter depends on that network, so test them where you use the VPN. After changing I1–I5, import the client configuration again.
 
+### Actions on the selected clients and CSV
+
+Select clients in the list and the buttons **Enable**, **Disable**, **Extend**, **Quota**, **Extra lines** and **Delete selected** appear above the table. Extending counts from the current expiry, or from today for expired clients; clients without expiry do not change. Clients disabled by expiry or quota come back on their own after an extension or a new quota. A report stays above the list: how many clients changed, who was skipped and why (already in that state, expired, quota used up, no expiry).
+
+The **CSV** button exports the server’s client list: name, address, state, comment, expiry, quota and usage, last handshake, speed limit, owner. The file has no keys; values a spreadsheet would read as a formula are written as text. Every export goes to the audit log.
+
 ### Extra [Interface] lines
 
 A client that brings the tunnel up with `awg-quick` itself (a router, a container on MikroTik or OpenWrt, Docker, a Linux gateway) often needs its own commands in the configuration. Set them once in the “Extra [Interface] lines” block on the client page and they are in every downloaded `.conf`, its QR code and the file from the bot. They are left out of the `vpn://` link: AmneziaVPN apps do not run such commands. The commands run on the client, never on the server.
@@ -237,11 +243,15 @@ When backup encryption is on (`sudo awg31 backup-encryption on`) and **backups a
 
 ### Client owners
 
-A client can carry the numeric Telegram ID of the person who uses it: the field **Owner’s Telegram ID** in the new-client form and on the client page, or the **Telegram ID** button in the bot. That person writes to the same bot and sees a single read-only screen with their own clients: enabled or disabled (and why), traffic used and the quota, last handshake, expiry date. They get a message three days before the expiry date. One ID may be set on several clients, also on different servers.
+The easiest way is an **invitation**. On the client page, in the block “Access: invitation and key” (or with the **Invite** button of the client in the bot), create a one-time link like `https://t.me/<bot>?start=<code>` and forward it to the person. They open it, press **Start** and become the owner of the client at once; there is no need to learn their ID. The link is valid for 1, 7 or 30 days and only once, a new link for the same client cancels the previous one, and a valid one can be revoked. The panel keeps only a fingerprint of the code, so the link is shown only when it is created. You can allow the owner to get the configuration in the bot right there. The administrators are told who used the invitation (event “Invitation used”), and the audit log keeps a record. Guessing is limited to five attempts in ten minutes per person.
+
+A client can also carry, set by hand, the numeric Telegram ID of the person who uses it: the field **Owner’s Telegram ID** in the new-client form and on the client page, or the **Telegram ID** button in the bot. That person writes to the same bot and sees a single read-only screen with their own clients: enabled or disabled (and why), traffic used and the quota, last handshake, expiry date. They get a message three days before the expiry date. One ID may be set on several clients, also on different servers.
 
 An owner cannot change anything or see other clients, servers and addresses. By default they cannot download the configuration either. The switch **The owner may get the configuration and QR code from the Telegram bot** (next to the ID field; in the bot — the button under the client) allows it for that one client: the owner then gets **Config** and **QR** buttons while the client is enabled. Each download is written to the audit log and reported to the administrators (group `security`). The switch turns off by itself when the owner's ID is changed or removed.
 
 An owner of a client with an expiry date has an **Extend** button: the administrators get the request with ready answers (+7, +30, +90 days, refuse), and the owner is told the result. One request per client a day. The owner is also told when 80 % of the quota is used, when the client is disabled by expiry or quota, and when a monthly quota starts again. The person finds their numeric ID with any “user info” bot in Telegram, and has to press **Start** in your bot once: Telegram does not let a bot write first.
+
+If a client’s configuration got into the wrong hands, press **Replace the key** on the client page (in the bot — **New key**): the client gets a new key pair and PSK, while address, limits, expiry, owner and history stay. The old configuration stops working at once. The bot sends the administrator the new file and QR code and tells the owner where to get the new configuration.
 
 Unattended: `AWG31_TELEGRAM_TOKEN` and `AWG31_TELEGRAM_ADMINS` (IDs separated by commas), optionally `AWG31_TELEGRAM_LANG` (`ru`/`en`) and `AWG31_TELEGRAM_NOTIFY` (`all`, `none` or a list of `server,clients,security,backups`). They work both with the installer and with `sudo -E awg31 telegram`.
 
@@ -291,7 +301,7 @@ sudo bash amneziawg31-installer/scripts/resume-panel.sh
 - `sudo awg31 backup-encryption change` sets a new passphrase and re-encrypts the archives on the server that the current one opens. Copies already sent to Telegram or a remote storage keep the old passphrase.
 - `sudo awg31 backup-remote s3` (AWS S3, MinIO, Backblaze B2, Yandex Object Storage and other S3-compatible services) or `sudo awg31 backup-remote sftp` uploads every new backup, scheduled or manual, right after it is created. Only encrypted archives are uploaded, so encryption has to be on. The access keys stay on the server, readable by root only; for SFTP the server gets its own SSH key and remembers the host key at the first connection. A failed upload does not fail the backup: it is written to the audit log and reported by the bot. Old files in the storage are not deleted — use the lifecycle rules of the storage.
 - After a kernel update the console checks, several times a day, that the AmneziaWG module is built for the new kernel, and tries to build it. If that fails, the panel (Maintenance → System) and the bot warn before the reboot that would leave the VPN down.
-- Two-factor sign-in is set up in **Maintenance → Security**. A lost authenticator is reset from the console with `sudo awg31 totp-off`.
+- Two-factor sign-in is set up in **Maintenance → Security**. When it is switched on, the panel shows 10 recovery codes once: each replaces an app code for one sign-in, together with the password. Only their hashes are stored; the same place shows how many are left and creates new ones (the previous ones stop working). The bot tells the administrators about a sign-in with a recovery code. Without both the phone and the codes the second factor is reset from the console with `sudo awg31 totp-off`.
 - A speed limit applies to both directions of a client and is enforced with `tc` on the VPN interface. A monthly quota resets on the first day of the month, UTC.
 - Do not expose the panel without HTTPS. The generated Nginx site sends HSTS, limits sign-in attempts per address and can restrict access to the addresses you list (`sudo awg31 nginx`).
 - The Telegram bot sends client configurations (private keys) into your chat with it; they stay in the Telegram cloud. Whoever controls an administrator's Telegram account can create and delete clients and stop servers, so protect that account with two-step verification. The bot token is removed by `sudo awg31 telegram off` and by uninstalling.

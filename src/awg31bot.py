@@ -39,12 +39,17 @@ QUOTA_WARNING = 0.8
 RENEW_INTERVAL = 86400
 OWNERS_TTL = 60          # how long the list of client owners is trusted
 OWNER_INTERVAL = 3       # seconds between answers to one client owner
+INVITE_RE = re.compile(r'^[A-Za-z0-9_-]{20,64}$')
+INVITE_TRIES = 5         # attempts per person in INVITE_WINDOW seconds; codes are 144-bit random anyway
+INVITE_WINDOW = 600
+INVITE_DAYS = (1, 7, 30)
 EXPIRY_WARNING = timedelta(hours=72)
 # Event switches as the panel shows them: each event belongs to one card (group).
 EVENTS = {
     'server_state': 'server', 'module': 'server', 'kernel': 'server', 'panel': 'server',
     'client_auto': 'clients', 'client_expiring': 'clients', 'client_quota': 'clients',
     'login': 'security', 'login_failed': 'security', 'password': 'security', 'owner_export': 'security',
+    'totp_recovery': 'security', 'invite': 'clients',
     'backup_created': 'backups', 'backup_failed': 'backups', 'upload_failed': 'backups',
     'cpu': 'system', 'memory': 'system', 'disk': 'system',
 }
@@ -132,7 +137,7 @@ TEXT = {
         'st_module': 'Модуль ядра: {value}', 'st_panel': 'Веб-панель: {value}', 'st_kernel': 'Ядро: {value}',
         'backup': '<b>Резервные копии</b>\nАрхивов на сервере: {count}', 'backup_note': '\n\nАрхив содержит все ключи, поэтому в Telegram не отправляется: скачайте его в веб-панели.',
         'backup_last': '\nПоследний: <code>{name}</code>', 'backup_done': '✅ Бэкап создан: <code>{name}</code> ({size})',
-        'help': ('<b>Что умеет бот</b>\n• клиенты: создать, выдать конфиг и QR, включить и отключить, срок, лимит, удалить\n• владелец клиента (Telegram ID) видит в боте состояние своего доступа\n'
+        'help': ('<b>Что умеет бот</b>\n• клиенты: создать, выдать конфиг и QR, включить и отключить, срок, лимит, новый ключ, удалить\n• приглашение: одноразовая ссылка, по которой человек сам становится владельцем клиента\n• владелец клиента (Telegram ID) видит в боте состояние своего доступа\n'
                  '• серверы: состояние, запуск, остановка, перезапуск\n• резервная копия: создать\n• уведомления о событиях\n\n'
                  'Удаление сервера, восстановление из бэкапа, настройки сервера и пароль панели доступны только в веб-панели и консоли.\n\n'
                  'Команды: /menu /servers /clients /status /backup /help'),
@@ -188,6 +193,23 @@ TEXT = {
         'test': '✅ Бот AmneziaWG 3.1 Console подключён. Отправьте /menu.',
         'your_id': 'Ваш Telegram ID: <code>{id}</code>',
         'n_backup': '💾 Создана резервная копия <code>{target}</code>.', 'n_backup_failed': '⚠️ Резервная копия по расписанию не создана: {target}',
+        'b_invite': '✉️ Пригласить', 'b_rekey': '🔑 Новый ключ',
+        'ask_invite': ('Приглашение для <b>{name}</b>: одноразовая ссылка. Человек открывает её, нажимает «Старт» '
+                       'и становится владельцем клиента{export}. Сколько дней ссылка действует?'),
+        'invite_export_note': ' и может сам получить конфигурацию', 'b_invite_days': '{n} дн.',
+        'invite_link': ('✉️ Приглашение для <b>{name}</b> ({iface}), действует до {when} UTC, один раз:\n{link}\n\n'
+                        'Перешлите ссылку человеку. Прежняя ссылка этого клиента больше не работает.'),
+        'invite_no_username': 'Не удалось узнать имя бота. Отправьте человеку команду: <code>/start {code}</code>',
+        'invite_ok': '✅ Готово: VPN-доступ <b>{name}</b> теперь ваш.',
+        'invite_bad': 'Приглашение недействительно: истёк срок, оно уже использовано или отозвано. Попросите новое у администратора.',
+        'invite_wait': 'Слишком много попыток. Попробуйте позже.',
+        'n_invite': '✉️ Приглашение использовано: <b>{name}</b> ({iface}) теперь у {who}.',
+        'n_totp_recovery': '🔐 Вход в веб-панель по резервному коду. Осталось кодов: {left}.',
+        'confirm_rekey': ('Выпустить для <b>{name}</b> новый ключ? Текущая конфигурация перестанет работать сразу, '
+                          'клиенту нужно будет импортировать новую. Адрес, лимиты, срок и владелец сохранятся.'),
+        'rekeyed': '🔑 Ключ <b>{name}</b> перевыпущен. Новая конфигурация ниже.',
+        'n_user_rekeyed': '🔑 Ключ вашего VPN-доступа <b>{name}</b> перевыпущен: прежняя конфигурация больше не работает. {how}',
+        'how_bot': 'Получите новую кнопкой «Конфиг» в /start.', 'how_admin': 'Новую конфигурацию выдаст администратор.',
     },
     'en': {
         'menu': '<b>AmneziaWG 3.1 Console</b>\nChoose a section.',
@@ -224,7 +246,7 @@ TEXT = {
         'st_module': 'Kernel module: {value}', 'st_panel': 'Web panel: {value}', 'st_kernel': 'Kernel: {value}',
         'backup': '<b>Backups</b>\nArchives on the server: {count}', 'backup_note': '\n\nAn archive contains every key, so it is not sent to Telegram: download it in the web panel.',
         'backup_last': '\nLatest: <code>{name}</code>', 'backup_done': '✅ Backup created: <code>{name}</code> ({size})',
-        'help': ('<b>What the bot can do</b>\n• clients: create, hand out config and QR, enable and disable, expiry, quota, delete\n• a client’s owner (Telegram ID) sees the state of their access in the bot\n'
+        'help': ('<b>What the bot can do</b>\n• clients: create, hand out config and QR, enable and disable, expiry, quota, new key, delete\n• invitation: a one-time link with which a person becomes the client’s owner\n• a client’s owner (Telegram ID) sees the state of their access in the bot\n'
                  '• servers: status, start, stop, restart\n• backup: create\n• event notifications\n\n'
                  'Deleting a server, restoring a backup, server settings and the panel password are available only in the web panel and the console.\n\n'
                  'Commands: /menu /servers /clients /status /backup /help'),
@@ -280,6 +302,23 @@ TEXT = {
         'test': '✅ The AmneziaWG 3.1 Console bot is connected. Send /menu.',
         'your_id': 'Your Telegram ID: <code>{id}</code>',
         'n_backup': '💾 Backup <code>{target}</code> was created.', 'n_backup_failed': '⚠️ The scheduled backup was not created: {target}',
+        'b_invite': '✉️ Invite', 'b_rekey': '🔑 New key',
+        'ask_invite': ('An invitation for <b>{name}</b>: a one-time link. The person opens it, presses Start '
+                       'and becomes the owner of the client{export}. How many days is the link valid?'),
+        'invite_export_note': ' and can get the configuration themselves', 'b_invite_days': '{n} d',
+        'invite_link': ('✉️ Invitation for <b>{name}</b> ({iface}), valid until {when} UTC, once:\n{link}\n\n'
+                        'Forward the link to the person. The previous link of this client no longer works.'),
+        'invite_no_username': 'Could not learn the bot name. Send the person this command: <code>/start {code}</code>',
+        'invite_ok': '✅ Done: the VPN access <b>{name}</b> is now yours.',
+        'invite_bad': 'The invitation is not valid: it expired, was used or was revoked. Ask the administrator for a new one.',
+        'invite_wait': 'Too many attempts. Try again later.',
+        'n_invite': '✉️ Invitation used: <b>{name}</b> ({iface}) now belongs to {who}.',
+        'n_totp_recovery': '🔐 Sign-in to the web panel with a recovery code. Codes left: {left}.',
+        'confirm_rekey': ('Issue a new key for <b>{name}</b>? The current configuration stops working at once and '
+                          'the client must import the new one. Address, limits, expiry and owner stay.'),
+        'rekeyed': '🔑 The key of <b>{name}</b> was replaced. The new configuration follows.',
+        'n_user_rekeyed': '🔑 The key of your VPN access <b>{name}</b> was replaced: the old configuration no longer works. {how}',
+        'how_bot': 'Get the new one with the Config button in /start.', 'how_admin': 'The administrator will give you the new configuration.',
     },
 }
 
@@ -394,7 +433,8 @@ def load_config(path=CONFIG):
             # Viewers see the menus and get notifications but cannot change anything.
             'viewers': {int(item) for item in data.get('viewers', [])} - admins,
             'digest': CRON_ALIASES.get(digest, digest),
-            'api_base': str(data.get('api_base') or 'https://api.telegram.org')}
+            'api_base': str(data.get('api_base') or 'https://api.telegram.org'),
+            'username': str(data.get('username') or '')}
 
 
 def parse_expiry(text, now=None):
@@ -425,6 +465,7 @@ class Bot:
         self.owners_map, self.owners_at = {}, None    # Telegram ID -> [(iface, client)], refreshed at most every OWNERS_TTL
         self.owner_seen = {}                          # Telegram ID -> time of the last answered request
         self.viewing = False                          # the update being handled comes from a viewer
+        self.invite_tries = {}                        # Telegram ID -> times of recent invitation attempts
 
     # ------------------------------------------------------------ helpers
     def t(self, key, **values):
@@ -560,7 +601,8 @@ class Bot:
                 [toggle, (self.t('b_exp'), f'ca:{iface}:{name}:exp'), (self.t('b_quota'), f'ca:{iface}:{name}:quota')],
                 [(self.t('b_speed'), f'ca:{iface}:{name}:speed'), (self.t('b_tg'), f'ca:{iface}:{name}:tg'),
                  (self.t('b_del'), f'ca:{iface}:{name}:del'),
-                 (self.t('b_refresh'), f'c:{iface}:{name}')]]
+                 (self.t('b_refresh'), f'c:{iface}:{name}')],
+                [(self.t('b_invite'), f'ca:{iface}:{name}:inv'), (self.t('b_rekey'), f'ca:{iface}:{name}:key')]]
         if c.get('telegram_id'):
             rows.append([(self.t('b_tg_export_off'), f'ca:{iface}:{name}:xoff')] if c.get('owner_export')
                         else [(self.t('b_tg_export_on'), f'ca:{iface}:{name}:xon')])
@@ -782,6 +824,78 @@ class Bot:
         except BotError as exc:                 # usually: the owner never started the bot
             log(f'cannot write to the owner of {c.get("name")}: {exc}')
 
+    def redeem_invite(self, sender, chat, code):
+        user = int(sender['id'])
+        now = self.clock()
+        tries = [stamp for stamp in self.invite_tries.get(user, []) if now - stamp < INVITE_WINDOW]
+        self.invite_tries = {k: v for k, v in self.invite_tries.items() if v and now - v[-1] < INVITE_WINDOW}
+        if len(tries) >= INVITE_TRIES:
+            if len(tries) == INVITE_TRIES:          # say it once, then stay quiet
+                tries.append(now)
+                self.invite_tries[user] = tries
+                self.api.call('sendMessage', chat_id=chat, text=self.t('invite_wait'))
+            return
+        self.invite_tries[user] = tries + [now]
+        found = None
+        try:
+            for server in self.servers():
+                result = self.ctl('invite-redeem', {'interface': server['interface'], 'code': code, 'telegram_id': str(user)})
+                if result.get('found'):
+                    found = (server['interface'], result)
+                    break
+        except BotError as exc:
+            log(f'invitation check failed: {exc}')
+        if not found:
+            self.api.call('sendMessage', chat_id=chat, text=self.t('invite_bad'))
+            return
+        iface, result = found
+        name = result['name']
+        self.invite_tries.pop(user, None)
+        try:
+            self.ctl('audit', {'event': 'client_invite_used', 'target': f'{iface}/{name} (owner {user})'})
+        except BotError:
+            pass
+        self.owners_at = None
+        self.owner_seen.pop(user, None)
+        self.api.call('sendMessage', chat_id=chat, parse_mode='HTML', text=self.t('invite_ok', name=name))
+        who = re.sub(r'[^\w .@-]', '', ' '.join(str(sender.get(k) or '') for k in ('first_name', 'last_name')).strip())[:40]
+        handle = re.sub(r'[^A-Za-z0-9_]', '', str(sender.get('username') or ''))[:32]
+        label = (who + (f' @{handle}' if handle else '')).strip() or str(user)
+        if self.on('invite'):
+            self.notify(self.t('n_invite', name=name, iface=iface, who=f'{label} (ID {user})'))
+        self.serve_owner(sender, {'id': chat, 'type': 'private'})
+
+    def bot_username(self):
+        if not self.config.get('username'):
+            try:
+                self.config['username'] = str(self.api.call('getMe').get('username') or '')
+            except BotError:
+                return ''
+        name = self.config['username']
+        return name if re.fullmatch(r'[A-Za-z0-9_]{3,32}', name) else ''
+
+    def invite(self, chat, admin, iface, name, days, message_id):
+        result = self.ctl('client-invite', {'interface': iface, 'name': name, 'days': days, 'export': True})
+        self.audit('client_invite_created', f'{iface}/{name}', admin)
+        username = self.bot_username()
+        when = str(result.get('expires_at', ''))[:16].replace('T', ' ')
+        if username:
+            text = self.t('invite_link', name=name, iface=iface, when=when, link=f"https://t.me/{username}?start={result['code']}")
+        else:
+            text = self.t('invite_no_username', code=result['code'])
+        self.show(chat, text, [[(self.t('b_back'), f'c:{iface}:{name}')]], message_id)
+
+    def rekey(self, chat, admin, iface, name, message_id):
+        before = self.client(iface, name)
+        self.ctl('client-rekey', {'interface': iface, 'name': name})
+        self.audit('client_rekeyed', f'{iface}/{name}', admin)
+        self.show(chat, self.t('rekeyed', name=name), message_id=message_id)
+        self.send_config(chat, iface, name, as_qr=False)
+        self.send_config(chat, iface, name, as_qr=True)
+        how = 'how_bot' if before.get('owner_export') and before.get('enabled') else 'how_admin'
+        self.tell_owner(before, self.t('n_user_rekeyed', name=name, how=self.plain(how)))
+        self.show(chat, *self.screen_client(iface, name))
+
     def find_client(self, target):
         """'awg0/name ...' from an audit record -> (iface, client) or None."""
         match = re.match(r'(awg[0-9]{1,2})/([A-Za-z0-9_-]{1,32})', target)
@@ -812,6 +926,12 @@ class Bot:
             command = str(message.get('text') or '').strip().split('@')[0].lower()
             if command == '/id' and chat.get('type') == 'private' and sender.get('id'):
                 self.tell_id(int(sender['id']))           # anyone may learn their own ID, to give it to the administrator
+                return
+            words = str(message.get('text') or '').strip().split()
+            if (len(words) == 2 and words[0].split('@')[0].lower() == '/start' and chat.get('type') == 'private'
+                    and sender.get('id') and INVITE_RE.fullmatch(words[1])):
+                # t.me/<bot>?start=<code>: anybody may hold an invitation, administrators included.
+                self.redeem_invite(sender, int(chat['id']), words[1])
                 return
             if not self.authorized(message.get('from'), message.get('chat')):
                 # Strangers and group chats get no reply at all; a client owner gets their status.
@@ -905,7 +1025,7 @@ class Bot:
         if iface and not IFACE_RE.fullmatch(iface):
             raise BotError('bad request')
         name = parts[2] if len(parts) > 2 else ''
-        if kind in ('c', 'ca', 'cy', 'ce', 'cq', 'cs', 'rn') and not NAME_RE.fullmatch(name):
+        if kind in ('c', 'ca', 'cy', 'ce', 'cq', 'cs', 'rn', 'iv', 'ky') and not NAME_RE.fullmatch(name):
             raise BotError('bad request')
         value = parts[3] if len(parts) > 3 else ''
         if kind == 'm':
@@ -948,6 +1068,10 @@ class Bot:
         elif kind == 'cs' and value in ('0', '5', '10', '20', '50', '100'):
             self.set_policy(admin, iface, name, speed_limit_mbit=int(value))
             self.show(chat, *self.screen_client(iface, name), message_id=message_id)
+        elif kind == 'iv' and value in tuple(str(n) for n in INVITE_DAYS):
+            self.invite(chat, admin, iface, name, int(value), message_id)
+        elif kind == 'ky' and value == 'yes':
+            self.rekey(chat, admin, iface, name, message_id)
         elif kind == 'rn' and value in ('0', '7', '30', '90'):
             self.renew(chat, admin, iface, name, int(value), message_id)
         elif kind == 'st':
@@ -988,6 +1112,13 @@ class Bot:
                       [[(self.t('b_mbit', n=n), f'cs:{iface}:{name}:{n}') for n in (5, 10, 20)],
                        [(self.t('b_mbit', n=n), f'cs:{iface}:{name}:{n}') for n in (50, 100)],
                        [(self.t('b_nospeed'), f'cs:{iface}:{name}:0'), (self.t('b_no'), f'c:{iface}:{name}')]], message_id)
+        elif action == 'inv':
+            self.show(chat, self.t('ask_invite', name=name, export=self.plain('invite_export_note')),
+                      [[(self.t('b_invite_days', n=n), f'iv:{iface}:{name}:{n}') for n in INVITE_DAYS],
+                       [(self.t('b_no'), f'c:{iface}:{name}')]], message_id)
+        elif action == 'key':
+            self.show(chat, self.t('confirm_rekey', name=name),
+                      [[(self.t('b_yes'), f'ky:{iface}:{name}:yes'), (self.t('b_no'), f'c:{iface}:{name}')]], message_id)
         elif action in ('xon', 'xoff'):
             self.set_policy(admin, iface, name, owner_export=action == 'xon')
             self.owners_at = None
@@ -1060,6 +1191,8 @@ class Bot:
                 continue                    # the administrator did this through the bot and already saw the result
             if event == 'login_success' and self.on('login'):
                 self.notify(self.t('n_login', target=target))
+            elif event == 'totp_recovery_used' and self.on('totp_recovery'):
+                self.notify(self.t('n_totp_recovery', left=target.split()[0] if target else '?'))
             elif event == 'password_changed' and self.on('password'):
                 self.notify(self.t('n_password'))
             elif event in ('client_disabled', 'client_enabled') and target.endswith('(auto)'):

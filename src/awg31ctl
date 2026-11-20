@@ -152,7 +152,11 @@ def get_conn(create=False):
                        'owner_export': 'INTEGER NOT NULL DEFAULT 0',
                        'speed_limit_mbit': 'INTEGER NOT NULL DEFAULT 0',
                        'quota_period': "TEXT NOT NULL DEFAULT ''",
-                       'quota_month': "TEXT NOT NULL DEFAULT ''"}
+                       'quota_month': "TEXT NOT NULL DEFAULT ''",
+                       # A one-time Telegram invitation: only its SHA-256 is kept.
+                       'invite_hash': "TEXT NOT NULL DEFAULT ''",
+                       'invite_expires': "TEXT NOT NULL DEFAULT ''",
+                       'invite_export': 'INTEGER NOT NULL DEFAULT 0'}
         for name, definition in new_columns.items():
             if name not in columns:
                 con.execute(f'ALTER TABLE clients ADD COLUMN {name} {definition}')
@@ -1076,6 +1080,9 @@ def clients_action(con, which):
                 'traffic_limit_bytes':row['traffic_limit_bytes'], 'used_bytes':row['used_bytes'],
                 'disabled_reason':row['disabled_reason'], 'telegram_id':row['telegram_id'],
                 'owner_export':bool(row['owner_export']),
+                'invite_expires':row['invite_expires'] if row['invite_hash'] and row['invite_expires']
+                                 and datetime.fromisoformat(row['invite_expires']) > datetime.now(timezone.utc) else '',
+                'invite_export':bool(row['invite_export']),
                 'speed_limit_mbit':row['speed_limit_mbit'], 'quota_period':row['quota_period'],
                 **{key:row[key] for key in I_KEYS}}
     if which == 'enable':
@@ -1152,11 +1159,7 @@ def peer_backup(con, label):
 def client_extra_update(con):
     """Set (or append) the same extra [Interface] lines on a selection of clients."""
     data = read_json()
-    names = data.get('names')
-    if (not isinstance(names, list) or not 1 <= len(names) <= 256
-            or any(not isinstance(name, str) or not NAME_RE.fullmatch(name) for name in names)
-            or len(set(names)) != len(names)):
-        raise ValueError('Invalid client selection')
+    names = read_names(data)
     mode = str(data.get('mode', 'replace'))
     if mode not in ('replace', 'append'):
         raise ValueError('mode: replace или append')
@@ -1183,6 +1186,164 @@ def client_extra_update(con):
         con.executemany('UPDATE clients SET extra_lines=? WHERE name=?', ((v, k) for k, v in updates.items()))
         con.commit()
     return {'ok': True, 'updated': sorted(updates), 'reimport_client': bool(updates)}
+
+
+def read_names(data):
+    names = data.get('names')
+    if (not isinstance(names, list) or not 1 <= len(names) <= 256
+            or any(not isinstance(name, str) or not NAME_RE.fullmatch(name) for name in names)
+            or len(set(names)) != len(names)):
+        raise ValueError('Invalid client selection')
+    return names
+
+
+def client_rekey(con):
+    """A new key pair and PSK for one client; address, limits, owner and history stay."""
+    data = read_json()
+    name = str(data.get('name', ''))
+    if not NAME_RE.fullmatch(name): raise ValueError('Неверное имя клиента')
+    row = con.execute('SELECT * FROM clients WHERE name=?', (name,)).fetchone()
+    if not row: raise ValueError('Клиент не найден')
+    cfg = get_settings(con)
+    peer_backup(con, 'rekey-' + name)
+    private = keygen(); public = pubkey(private); psk = pskgen()
+    # The old key stops working at once: the peer is replaced in the running interface.
+    con.execute('UPDATE clients SET private_key=?, public_key=?, psk=?, last_rx=0, last_tx=0 WHERE name=?',
+                (private, public, psk, name))
+    apply(cfg, con)
+    con.commit()
+    row = dict(con.execute('SELECT * FROM clients WHERE name=?', (name,)).fetchone())
+    return {'ok': True, 'name': name, 'config': client_config(cfg, row, peer_rows(con)), 'reimport_client': True}
+
+
+def utc_now():
+    return datetime.now(timezone.utc)
+
+
+def client_batch(con):
+    """The same change for a selection: enable, disable, extend the term, set the traffic limit.
+    Clients the change cannot apply to are reported, not failed."""
+    data = read_json()
+    names = read_names(data)
+    action = str(data.get('action', ''))
+    if action not in ('enable', 'disable', 'extend', 'limit'):
+        raise ValueError('action: enable, disable, extend или limit')
+    days = limit = 0
+    if action == 'extend':
+        try: days = int(data.get('days', 0))
+        except (TypeError, ValueError): raise ValueError('Продление: целое число дней') from None
+        if not 1 <= days <= 3650: raise ValueError('Продление: от 1 до 3650 дней')
+    if action == 'limit':
+        try: limit = int(data.get('traffic_limit_bytes', -1))
+        except (TypeError, ValueError): raise ValueError('Лимит трафика должен быть числом байт') from None
+        if not 0 <= limit <= 10**15: raise ValueError('Недопустимый лимит трафика')
+    rows = {r['name']: dict(r) for r in con.execute(
+        'SELECT * FROM clients WHERE name IN (' + ','.join('?' for _ in names) + ')', names)}
+    if set(rows) != set(names):
+        raise ValueError('One or more clients no longer exist')
+    cfg = get_settings(con)
+    now = utc_now()
+    changed, enabled, disabled, skipped = [], [], [], {}
+
+    def expired(row):
+        return bool(row['expires_at']) and datetime.fromisoformat(row['expires_at']) <= now
+
+    def over_quota(row):
+        return bool(row['traffic_limit_bytes']) and int(row['used_bytes']) >= int(row['traffic_limit_bytes'])
+
+    def try_enable(row):
+        if expired(row): return 'expired'
+        if over_quota(row): return 'quota'
+        try: parse_routes(row['routed_subnets'], cfg, con, owner=row['name'])
+        except ValueError: return 'routes'
+        con.execute("UPDATE clients SET enabled=1, disabled_reason='' WHERE name=?", (row['name'],))
+        row['enabled'] = 1
+        return ''
+
+    for name in names:
+        row = rows[name]
+        if action == 'disable':
+            if not row['enabled']:
+                skipped[name] = 'already'; continue
+            con.execute("UPDATE clients SET enabled=0, disabled_reason='manual' WHERE name=?", (name,))
+            disabled.append(name); changed.append(name)
+        elif action == 'enable':
+            if row['enabled']:
+                skipped[name] = 'already'; continue
+            reason = try_enable(row)
+            if reason: skipped[name] = reason
+            else: enabled.append(name); changed.append(name)
+        elif action == 'extend':
+            if not row['expires_at']:
+                skipped[name] = 'no_expiry'; continue          # without a term the client is already unlimited
+            current = datetime.fromisoformat(row['expires_at'])
+            when = (max(current, now) + timedelta(days=days)).replace(hour=23, minute=59, second=59, microsecond=0)
+            row['expires_at'] = when.isoformat()
+            con.execute('UPDATE clients SET expires_at=? WHERE name=?', (row['expires_at'], name))
+            changed.append(name)
+            if not row['enabled'] and row['disabled_reason'] == 'expired' and not try_enable(row):
+                enabled.append(name)
+        elif action == 'limit':
+            row['traffic_limit_bytes'] = limit
+            con.execute('UPDATE clients SET traffic_limit_bytes=? WHERE name=?', (limit, name))
+            changed.append(name)
+            if not row['enabled'] and row['disabled_reason'] == 'quota' and not try_enable(row):
+                enabled.append(name)
+    if enabled or disabled:
+        apply(cfg, con)
+    con.commit()
+    return {'ok': True, 'action': action, 'changed': changed, 'enabled': enabled, 'disabled': disabled, 'skipped': skipped}
+
+
+INVITE_RE = re.compile(r'^[A-Za-z0-9_-]{20,64}$')
+
+
+def invite_digest(code):
+    return hashlib.sha256(code.encode()).hexdigest()
+
+
+def client_invite(con):
+    """Create or revoke a one-time Telegram invitation for a client. The code is shown once."""
+    data = read_json()
+    name = str(data.get('name', ''))
+    if not NAME_RE.fullmatch(name): raise ValueError('Неверное имя клиента')
+    if not con.execute('SELECT 1 FROM clients WHERE name=?', (name,)).fetchone(): raise ValueError('Клиент не найден')
+    if data.get('action') == 'revoke':
+        con.execute("UPDATE clients SET invite_hash='', invite_expires='', invite_export=0 WHERE name=?", (name,))
+        con.commit()
+        return {'ok': True, 'name': name}
+    try: days = int(data.get('days', 7))
+    except (TypeError, ValueError): raise ValueError('Срок приглашения: целое число дней') from None
+    if not 1 <= days <= 30: raise ValueError('Срок приглашения: от 1 до 30 дней')
+    export = data.get('export') in (True, 1, '1', 'true', 'on')
+    code = secrets.token_urlsafe(18)                     # 24 characters, allowed in t.me/<bot>?start=
+    expires = (utc_now() + timedelta(days=days)).replace(microsecond=0).isoformat()
+    con.execute('UPDATE clients SET invite_hash=?, invite_expires=?, invite_export=? WHERE name=?',
+                (invite_digest(code), expires, int(export), name))
+    con.commit()
+    return {'ok': True, 'name': name, 'code': code, 'expires_at': expires, 'export': export}
+
+
+def invite_redeem(con):
+    """The bot found an invitation code: the person becomes the client's owner."""
+    data = read_json()
+    code = str(data.get('code', ''))
+    telegram = str(data.get('telegram_id', ''))
+    if not INVITE_RE.fullmatch(code) or not re.fullmatch(r'[1-9][0-9]{2,14}', telegram):
+        raise ValueError('Invalid invitation')
+    row = con.execute('SELECT name, invite_expires, invite_export FROM clients WHERE invite_hash=?',
+                      (invite_digest(code),)).fetchone()
+    if not row:
+        return {'found': False}
+    if not row['invite_expires'] or datetime.fromisoformat(row['invite_expires']) <= utc_now():
+        con.execute("UPDATE clients SET invite_hash='', invite_expires='', invite_export=0 WHERE name=?", (row['name'],))
+        con.commit()
+        return {'found': False, 'expired': True}
+    # Single use: the code is gone before the answer leaves.
+    con.execute("""UPDATE clients SET telegram_id=?, owner_export=?, invite_hash='', invite_expires='', invite_export=0
+                   WHERE name=?""", (telegram, int(row['invite_export']), row['name']))
+    con.commit()
+    return {'found': True, 'name': row['name'], 'export': bool(row['invite_export'])}
 
 
 def client_network_update(con):
@@ -1363,7 +1524,8 @@ def get_status(con, with_clients=False):
 
 def main():
     if os.geteuid() != 0: raise PermissionError('Контроллер требует root')
-    if len(sys.argv) != 2 or sys.argv[1] not in ('init','status','list','add','download','enable','disable','delete','delete-batch','client-network','client-extra','client-policy','settings','sample','history','add-batch','sessions'):
+    if len(sys.argv) != 2 or sys.argv[1] not in ('init','status','list','add','download','enable','disable','delete','delete-batch','client-network','client-extra','client-policy','settings','sample','history','add-batch','sessions',
+                                                    'client-rekey','client-batch','client-invite','invite-redeem'):
         raise ValueError('Неподдерживаемая команда')
     LOCK.parent.mkdir(parents=True, exist_ok=True)
     with open(LOCK,'a+') as lock:
@@ -1379,6 +1541,10 @@ def main():
                 elif op == 'add-batch': result = clients_add_batch(con)
                 elif op == 'client-network': result = client_network_update(con)
                 elif op == 'client-extra': result = client_extra_update(con)
+                elif op == 'client-rekey': result = client_rekey(con)
+                elif op == 'client-batch': result = client_batch(con)
+                elif op == 'client-invite': result = client_invite(con)
+                elif op == 'invite-redeem': result = invite_redeem(con)
                 elif op == 'client-policy': result = client_policy_update(con)
                 elif op == 'sample': result = sample_usage(con)
                 elif op == 'history': result = traffic_history(con,read_json())

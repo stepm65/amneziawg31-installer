@@ -228,8 +228,7 @@
   function updatePeerSelection() {
     const selected = peerCheckboxes.filter(x => x.checked).length;
     if (bulkButton) bulkButton.disabled = selected === 0;
-    const extraButton = byId('bulk-extra-button');
-    if (extraButton) extraButton.disabled = selected === 0;
+    for (const button of document.querySelectorAll('[data-needs-selection]')) button.disabled = selected === 0;
     if (bulkCount) bulkCount.textContent = (isRu ? 'Выбрано: ' : 'Selected: ') + selected;
     if (allPeers) {
       allPeers.checked = peerCheckboxes.length > 0 && selected === peerCheckboxes.length;

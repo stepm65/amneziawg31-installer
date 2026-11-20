@@ -1008,7 +1008,8 @@ body {background:var(--ui-bg);font-size:14px;line-height:1.48;}
 .settings-card .advanced-box .obf-help {color:#a7b1bc;font-size:12px;line-height:1.55;margin:12px 0 20px}
 .server-state-actions {display:flex;align-items:center;gap:8px;flex-wrap:wrap}
 .server-state-actions form {margin:0}
-.bulk-toolbar {display:flex;align-items:center;gap:18px;justify-content:flex-end;padding:3px 0 14px}
+.bulk-toolbar {display:flex;align-items:center;gap:8px;flex-wrap:wrap;justify-content:flex-end;padding:3px 0 14px}
+.bulk-toolbar > span {margin-right:10px}
 .bulk-toolbar span {color:#abb6c3;font-size:12px}
 .peer-select,#select-all-peers {width:17px;height:17px;accent-color:var(--amber);cursor:pointer}
 .clients-card th:first-child,.clients-card td:first-child {width:40px;text-align:center}
@@ -1230,3 +1231,29 @@ tr:hover .extra-dot {box-shadow:0 0 0 2px #1e2228}
 .extra-mode small {color:#9aa3ad}
 .extra-mode .check-field {margin:4px 0}
 .bulk-extra-count {margin:0 0 4px;color:#aeb6bf;font-size:12.5px;overflow-wrap:anywhere}
+
+/* 0.15: notices after bulk actions, the access card, invitations, recovery codes. */
+.bulk-notice {display:flex;gap:10px;align-items:flex-start;margin:0 0 14px;padding:11px 14px;border:1px solid rgba(110,200,150,.35);border-radius:10px;background:rgba(110,200,150,.07);color:#cfe9da;font-size:13px}
+.bulk-notice svg {flex:none;margin-top:2px;color:#7fd6a4}
+.bulk-notice ul {margin:6px 0 0;padding-left:18px;color:#aeb6bf}
+.client-access .access-grid {display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:18px}
+.access-block {padding:16px 18px;border:1px solid #2c3139;border-radius:12px;background:#171a1f}
+.access-block h3 {display:flex;align-items:center;gap:8px;margin:0 0 8px;font-size:15px}
+.access-block h3 svg {color:var(--amber)}
+.access-hint {margin:0 0 12px;color:#9aa3ad;font-size:12.5px;line-height:1.5}
+.access-row {display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.access-state {display:inline-flex;align-items:center;gap:7px;margin:0;color:#aeb6bf;font-size:13px}
+.access-state.is-on {color:#8fd3ae}
+.access-form {display:grid;gap:4px;margin-top:8px}
+.access-form .field {max-width:220px;margin-bottom:4px}
+.access-form .btn {justify-self:start}
+.invite-grid {display:flex;gap:22px;align-items:flex-start;flex-wrap:wrap;margin-top:12px}
+.invite-qr {border-radius:12px;background:#fff;padding:8px}
+.invite-text {flex:1;min-width:260px}
+.invite-text input {width:100%}
+.recovery-box {margin:12px 0;padding:12px 14px;border:1px solid #2c3139;border-radius:10px;background:#171a1f}
+.recovery-box > p {display:flex;align-items:center;gap:8px;margin:0 0 8px;color:#cfd5db;font-size:13px}
+.recovery-box.is-empty > p {color:#f3c06b}
+.recovery-box strong {color:#f3c06b}
+.recovery-codes {display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:8px 18px;margin:16px 0;padding-left:24px;font-size:16px;letter-spacing:.04em}
+.recovery-box .totp-regenerate {border:0;padding:0;margin:0;background:none}

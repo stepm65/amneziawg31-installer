@@ -168,6 +168,27 @@ echo '{"interface":"awg0","names":["team-01"],"extra_lines":"[Peer]"}' | "$MGR" 
   && fail 'a section in the extra lines was accepted'
 "$MGR" list <<<'{"interface":"awg0"}' | python3 -c 'import json,sys; c={x["name"]:x for x in json.load(sys.stdin)["clients"]}; assert c["team-01"]["extra_lines"] and not c["team-03"]["extra_lines"]'
 
+step 'Bulk actions, key replacement and invitations through the panel rule'
+panel_mgr(){ runuser -u awgpanel -- sudo -n "$MGR" "$@"; }
+echo '{"interface":"awg0","names":["team-01","team-02"],"action":"disable"}' | panel_mgr client-batch \
+  | python3 -c 'import json,sys; r=json.load(sys.stdin); assert r["disabled"]==["team-01","team-02"], r'
+awg show awg0 peers | wc -l | grep -qx 3 || fail 'bulk disable did not remove the peers'
+echo '{"interface":"awg0","names":["team-01","team-02"],"action":"enable"}' | panel_mgr client-batch | grep -q '"enabled": \["team-01", "team-02"\]' \
+  || fail 'bulk enable failed'
+echo '{"interface":"awg0","names":["team-03"],"action":"extend","days":30}' | panel_mgr client-batch | grep -q '"no_expiry"' \
+  || fail 'a client without expiry was extended'
+old_key="$("$MGR" list <<<'{"interface":"awg0"}' | python3 -c 'import json,sys; print({c["name"]:c["public_key"] for c in json.load(sys.stdin)["clients"]}["team-03"])')"
+echo '{"interface":"awg0","name":"team-03"}' | panel_mgr client-rekey | grep -q 'PrivateKey = ' || fail 'key replacement returned no configuration'
+new_key="$("$MGR" list <<<'{"interface":"awg0"}' | python3 -c 'import json,sys; print({c["name"]:c["public_key"] for c in json.load(sys.stdin)["clients"]}["team-03"])')"
+[[ "$new_key" != "$old_key" ]] || fail 'the public key did not change'
+awg show awg0 peers | grep -qxF "$new_key" || fail 'the new key is not on the interface'
+if awg show awg0 peers | grep -qxF "$old_key"; then fail 'the old key still works'; fi
+INVITE="$(echo '{"interface":"awg0","name":"team-03","days":1,"export":true}' | panel_mgr client-invite | python3 -c 'import json,sys; print(json.load(sys.stdin)["code"])')"
+if grep -rqF "$INVITE" /var/lib/awg31-panel; then fail 'the invitation code is stored in clear'; fi
+if echo "{\"interface\":\"awg0\",\"code\":\"$INVITE\",\"telegram_id\":\"555000111\"}" | panel_mgr invite-redeem >/dev/null 2>&1; then
+    fail 'the panel user may redeem an invitation'
+fi
+
 step 'Second server next to the first one'
 uplink="$(ip -4 route show default | awk '{print $5; exit}')"
 echo "{\"interface\":\"awg1\",\"subnet\":\"10.88.0.0/24\",\"port\":\"51999\",\"mtu\":\"1280\",\"endpoint\":\"203.0.113.10\",\"dns\":\"1.1.1.1\",\"mode\":\"split\",\"uplink\":\"$uplink\"}" | "$MGR" server-create >/dev/null
@@ -483,6 +504,15 @@ tg_wait 100 'Failed sign-in attempts' || fail 'no notification about a failed si
 # An encrypted backup reaches the administrator as a file.
 "$MGR" backup-create >/dev/null
 tg_wait 100 'filename=\\"awg31-[0-9TZ-]*-[0-9a-f]*.tar.gz.gpg\\"' || fail 'the encrypted backup was not sent to Telegram'
+# An invitation made in the panel turns the person who opens it into the owner.
+tg_push "$(tg_text "/start $INVITE" 888000111)"
+for attempt in $(seq 1 30); do "$MGR" list <<<'{"interface":"awg0"}' | grep -q '"telegram_id": "888000111"' && break; sleep 1; done
+"$MGR" list <<<'{"interface":"awg0"}' | python3 -c 'import json,sys; c={x["name"]:x for x in json.load(sys.stdin)["clients"]}["team-03"]; assert c["telegram_id"]=="888000111" and c["owner_export"], c' \
+  || fail 'the invitation did not make an owner'
+tg_wait 30 'Invitation used' || fail 'administrators were not told about the used invitation'
+grep -q 'client_invite_used.*awg0/team-03 (owner 888000111)' /var/log/awg31-panel/audit.jsonl || fail 'the used invitation is not in the audit log'
+tg_push "$(tg_text "/start $INVITE" 888000222)"
+tg_wait 30 'not valid' || fail 'a used invitation was accepted again'
 awg31 telegram status
 
 step 'Running the installer again updates in place'

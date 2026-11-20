@@ -1,6 +1,7 @@
 """Bilingual charcoal/amber AWG 3.1 console. Unprivileged; localhost only."""
 import contextvars
 import copy
+import csv
 import hashlib
 import hmac
 import html
@@ -674,8 +675,8 @@ NOTIFY_GROUPS = ('server', 'clients', 'security', 'backups')
 # The Telegram notification cards: (group, icon, events). Same keys as awg31bot.EVENTS.
 TG_EVENT_GROUPS = (
     ('server', 'server', ('server_state', 'module', 'kernel', 'panel')),
-    ('clients', 'users', ('client_auto', 'client_expiring', 'client_quota')),
-    ('security', 'shield', ('login', 'login_failed', 'password', 'owner_export')),
+    ('clients', 'users', ('client_auto', 'client_expiring', 'client_quota', 'invite')),
+    ('security', 'shield', ('login', 'login_failed', 'password', 'owner_export', 'totp_recovery')),
     ('backups', 'archive', ('backup_created', 'backup_failed', 'upload_failed')),
     ('system', 'cpu', ('cpu', 'memory', 'disk')),
 )
@@ -1455,7 +1456,8 @@ def login_form(request, error='', next_path='/'):
     try: second = bool(read_auth().get('totp_secret'))
     except (OSError, ValueError): second = False
     totp_field = (f'<label class="field" for="code"><span>{h(tr(lang,"totp_code"))}</span>'
-                  '<input id="code" name="code" inputmode="numeric" pattern="[0-9 ]{6,7}" maxlength="7" required autocomplete="one-time-code"></label>') if second else ''
+                  '<input id="code" name="code" pattern="[0-9 ]{6,7}|[A-Za-z0-9]{5}-?[A-Za-z0-9]{5}" maxlength="11" required autocomplete="one-time-code" spellcheck="false">'
+                  f'<small>{h(tr(lang,"login_code_hint"))}</small></label>') if second else ''
     return page(tr(lang, 'sign_in'), f'''<section class="card login-card">
         <div class="login-mark">{icon('lock',28)}</div>
         <div class="login-card-kicker">AMNEZIAWG 3.1 / ACCESS</div>
@@ -1505,10 +1507,17 @@ def login_post(request: Request, password: str = Form(...), next: str = Form('/'
                                  n=2**14,r=8,p=1,dklen=32)
         valid=hmac.compare_digest(candidate.hex(),auth['password_hash'])
         if valid and auth.get('totp_secret'):
-            # Second factor; a code is accepted once, so a watched code cannot be replayed.
-            step=totp_step(auth['totp_secret'],code)
-            valid=step is not None and step>LAST_TOTP_STEP[0]
-            if valid: LAST_TOTP_STEP[0]=step
+            if re.fullmatch(r'\s*[A-Za-z0-9]{5}-?[A-Za-z0-9]{5}\s*', code) and not re.fullmatch(r'[0-9 ]+', code):
+                # A recovery code instead of the app: checked and crossed out by the root helper.
+                try:
+                    ctl('totp-recovery-use', {'password': password, 'code': code})
+                except RuntimeError:
+                    valid = False
+            else:
+                # Second factor; a code is accepted once, so a watched code cannot be replayed.
+                step=totp_step(auth['totp_secret'],code)
+                valid=step is not None and step>LAST_TOTP_STEP[0]
+                if valid: LAST_TOTP_STEP[0]=step
     except (ValueError,OverflowError,OSError): valid=False
     if not valid:
         attempts.append(now)
@@ -1939,10 +1948,18 @@ def server_content(request: Request, section: str = 'overview'):
           <label><input type="checkbox" data-client-status="1" checked><span>{h(t('active_only'))}</span></label>
           <label><input type="checkbox" data-client-status="0" checked><span>{'Отключённые' if lang=='ru' else 'Disabled'}</span></label>
         </div>
-        <span class="table-count mono">{len(clients_all)} {h('клиентов' if lang=='ru' else 'peers')}</span></div>
+        <span class="table-count mono">{len(clients_all)} {h('клиентов' if lang=='ru' else 'peers')}</span>
+        <a class="btn btn-secondary btn-small" href="/servers/{h(state['interface'])}/export/clients.csv" download title="{h(t('export_csv_hint'))}">{icon('download',15)}{h(t('export_csv'))}</a></div>
+        {bulk_notice(request, t)}
+        <form id="bulk-enable-form" method="post" action="/servers/{h(state['interface'])}/clients/bulk-action" data-bulk-names hidden>{csrf(request)}<input type="hidden" name="action" value="enable"></form>
+        <form id="bulk-disable-form" method="post" action="/servers/{h(state['interface'])}/clients/bulk-action" data-bulk-names hidden>{csrf(request)}<input type="hidden" name="action" value="disable"></form>
         <form id="bulk-delete-form" method="post" action="/servers/{h(state['interface'])}/clients/bulk-delete" data-confirm="{h(t('bulk_delete_confirm'))}">{csrf(request)}
         <div class="bulk-toolbar"><span id="bulk-selection-count">{h(t('selected_count'))}: 0</span>
-        <button id="bulk-extra-button" type="button" class="btn btn-secondary btn-small" data-modal-open="bulk-extra-modal" disabled>{icon('file',16)}{h(t('extra_bulk'))}</button>
+        <button type="submit" form="bulk-enable-form" class="btn btn-secondary btn-small" data-needs-selection disabled>{icon('play',15)}{h(t('bulk_enable'))}</button>
+        <button type="submit" form="bulk-disable-form" class="btn btn-secondary btn-small" data-needs-selection disabled>{icon('pause',15)}{h(t('bulk_disable'))}</button>
+        <button type="button" class="btn btn-secondary btn-small" data-modal-open="bulk-extend-modal" data-needs-selection disabled>{icon('calendar',15)}{h(t('bulk_extend'))}</button>
+        <button type="button" class="btn btn-secondary btn-small" data-modal-open="bulk-limit-modal" data-needs-selection disabled>{icon('activity',15)}{h(t('bulk_limit'))}</button>
+        <button id="bulk-extra-button" type="button" class="btn btn-secondary btn-small" data-modal-open="bulk-extra-modal" data-needs-selection disabled>{icon('file',16)}{h(t('extra_bulk'))}</button>
         <button id="bulk-delete-button" type="submit" class="btn btn-danger btn-small" disabled>{icon('trash',16)}{h(t('bulk_delete'))}</button></div></form>
         <div class="table-scroll"><table><thead><tr>
         <th><input type="checkbox" id="select-all-peers" aria-label="{h(t('select_all'))}"></th>{sort_head('name',t('name'))}{sort_head('ip',t('vpn_ip'))}{sort_head('status',t('status'))}
@@ -1975,6 +1992,35 @@ def server_content(request: Request, section: str = 'overview'):
           <div class="modal-footer"><button class="btn btn-primary" type="submit">{icon('plus',16)}{h(t('add_client_submit'))}</button></div>
           </form>
           </div>
+        </dialog>
+
+        <!-- Extend / quota for the selected clients -->
+        <dialog id="bulk-extend-modal" class="awg-modal">
+          <div class="modal-header"><h2>{icon('calendar',20)}{h(t('bulk_extend_title'))}</h2>
+          <button type="button" class="icon-btn modal-close" aria-label="{h(t('close_window'))}">{icon('x',20)}</button></div>
+          <div class="modal-body">
+          <form class="add-client-form" method="post" action="/servers/{h(state['interface'])}/clients/bulk-action" data-bulk-names>{csrf(request)}
+          <input type="hidden" name="action" value="extend">
+          <p class="bulk-extra-count mono" data-bulk-names-count></p>
+          <label class="field" for="bulk-extend-days"><span>{h(t('bulk_extend_days'))}</span>
+          <input id="bulk-extend-days" name="days" type="number" inputmode="numeric" min="1" max="3650" value="30" required list="bulk-extend-presets"></label>
+          <datalist id="bulk-extend-presets"><option value="7"><option value="30"><option value="90"><option value="365"></datalist>
+          <p class="info-line">{h(t('bulk_extend_hint'))}</p>
+          <div class="modal-footer"><button class="btn btn-primary" type="submit">{icon('check',16)}{h(t('bulk_apply'))}</button></div>
+          </form></div>
+        </dialog>
+        <dialog id="bulk-limit-modal" class="awg-modal">
+          <div class="modal-header"><h2>{icon('activity',20)}{h(t('bulk_limit_title'))}</h2>
+          <button type="button" class="icon-btn modal-close" aria-label="{h(t('close_window'))}">{icon('x',20)}</button></div>
+          <div class="modal-body">
+          <form class="add-client-form" method="post" action="/servers/{h(state['interface'])}/clients/bulk-action" data-bulk-names>{csrf(request)}
+          <input type="hidden" name="action" value="limit">
+          <p class="bulk-extra-count mono" data-bulk-names-count></p>
+          <label class="field" for="bulk-limit-gib"><span>{h(t('quota'))}</span>
+          <input id="bulk-limit-gib" name="quota_gib" type="number" inputmode="decimal" min="0" max="100000" step="any" value="50" required></label>
+          <p class="info-line">{h(t('bulk_limit_hint'))}</p>
+          <div class="modal-footer"><button class="btn btn-primary" type="submit">{icon('check',16)}{h(t('bulk_apply'))}</button></div>
+          </form></div>
         </dialog>
 
         <!-- Extra [Interface] lines for the selected clients -->
@@ -2451,8 +2497,11 @@ def detail(request: Request, name: str, interface: str = ''):
         {policy_extra_fields({**obj,'_lang':lang}, 'policy')}
       </div><label class="check-field"><input type="checkbox" name="owner_export" value="1"{' checked' if obj.get('owner_export') else ''}><span>{h(t('owner_export'))}</span></label><button class="btn btn-primary" type="submit">{h(t('save_policy'))}</button>
       </form></section>'''
+    rekeyed = (f'<p class="bulk-notice" role="status">{icon("key",16)}<span>{h(t("rekeyed"))}</span></p>'
+               if request.query_params.get('rekeyed') == '1' else '')
     return page(t('client') + ' ' + name,
-                '<div class="client-detail">' + contents + network_form + policy_form
+                '<div class="client-detail">' + rekeyed + contents + network_form + policy_form
+                + access_card(request, name, obj, t)
                 + sessions_section(request, name, t, lang) + '</div>', request)
 
 
@@ -2590,6 +2639,334 @@ async def clients_bulk_extra(request: Request, interface: str = ''):
     except RuntimeError as exc:
         return error_page(request, tr(lang_of(request), 'error'), exc)
     return RedirectResponse(scoped_prefix(request)+'/clients' if scoped_prefix(request) else '/servers/'+selected_server(request)+'/clients', status_code=303)
+
+
+# ---------------------------------------------------------------- 0.15: access
+CLIENT_NAME_RE = re.compile(r'^[A-Za-z0-9][A-Za-z0-9_-]{0,31}$')
+INVITE_DAYS = (1, 7, 30)
+
+
+def form_names(form):
+    names = form.getlist('names')
+    if (not 1 <= len(names) <= 256 or len(set(names)) != len(names)
+            or any(not CLIENT_NAME_RE.fullmatch(name) for name in names)):
+        raise HTTPException(422, detail='Invalid client selection')
+    return names
+
+
+def clients_url(request):
+    return scoped_prefix(request) + '/clients' if scoped_prefix(request) else '/servers/' + selected_server(request) + '/clients'
+
+
+def access_card(request, name, obj, t):
+    """Telegram invitation and key replacement for one client."""
+    name_url = quote(name, safe='')
+    try: bot = ctl('telegram-status', {})
+    except RuntimeError: bot = {}
+    if not bot.get('configured'):
+        invite = (f'<p class="info-line">{icon("info",14)}<span>{h(t("invite_no_bot"))} '
+                  f'<a href="/maintenance?tab=telegram">{h(t("invite_no_bot_link"))}</a></span></p>')
+    else:
+        active = obj.get('invite_expires') or ''
+        state = (f'<p class="access-state is-on">{icon("send",15)}{h(t("invite_active").format(when=active[:16].replace("T", " ")))}</p>'
+                 f'<form method="post" action="/client/{name_url}/invite/revoke" class="inline">{csrf(request)}'
+                 f'<button class="btn btn-secondary btn-small" type="submit">{h(t("invite_revoke"))}</button></form>'
+                 if active else '')
+        owner = obj.get('telegram_id') or ''
+        days = ''.join(f'<option value="{n}"{" selected" if n == 7 else ""}>{h(t("invite_days").format(n=n))}</option>' for n in INVITE_DAYS)
+        invite = (f'<div class="access-row">{state}</div>'
+                  + (f'<p class="info-line">{icon("info",14)}<span>{h(t("invite_replaces").format(id=owner))}</span></p>' if owner else '')
+                  + f'''<form method="post" action="/client/{name_url}/invite" class="access-form">{csrf(request)}
+                  <label class="field"><span>{h(t('invite_valid'))}</span><select name="days">{days}</select></label>
+                  <label class="check-field"><input type="checkbox" name="export" value="1" checked><span>{h(t('invite_export'))}</span></label>
+                  <button class="btn btn-primary" type="submit">{icon('send',16)}{h(t('invite_create'))}</button></form>''')
+    return f'''<section class="card detail-card client-access">
+      <div class="section-title"><h2>{icon('key',20)}{h(t('access_title'))}</h2></div>
+      <div class="access-grid">
+        <div class="access-block"><h3>{icon('send',17)}{h(t('invite_title'))}</h3>
+          <p class="access-hint">{h(t('invite_hint'))}</p>{invite}</div>
+        <div class="access-block"><h3>{icon('key',17)}{h(t('rekey_title'))}</h3>
+          <p class="access-hint">{h(t('rekey_hint'))}</p>
+          <form method="post" action="/client/{name_url}/rekey" data-confirm="{h(t('rekey_confirm'))}">{csrf(request)}
+          <button class="btn btn-danger" type="submit">{icon('restart',16)}{h(t('rekey_button'))}</button></form></div>
+      </div></section>'''
+
+
+@app.post('/client/{name}/rekey')
+@app.post('/servers/{interface}/clients/{name}/rekey')
+async def client_rekey_route(request: Request, name: str, interface: str = ''):
+    form = await request.form()
+    require_csrf(request, form.get('csrf', ''))
+    if not CLIENT_NAME_RE.fullmatch(name): raise HTTPException(404)
+    try: control(request, 'client-rekey', {'name': name})
+    except RuntimeError as exc: return error_page(request, tr(lang_of(request), 'error'), exc)
+    audit_event('client_rekeyed', f'{selected_server(request)}/{name}')
+    return RedirectResponse(scoped_client(request, name) + '?rekeyed=1', status_code=303)
+
+
+@app.post('/client/{name}/invite/revoke')
+@app.post('/servers/{interface}/clients/{name}/invite/revoke')
+async def client_invite_revoke(request: Request, name: str, interface: str = ''):
+    form = await request.form()
+    require_csrf(request, form.get('csrf', ''))
+    if not CLIENT_NAME_RE.fullmatch(name): raise HTTPException(404)
+    try: control(request, 'client-invite', {'name': name, 'action': 'revoke'})
+    except RuntimeError as exc: return error_page(request, tr(lang_of(request), 'error'), exc)
+    return RedirectResponse(scoped_client(request, name), status_code=303)
+
+
+@app.post('/client/{name}/invite')
+@app.post('/servers/{interface}/clients/{name}/invite')
+async def client_invite_create(request: Request, name: str, interface: str = ''):
+    form = await request.form()
+    require_csrf(request, form.get('csrf', ''))
+    if not CLIENT_NAME_RE.fullmatch(name): raise HTTPException(404)
+    lang = lang_of(request)
+    t = lambda key: tr(lang, key)
+    try: days = int(form.get('days', 7))
+    except (TypeError, ValueError): raise HTTPException(422) from None
+    if days not in INVITE_DAYS: raise HTTPException(422)
+    try:
+        bot = ctl('telegram-status', {})
+        username = str(bot.get('username') or '')
+        if not bot.get('configured') or not re.fullmatch(r'[A-Za-z0-9_]{3,32}', username):
+            raise RuntimeError(t('invite_no_bot'))
+        result = control(request, 'client-invite', {'name': name, 'days': days, 'export': form.get('export') == '1'})
+    except RuntimeError as exc:
+        return error_page(request, t('error'), exc)
+    audit_event('client_invite_created', f'{selected_server(request)}/{name}')
+    link = f'https://t.me/{username}?start={result["code"]}'
+    picture = io.BytesIO()
+    qrcode.make(link, error_correction=qrcode.constants.ERROR_CORRECT_M).save(picture, format='PNG')
+    when = str(result.get('expires_at', ''))[:16].replace('T', ' ')
+    body = f'''<section class="card detail-card invite-card">
+      <div class="section-title"><h2>{icon('send',20)}{h(t('invite_ready'))}: <span class="mono">{h(name)}</span></h2></div>
+      <p class="info-line">{icon('info',14)}<span>{h(t('invite_ready_hint').format(when=when))}</span></p>
+      <div class="invite-grid"><img class="invite-qr" width="220" height="220" alt="QR" src="data:image/png;base64,{base64.b64encode(picture.getvalue()).decode()}">
+      <div class="invite-text"><label class="field" for="invite-link"><span>{h(t('invite_link'))}</span>
+      <input id="invite-link" class="mono" readonly value="{h(link)}"></label>
+      <div class="cfgx-actions"><button class="btn btn-primary" type="button" data-copy-target="invite-link">{h(t('copy'))}</button>
+      <a class="btn btn-secondary" href="{h(scoped_client(request, name))}">{h(t('invite_back'))}</a></div>
+      <p class="access-hint">{h(t('invite_once'))}</p></div></div>
+      <p class="sr-only" aria-live="polite" id="copy-status" data-copy-ok="{h(t('copy_ok'))}" data-copy-failed="{h(t('copy_failed'))}"></p>
+    </section>'''
+    return page(t('invite_ready'), body, request)
+
+
+BULK_ACTIONS = ('enable', 'disable', 'extend', 'limit')
+
+
+@app.post('/servers/{interface}/clients/bulk-action')
+async def clients_bulk_action(request: Request, interface: str = ''):
+    form = await request.form()
+    require_csrf(request, form.get('csrf', ''))
+    names = form_names(form)
+    action = str(form.get('action', ''))
+    if action not in BULK_ACTIONS: raise HTTPException(422)
+    payload = {'names': names, 'action': action}
+    if action == 'extend':
+        try: payload['days'] = int(form.get('days', 0))
+        except (TypeError, ValueError): raise HTTPException(422) from None
+    if action == 'limit':
+        payload['traffic_limit_bytes'] = gib_bytes(form.get('quota_gib', '0'))
+    try: result = control(request, 'client-batch', payload)
+    except RuntimeError as exc: return error_page(request, tr(lang_of(request), 'error'), exc)
+    server = selected_server(request)
+    for name in result.get('enabled', []): audit_event('client_enabled', f'{server}/{name}')
+    for name in result.get('disabled', []): audit_event('client_disabled', f'{server}/{name}')
+    for name in set(result.get('changed', [])) - set(result.get('enabled', [])) - set(result.get('disabled', [])):
+        audit_event('client_modified', f'{server}/{name}')
+    # The outcome travels in the address: the list shows who changed and who was skipped and why.
+    skipped = ','.join(f'{n}:{r}' for n, r in sorted((result.get('skipped') or {}).items()))[:1500]
+    query = f'?bulk={action}&changed={len(result.get("changed", []))}' + (f'&skipped={quote(skipped)}' if skipped else '')
+    return RedirectResponse(clients_url(request) + query, status_code=303)
+
+
+def bulk_notice(request, t):
+    action = request.query_params.get('bulk', '')
+    if action not in BULK_ACTIONS: return ''
+    try: changed = int(request.query_params.get('changed', '0'))
+    except ValueError: changed = 0
+    groups = {}
+    for item in request.query_params.get('skipped', '').split(','):
+        name, _, reason = item.partition(':')
+        if CLIENT_NAME_RE.fullmatch(name) and reason in ('already', 'expired', 'quota', 'routes', 'no_expiry'):
+            groups.setdefault(reason, []).append(name)
+    lines = ''.join(f'<li>{h(t("bulk_skip_" + reason))}: <span class="mono">{h(", ".join(names))}</span></li>'
+                    for reason, names in groups.items())
+    return (f'<div class="bulk-notice" role="status">{icon("check",16)}<div><strong>{h(t("bulk_done_" + action).format(n=changed))}</strong>'
+            + (f'<ul>{lines}</ul>' if lines else '') + '</div></div>')
+
+
+def csv_cell(value):
+    text = str(value if value is not None else '')
+    # A cell that a spreadsheet would read as a formula is written as text.
+    return "'" + text if text[:1] in ('=', '+', '-', '@', '\t', '\r') else text
+
+
+@app.get('/servers/{interface}/export/clients.csv')
+def clients_csv(request: Request, interface: str = ''):
+    require_auth(request)
+    try: state = control(request, 'list', {})
+    except RuntimeError: raise HTTPException(404) from None
+    out = io.StringIO()
+    writer = csv.writer(out)
+    writer.writerow(['name', 'ip', 'enabled', 'disabled_reason', 'comment', 'created_at', 'expires_at',
+                     'traffic_limit_gib', 'quota_period', 'used_gib', 'received_bytes', 'sent_bytes',
+                     'last_handshake_utc', 'speed_limit_mbit', 'telegram_id', 'owner_export', 'routed_subnets', 'config_stale'])
+    for c in state.get('clients', []):
+        st = c.get('stats') or {}
+        handshake = int(st.get('handshake') or c.get('last_handshake') or 0)
+        writer.writerow([csv_cell(x) for x in (
+            c.get('name'), c.get('ip'), int(bool(c.get('enabled'))), c.get('disabled_reason', ''), c.get('comment', ''),
+            c.get('created_at', ''), c.get('expires_at', ''),
+            gib_format(c.get('traffic_limit_bytes', 0)), c.get('quota_period', ''), gib_format(c.get('used_bytes', 0)),
+            int(st.get('received', 0) or 0), int(st.get('sent', 0) or 0),
+            datetime.fromtimestamp(handshake, timezone.utc).strftime('%Y-%m-%d %H:%M:%S') if handshake else '',
+            int(c.get('speed_limit_mbit') or 0), c.get('telegram_id', ''), int(bool(c.get('owner_export'))),
+            c.get('routed_subnets', ''), int(bool(c.get('config_stale'))))])
+    audit_event('clients_exported', f'{selected_server(request)} ({len(state.get("clients", []))})')
+    stamp = datetime.now(timezone.utc).strftime('%Y%m%d-%H%M')
+    # A BOM lets Excel open the Cyrillic comments as UTF-8.
+    return Response('﻿' + out.getvalue(), media_type='text/csv; charset=utf-8', headers={
+        'Content-Disposition': f'attachment; filename="clients-{selected_server(request)}-{stamp}.csv"',
+        'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff'})
+
+
+def recovery_block(request, t):
+    """How many recovery codes are left, and a form for new ones."""
+    try: left = len(read_auth().get('totp_recovery') or [])
+    except (OSError, ValueError): left = 0
+    state = t('recovery_status').format(n=left) if left else t('recovery_none')
+    warn = f' <strong>{h(t("recovery_low"))}</strong>' if 0 < left <= 3 else ''
+    return f'''<div class="recovery-box{" is-empty" if not left else ""}"><p>{icon('key',16)}<span>{h(state)}{warn}</span></p>
+      <details class="totp-regenerate"><summary class="btn btn-secondary btn-small">{h(t('recovery_new'))}</summary>
+      <form method="post" action="/maintenance/totp-recovery">{csrf(request)}
+      <p class="info-line">{h(t('recovery_new_hint'))}</p>
+      <div class="fields-grid"><label class="field"><span>{h(t('password'))}</span>
+      <input type="password" name="password" required autocomplete="current-password"></label>
+      <label class="field"><span>{h(t('totp_code'))}</span>
+      <input name="code" inputmode="numeric" maxlength="7" required autocomplete="one-time-code"></label></div>
+      <button class="btn btn-primary" type="submit">{icon('key',16)}{h(t('recovery_new'))}</button></form></details></div>'''
+
+
+def recovery_codes_page(request, codes, t, next_url='/login'):
+    items = ''.join(f'<li class="mono">{h(code)}</li>' for code in codes)
+    text = '\n'.join(codes)
+    return page(t('recovery_title'), f'''<section class="card recovery-card">
+      <div class="section-title"><h2>{icon('key',20)}{h(t('recovery_title'))}</h2></div>
+      <p class="info-line">{icon('alert',14)}<span>{h(t('recovery_once'))}</span></p>
+      <ol class="recovery-codes">{items}</ol>
+      <textarea id="recovery-text" class="sr-only" readonly aria-hidden="true" tabindex="-1">{h(text)}</textarea>
+      <div class="cfgx-actions"><button class="btn btn-secondary" type="button" data-copy-target="recovery-text">{h(t('copy'))}</button>
+      <a class="btn btn-primary" href="{h(next_url)}">{h(t('recovery_continue'))}</a></div>
+      <p class="sr-only" aria-live="polite" id="copy-status" data-copy-ok="{h(t('copy_ok'))}" data-copy-failed="{h(t('copy_failed'))}"></p>
+    </section>''', request)
+
+
+@app.post('/maintenance/totp-recovery')
+async def totp_recovery_route(request: Request):
+    form = await request.form()
+    require_csrf(request, form.get('csrf', ''))
+    lang = lang_of(request)
+    try: result = ctl('totp-recovery-new', {'password': str(form.get('password', '')), 'code': str(form.get('code', ''))})
+    except RuntimeError as exc: return error_page(request, tr(lang, 'maintenance_error'), exc)
+    return recovery_codes_page(request, result.get('recovery_codes', []), lambda key: tr(lang, key), '/maintenance?tab=security')
+
+TEXT['ru'].update({
+    'access_title': 'Доступ: приглашение и ключ',
+    'invite_title': 'Пригласить в Telegram-бота',
+    'invite_hint': 'Одноразовая ссылка на бота. Человек открывает её, нажимает «Старт» и становится владельцем клиента: '
+                   'видит состояние, трафик и срок, а если разрешено — сам получает конфигурацию. Узнавать его Telegram ID не нужно.',
+    'invite_no_bot': 'Приглашения работают через Telegram-бота, а он не подключён.',
+    'invite_no_bot_link': 'Подключить в «Обслуживание → Telegram»',
+    'invite_active': 'Есть действующее приглашение до {when} UTC',
+    'invite_revoke': 'Отозвать',
+    'invite_replaces': 'Сейчас владелец — Telegram ID {id}. Тот, кто откроет новую ссылку, заменит его.',
+    'invite_valid': 'Ссылка действует', 'invite_days': '{n} дн.',
+    'invite_export': 'Владелец может сам получить конфигурацию и QR-код в боте',
+    'invite_create': 'Создать ссылку',
+    'invite_ready': 'Приглашение', 'invite_link': 'Ссылка для человека',
+    'invite_ready_hint': 'Ссылка работает один раз и до {when} UTC. Новая ссылка для этого клиента отменяет прежнюю.',
+    'invite_once': 'Ссылку показываем только сейчас: в панели хранится лишь её отпечаток. Потеряли — создайте новую.',
+    'invite_back': 'К клиенту',
+    'rekey_title': 'Перевыпустить ключ',
+    'rekey_hint': 'Новая пара ключей и PSK, если конфигурация попала в чужие руки. Адрес, лимиты, срок, владелец и история '
+                  'сохраняются, а старая конфигурация перестаёт работать сразу.',
+    'rekey_button': 'Перевыпустить ключ',
+    'rekey_confirm': 'Выпустить новый ключ? Текущая конфигурация клиента перестанет работать сразу: ему нужно будет импортировать новую.',
+    'rekeyed': 'Ключ перевыпущен: старая конфигурация больше не работает. Передайте клиенту новую.',
+    'bulk_enable': 'Включить', 'bulk_disable': 'Отключить', 'bulk_extend': 'Продлить', 'bulk_limit': 'Лимит',
+    'bulk_extend_title': 'Продлить срок выбранным', 'bulk_extend_days': 'На сколько дней',
+    'bulk_extend_hint': 'Срок отсчитывается от текущего окончания, а у истёкших — от сегодня. Клиенты без срока не меняются. '
+                        'Отключённые из-за срока включатся.',
+    'bulk_limit_title': 'Лимит трафика выбранным',
+    'bulk_limit_hint': 'Новый лимит заменяет прежний; 0 — без лимита. Отключённые из-за лимита включатся, если новый лимит это позволяет.',
+    'bulk_apply': 'Применить',
+    'bulk_done_enable': 'Включено клиентов: {n}', 'bulk_done_disable': 'Отключено клиентов: {n}',
+    'bulk_done_extend': 'Продлено клиентов: {n}', 'bulk_done_limit': 'Лимит задан клиентам: {n}',
+    'bulk_skip_already': 'Уже в нужном состоянии', 'bulk_skip_expired': 'Не включены, истёк срок',
+    'bulk_skip_quota': 'Не включены, исчерпан лимит', 'bulk_skip_routes': 'Не включены, их сети заняты другими клиентами',
+    'bulk_skip_no_expiry': 'Без срока, продлевать нечего',
+    'export_csv': 'CSV', 'export_csv_hint': 'Список клиентов в CSV: имена, адреса, трафик, сроки, владельцы. Без ключей.',
+    'recovery_title': 'Резервные коды входа',
+    'recovery_once': 'Сохраните коды сейчас: в менеджере паролей или на бумаге. Каждый код заменяет код из приложения один раз. '
+                     'Больше они показаны не будут.',
+    'recovery_continue': 'Коды сохранены, войти',
+    'recovery_status': 'Резервных кодов осталось: {n} из 10.',
+    'recovery_none': 'Резервных кодов нет: создайте их, чтобы войти без телефона, если он потеряется.',
+    'recovery_low': 'Кодов осталось мало — создайте новые.',
+    'recovery_new': 'Создать новые резервные коды', 'recovery_new_hint': 'Прежние коды перестанут работать.',
+    'login_code_hint': 'Или резервный код вида abcde-fghjk',
+    'tg_e_invite': 'Приглашение использовано', 'tg_e_totp_recovery': 'Вход по резервному коду',
+})
+TEXT['en'].update({
+    'access_title': 'Access: invitation and key',
+    'invite_title': 'Invite to the Telegram bot',
+    'invite_hint': 'A one-time link to the bot. The person opens it, presses Start and becomes the owner of the client: '
+                   'they see its state, traffic and expiry and, if allowed, get the configuration themselves. No need to learn their Telegram ID.',
+    'invite_no_bot': 'Invitations work through the Telegram bot, and it is not connected.',
+    'invite_no_bot_link': 'Connect it under Maintenance → Telegram',
+    'invite_active': 'An invitation is valid until {when} UTC',
+    'invite_revoke': 'Revoke',
+    'invite_replaces': 'The owner now is Telegram ID {id}. Whoever opens the new link replaces them.',
+    'invite_valid': 'The link is valid for', 'invite_days': '{n} d',
+    'invite_export': 'The owner can get the configuration and QR code in the bot',
+    'invite_create': 'Create a link',
+    'invite_ready': 'Invitation', 'invite_link': 'Link for the person',
+    'invite_ready_hint': 'The link works once and until {when} UTC. A new link for this client cancels the previous one.',
+    'invite_once': 'The link is shown only now: the panel keeps just its fingerprint. Lost it? Create a new one.',
+    'invite_back': 'Back to the client',
+    'rekey_title': 'Replace the key',
+    'rekey_hint': 'A new key pair and PSK when the configuration got into the wrong hands. Address, limits, expiry, owner and history '
+                  'stay, and the old configuration stops working at once.',
+    'rekey_button': 'Replace the key',
+    'rekey_confirm': 'Issue a new key? The client’s current configuration stops working at once: they will need to import the new one.',
+    'rekeyed': 'The key was replaced: the old configuration no longer works. Give the client the new one.',
+    'bulk_enable': 'Enable', 'bulk_disable': 'Disable', 'bulk_extend': 'Extend', 'bulk_limit': 'Quota',
+    'bulk_extend_title': 'Extend the selected', 'bulk_extend_days': 'By how many days',
+    'bulk_extend_hint': 'Counted from the current end, or from today for expired clients. Clients without expiry do not change. '
+                        'Clients disabled by expiry are enabled.',
+    'bulk_limit_title': 'Traffic quota for the selected',
+    'bulk_limit_hint': 'The new quota replaces the old one; 0 means unlimited. Clients disabled by the quota are enabled when the new one allows it.',
+    'bulk_apply': 'Apply',
+    'bulk_done_enable': 'Clients enabled: {n}', 'bulk_done_disable': 'Clients disabled: {n}',
+    'bulk_done_extend': 'Clients extended: {n}', 'bulk_done_limit': 'Quota set for clients: {n}',
+    'bulk_skip_already': 'Already in that state', 'bulk_skip_expired': 'Not enabled, expired',
+    'bulk_skip_quota': 'Not enabled, quota used up', 'bulk_skip_routes': 'Not enabled, their networks are taken by other clients',
+    'bulk_skip_no_expiry': 'No expiry, nothing to extend',
+    'export_csv': 'CSV', 'export_csv_hint': 'The client list as CSV: names, addresses, traffic, expiry, owners. No keys.',
+    'recovery_title': 'Recovery codes',
+    'recovery_once': 'Save the codes now, in a password manager or on paper. Each code replaces an app code once. '
+                     'They will not be shown again.',
+    'recovery_continue': 'Codes saved, sign in',
+    'recovery_status': 'Recovery codes left: {n} of 10.',
+    'recovery_none': 'No recovery codes: create them to sign in without the phone if it gets lost.',
+    'recovery_low': 'Few codes left: create new ones.',
+    'recovery_new': 'Create new recovery codes', 'recovery_new_hint': 'The previous codes stop working.',
+    'login_code_hint': 'Or a recovery code like abcde-fghjk',
+    'tg_e_invite': 'Invitation used', 'tg_e_totp_recovery': 'Sign-in with a recovery code',
+})
 
 
 @app.post('/client/{name}/{action}')
@@ -2820,6 +3197,7 @@ def maintenance(request: Request, tab: str = 'diagnostics'):
                 new_qr_base64 = base64.b64encode(picture.getvalue()).decode()
                 body+=f'''<section class="maint-form-panel"><h3>{icon('shield',19)}{h(t('totp_title'))}</h3>
                 <p class="info-line">{h(t('totp_on'))} {h(t('totp_lost'))}</p>
+                {recovery_block(request, t)}
                 <details class="totp-regenerate">
                 <summary class="btn btn-secondary">{icon('restart',16)}{'Перегенерировать ключ' if lang=='ru' else 'Regenerate key'}</summary>
                 <div class="totp-new-key">
@@ -3094,9 +3472,12 @@ async def totp_change(request: Request, action: str):
     payload={'password':str(form.get('password','')),'code':str(form.get('code',''))}
     if action in ('enable','regenerate'): payload['secret']=str(form.get('secret',''))
     if action=='regenerate': payload['current_code']=str(form.get('current_code',''))
-    try: ctl('totp-enable' if action in ('enable','regenerate') else 'totp-disable',payload)
+    try: result=ctl('totp-enable' if action in ('enable','regenerate') else 'totp-disable',payload)
     except RuntimeError as exc: return error_page(request,tr(lang_of(request),'maintenance_error'),exc)
     request.session.clear()            # every session ended: sign in again, now with the new rule
+    if result.get('recovery_codes'):
+        lang=lang_of(request)
+        return recovery_codes_page(request, result['recovery_codes'], lambda key: tr(lang, key))
     return RedirectResponse('/login',status_code=303)
 
 

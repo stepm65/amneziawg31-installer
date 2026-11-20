@@ -218,7 +218,7 @@ def test_the_bot_cannot_do_what_the_sudo_rule_withholds(env):
     withheld = {'server-delete', 'server-create', 'backup-restore', 'backup-export', 'backup-delete', 'password-change',
                 'settings', 'profile-import', 'session-revoke', 'backup-policy-set', 'delete-batch', 'client-network', 'client-extra'}
     # The one command only the bot has hands out archives that are already encrypted.
-    assert BOT_ALLOWED - panel == {'backup-export-encrypted'} and not BOT_ALLOWED & withheld
+    assert BOT_ALLOWED - panel == {'backup-export-encrypted', 'invite-redeem'} and not BOT_ALLOWED & withheld
     rule = subprocess.run(['bash', '-c', f'. {ROOT}/scripts/sudoers.sh; awg31_render_bot_sudoers'],
                           capture_output=True, text=True, check=True).stdout
     assert rule.startswith('awgbot ALL=(root) NOPASSWD: /usr/local/sbin/awg31mgr servers,')
@@ -390,7 +390,7 @@ def test_config_without_administrators_is_refused(tmp_path):
     config = bot_module.load_config(path)
     assert config['admins'] == {ADMIN} and config['lang'] == 'ru'
     # Older settings had one switch per group: every event of the group follows it.
-    assert {k for k, v in config['events'].items() if not v} == {'login', 'login_failed', 'password', 'owner_export'}
+    assert {k for k, v in config['events'].items() if not v} == {'login', 'login_failed', 'password', 'owner_export', 'totp_recovery'}
     assert config['thresholds'] == {'cpu': 90, 'memory': 90, 'disk': 90} and config['digest'] == 'off'
     assert config['backup_file'] is True
 
