@@ -256,7 +256,7 @@ def test_panel_detail_bulk_and_link(tmp_path, monkeypatch):
     client = TestClient(module.app)
     client.post('/login', data={'password': 'testpassword1234'})
     listing = client.get('/servers/awg0/clients').text
-    assert listing.count('class="extra-badge"') == 1
+    assert listing.count('class="extra-dot"') == 1 and 'class="client-icon has-extra"' in listing
     assert 'id="bulk-extra-button"' in listing and 'id="bulk-extra-modal"' in listing
     assert 'data-extra-target="bulk-extra-lines"' in listing and 'th class="actions-head"' in listing
     detail = client.get('/client/router').text

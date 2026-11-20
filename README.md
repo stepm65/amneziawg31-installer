@@ -175,7 +175,7 @@ The “Insert a template ▾” menu:
 | MSS clamping only | fits TCP packets to the tunnel MTU |
 | NAT only | masquerades the traffic that goes into the tunnel |
 
-To give several clients the same lines, select them in the list and press “Extra lines”: the lines replace theirs or are added to them, and inserting the same lines twice does not duplicate them. Clients with extra lines carry a badge in the list and need a new `.conf` after a change.
+To give several clients the same lines, select them in the list and press “Extra lines”: the lines replace theirs or are added to them, and inserting the same lines twice does not duplicate them. In the list such clients have a blue dot on their icon and need a new `.conf` after a change.
 
 ## Server console
 

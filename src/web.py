@@ -1906,9 +1906,12 @@ def server_content(request: Request, section: str = 'overview'):
                    '</div>')
         traffic_total = int(st.get('received', 0) or 0) + int(st.get('sent', 0) or 0)
         rows += (f'<tr class="client-row" data-name="{h(c["name"].lower())}" data-ip="{h(c["ip"])}" data-enabled="{int(active)}" '
-                 f'data-handshake="{int(st.get("handshake") or 0)}" data-traffic="{traffic_total}"><td><input class="peer-select" type="checkbox" form="bulk-delete-form" name="names" value="{name}" aria-label="{name}"></td><td class="client-name">{icon("server",16)}<span>{h(c["name"])}</span>'
-                 + (f'<small class="extra-badge" title="{h(t("extra_badge_hint"))}">{h(t("extra_badge"))}</small>' if c.get('extra_lines') is True else '')
-                 + '</td>'
+                 f'data-handshake="{int(st.get("handshake") or 0)}" data-traffic="{traffic_total}"><td><input class="peer-select" type="checkbox" form="bulk-delete-form" name="names" value="{name}" aria-label="{name}"></td><td class="client-name">'
+                 # A dot on the client icon marks extra [Interface] lines (variant B chosen by the author).
+                 + (f'<span class="client-icon has-extra" title="{h(t("extra_badge_hint"))}">{icon("server",16)}'
+                    f'<span class="extra-dot" aria-hidden="true"></span><span class="sr-only">{h(t("extra_badge_hint"))}</span></span>'
+                    if c.get('extra_lines') is True else icon("server",16))
+                 + f'<span>{h(c["name"])}</span></td>'
                  f'<td><code class="ip-pill">{h(c["ip"])}</code>'
                  f'<small class="peer-routes-compact">{h(c.get("routed_subnets", ""))}</small></td>'
                  f'<td><span class="pill pill-{status_class}"><span class="dot"></span>'
