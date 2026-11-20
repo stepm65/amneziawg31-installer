@@ -745,7 +745,8 @@ def client_config(cfg, p, peers=(), extra=True):
         '[Interface]', f'PrivateKey = {p["private_key"]}',
         f'Address = {p["ip"]}/32', f'DNS = {cfg["dns"]}',
         f'MTU = {cfg["mtu"]}', *awg_lines(cfg, True), *i_lines(p),
-        *(extra_lines(p) if extra else ()),
+        # A blank line sets the admin's lines apart from the panel's ones.
+        *(['', *extra_lines(p)] if extra and extra_lines(p) else ()),
         '', '[Peer]', f'PublicKey = {cfg["public_key"]}',
         f'PresharedKey = {p["psk"]}',
         f'Endpoint = {cfg["endpoint"]}:{cfg["port"]}',

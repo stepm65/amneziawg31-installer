@@ -140,6 +140,8 @@ def test_lines_go_into_the_conf_but_not_into_the_vpn_link():
     conf = ctl.client_config(cfg, peer)
     head, peer_part = conf.split('[Peer]')
     assert 'PostUp = echo up\nTable = 200' in head and 'PostUp' not in peer_part
+    assert 'DisableCookies = on\n\nPostUp = echo up' in head          # set apart by a blank line
+    assert '\n\n\n' not in ctl.client_config(cfg, {**peer, 'extra_lines': ''})
     assert head.index('DisableCookies = on') < head.index('PostUp')
     plain = ctl.client_config(cfg, peer, extra=False)
     assert 'PostUp' not in plain and 'Table' not in plain
