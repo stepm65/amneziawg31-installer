@@ -4,7 +4,7 @@
 
 An installer and a web console for running **AmneziaWG 3.1** on your own server: a kernel module built with DKMS, an interactive setup wizard and a bilingual (EN/RU) panel for servers, clients, traffic and backups. No Docker, no control plane in the cloud, nothing loaded from a CDN.
 
-Version **0.14.0** · MIT licence · not affiliated with the AmneziaVPN developers.
+Version **0.14.1** · MIT licence · not affiliated with the AmneziaVPN developers.
 
 ![Infrastructure overview](docs/screenshots/en-dashboard.png)
 

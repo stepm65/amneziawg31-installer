@@ -223,3 +223,23 @@ def test_release_check_asks_github_at_most_twice_a_day(ui, monkeypatch):
     module._latest['checked'] -= 13 * 3600
     module.newer_release()
     assert len(started) == 2
+
+
+def test_client_table_sorts_by_every_column_and_acts_through_icons(ui):
+    module, client, _ = ui
+    listing = module.ctl
+    module.ctl = lambda op, data=None: ({**listing(op, data), 'clients': [
+        {'name': 'phone', 'ip': '10.77.10.2', 'enabled': True, 'stats': {'handshake': 1795000000, 'received': 10, 'sent': 5}}]}
+        if op == 'list' else listing(op, data))
+    html = client.get('/servers/awg0/clients').text
+    module.ctl = listing
+    for key in ('name', 'ip', 'status', 'traffic'):
+        assert f'<th aria-sort="none" data-sort-column="{key}"><button type="button" class="sort-button" data-sort-key="{key}">' in html
+    assert 'data-handshake="1795000000" data-traffic="15"' in html
+    assert 'data-sortable-clients' in html
+    # Variant B: one group of icon buttons, each with an accessible name and a tooltip.
+    assert 'class="action-group"' in html
+    assert re.search(r'href="/servers/awg0/clients/[^"/]+/download" download aria-label="Скачать \.conf: ', html)
+    assert 'data-tip="Конфигурация"' in html and 'class="action-icon is-danger"' in html
+    js = (ROOT / 'src/panel.js').read_text()
+    assert "localStorage.setItem('awg31.clientSort'" in js and 'Intl.Collator' in js

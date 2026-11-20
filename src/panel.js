@@ -842,3 +842,55 @@
   auto.addEventListener('change', () => { stop(); if (auto.checked) { load(); timer = setInterval(load, 5000); } });
   view.scrollTop = view.scrollHeight;
 })();
+
+// Clients table: sort by any column; a second click reverses; the choice is remembered in this browser.
+(() => {
+  'use strict';
+  const body = document.querySelector('[data-sortable-clients]');
+  if (!body) return;
+  const table = body.closest('table');
+  const buttons = [...table.querySelectorAll('[data-sort-key]')];
+  const ipValue = (ip) => (ip || '').split('.').reduce((sum, part) => sum * 256 + (Number(part) || 0), 0);
+  const collator = new Intl.Collator(undefined, { numeric: true, sensitivity: 'base' });
+  const value = {
+    name: (row) => row.dataset.name || '',
+    ip: (row) => ipValue(row.dataset.ip),
+    // Enabled before disabled, then the most recent handshake first.
+    status: (row) => Number(row.dataset.enabled || 0) * 1e12 + Number(row.dataset.handshake || 0),
+    traffic: (row) => Number(row.dataset.traffic || 0),
+  };
+  let saved = null;
+  try { saved = JSON.parse(window.localStorage.getItem('awg31.clientSort') || 'null'); } catch (error) { saved = null; }
+  const apply = (key, direction, remember) => {
+    const read = value[key];
+    if (!read) return;
+    const rows = [...body.querySelectorAll('tr.client-row')];
+    rows.sort((a, b) => {
+      const x = read(a), y = read(b);
+      const order = typeof x === 'string' ? collator.compare(x, y) : x - y;
+      return (direction === 'desc' ? -order : order) || collator.compare(a.dataset.name || '', b.dataset.name || '');
+    });
+    rows.forEach((row) => body.appendChild(row));
+    for (const button of buttons) {
+      const cell = button.closest('th');
+      const active = button.dataset.sortKey === key;
+      cell.setAttribute('aria-sort', active ? (direction === 'asc' ? 'ascending' : 'descending') : 'none');
+      cell.classList.toggle('is-sorted', active);
+      cell.classList.toggle('is-desc', active && direction === 'desc');
+    }
+    if (remember) {
+      try { window.localStorage.setItem('awg31.clientSort', JSON.stringify({ key, direction })); } catch (error) { /* private mode */ }
+    }
+  };
+  for (const button of buttons) {
+    button.addEventListener('click', () => {
+      const cell = button.closest('th');
+      const key = button.dataset.sortKey;
+      // Names and addresses start A→Z; status and traffic start with the busiest.
+      const first = key === 'name' || key === 'ip' ? 'asc' : 'desc';
+      const direction = cell.classList.contains('is-sorted') ? (cell.classList.contains('is-desc') ? 'asc' : 'desc') : first;
+      apply(key, direction, true);
+    });
+  }
+  if (saved && value[saved.key]) apply(saved.key, saved.direction === 'desc' ? 'desc' : 'asc', false);
+})();

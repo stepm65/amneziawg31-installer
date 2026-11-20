@@ -1781,6 +1781,10 @@ def server_content(request: Request, section: str = 'overview'):
         <path id="history-tx" fill="none" stroke="#94a9c2" stroke-width="2.4"/></svg>
         <p id="history-info" class="muted micro">{h(t('history_empty'))}</p>
         </section>'''
+    def sort_head(key, label):
+        # A button in each header: click sorts, a second click reverses; panel.js remembers the choice.
+        return (f'<th aria-sort="none" data-sort-column="{key}"><button type="button" class="sort-button" data-sort-key="{key}">'
+                f'<span>{h(label)}</span><svg class="sort-arrow" viewBox="0 0 12 12" aria-hidden="true"><path class="sort-up" d="M3 4.5 6 1.5l3 3"/><path class="sort-down" d="M3 7.5l3 3 3-3"/></svg></button></th>')
     rows = ''
     for c in state['clients']:
         st = c.get('stats', {})
@@ -1790,16 +1794,23 @@ def server_content(request: Request, section: str = 'overview'):
         encoded_name = quote(c['name'], safe='')
         active = bool(c['enabled'])
         status_class = 'running' if active else 'stopped'
-        actions = f'<a class="btn btn-secondary btn-small" href="/client/{encoded_name}">{icon("file",16)}{h(t("client_details"))}</a>'
+        # One panel of icon buttons (variant B chosen by the author): configuration, download, on/off, delete.
+        base = f'/servers/{quote(state["interface"], safe="")}/clients/{encoded_name}'
         toggle = 'disable' if active else 'enable'
-        actions += (f'<form method="post" action="/client/{encoded_name}/{toggle}" class="inline">'
-                    f'{csrf(request)}<button class="btn btn-secondary btn-small" type="submit">'
-                    f'{icon("pause" if active else "play",16)}{h(t("disable" if active else "enable"))}'
-                    '</button></form>')
-        actions += (f'<form method="post" action="/client/{encoded_name}/delete" class="inline" data-confirm="{h(t("confirm_delete"))}">'
-                    f'{csrf(request)}<button class="btn btn-danger btn-small" type="submit">'
-                    f'{icon("trash",16)}{h(t("delete"))}</button></form>')
-        rows += (f'<tr class="client-row" data-name="{h(c["name"].lower())}" data-ip="{h(c["ip"])}" data-enabled="{int(active)}"><td><input class="peer-select" type="checkbox" form="bulk-delete-form" name="names" value="{name}" aria-label="{name}"></td><td class="client-name">{icon("server",16)}<span>{h(c["name"])}</span></td>'
+        def action_label(key):
+            return f'aria-label="{h(t(key))}: {name}" data-tip="{h(t(key))}"'
+        actions = (f'<div class="action-group" role="group" aria-label="{h(t("actions"))}: {name}">'
+                   f'<a class="action-icon" href="{base}" {action_label("client_details")}>{icon("file",18)}</a>'
+                   f'<a class="action-icon" href="{base}/download" download {action_label("download")}>{icon("download",18)}</a>'
+                   f'<form method="post" action="{base}/{toggle}" class="inline">{csrf(request)}'
+                   f'<button class="action-icon" type="submit" {action_label("disable" if active else "enable")}>'
+                   f'{icon("pause" if active else "play",18)}</button></form>'
+                   f'<form method="post" action="{base}/delete" class="inline" data-confirm="{h(t("confirm_delete"))}">{csrf(request)}'
+                   f'<button class="action-icon is-danger" type="submit" {action_label("delete")}>{icon("trash",18)}</button></form>'
+                   '</div>')
+        traffic_total = int(st.get('received', 0) or 0) + int(st.get('sent', 0) or 0)
+        rows += (f'<tr class="client-row" data-name="{h(c["name"].lower())}" data-ip="{h(c["ip"])}" data-enabled="{int(active)}" '
+                 f'data-handshake="{int(st.get("handshake") or 0)}" data-traffic="{traffic_total}"><td><input class="peer-select" type="checkbox" form="bulk-delete-form" name="names" value="{name}" aria-label="{name}"></td><td class="client-name">{icon("server",16)}<span>{h(c["name"])}</span></td>'
                  f'<td><code class="ip-pill">{h(c["ip"])}</code>'
                  f'<small class="peer-routes-compact">{h(c.get("routed_subnets", ""))}</small></td>'
                  f'<td><span class="pill pill-{status_class}"><span class="dot"></span>'
@@ -1808,7 +1819,7 @@ def server_content(request: Request, section: str = 'overview'):
                     if c.get('config_stale') else '') + '</td>'
                  f'<td><span class="traffic mono">↓ {h(human_size(st.get("received",0)))} <span class="traffic-divider"></span> '
                  f'↑ {h(human_size(st.get("sent",0)))}</span></td>'
-                 f'<td><div class="actions">{actions}</div></td></tr>')
+                 f'<td class="actions-cell">{actions}</td></tr>')
 
     if not rows:
         rows = (f'<tr><td colspan="6"><div class="empty-state">{icon("users",26)}'
@@ -1832,8 +1843,8 @@ def server_content(request: Request, section: str = 'overview'):
         <div class="bulk-toolbar"><span id="bulk-selection-count">{h(t('selected_count'))}: 0</span>
         <button id="bulk-delete-button" type="submit" class="btn btn-danger btn-small" disabled>{icon('trash',16)}{h(t('bulk_delete'))}</button></div></form>
         <div class="table-scroll"><table><thead><tr>
-        <th><input type="checkbox" id="select-all-peers" aria-label="{h(t('select_all'))}"></th><th>{h(t('name'))}</th><th>{h(t('vpn_ip'))}</th><th>{h(t('status'))}</th>
-        <th>{h(t('traffic'))}</th><th>{h(t('actions'))}</th></tr></thead><tbody>{rows}</tbody></table></div>
+        <th><input type="checkbox" id="select-all-peers" aria-label="{h(t('select_all'))}"></th>{sort_head('name',t('name'))}{sort_head('ip',t('vpn_ip'))}{sort_head('status',t('status'))}
+        {sort_head('traffic',t('traffic'))}<th>{h(t('actions'))}</th></tr></thead><tbody data-sortable-clients>{rows}</tbody></table></div>
         </section>
 
         <!-- Add client modal -->
