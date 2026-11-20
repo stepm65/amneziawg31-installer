@@ -283,3 +283,16 @@ def test_panel_detail_bulk_and_link(tmp_path, monkeypatch):
     assert '.actions-cell {white-space:nowrap;text-align:right' in css
     js = client.get('/assets/panel.js').text
     assert 'data-bulk-name' in js and 'extraTarget' in js
+
+
+def test_overlapping_templates_do_not_double_the_commands(tmp_path, monkeypatch):
+    """Gateway + «MSS only» + «NAT only» in one field: each command once, no orphan comments."""
+    from test_web import create_app
+    create_app(tmp_path, monkeypatch)
+    _, texts = template_texts()
+    merged = ctl.validate_extra_lines('\n'.join((texts['gateway'], texts['mss'], texts['nat'], '# my own note')))
+    assert merged == texts['gateway'] + '\n# my own note'
+    commands = [line for line in merged.split('\n') if not line.startswith('#')]
+    assert len(commands) == len(set(commands))
+    assert ctl.validate_extra_lines('postup = echo a\nPostUp =   echo a\nPostUp = echo b') == 'PostUp = echo a\nPostUp = echo b'
+    assert ctl.validate_extra_lines('Table = 200\nTable = 200') == 'Table = 200'

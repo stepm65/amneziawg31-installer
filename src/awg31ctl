@@ -480,7 +480,7 @@ def validate_extra_lines(raw):
     text = str(raw or '').replace('\r\n', '\n').replace('\r', '\n')
     if len(text) > EXTRA_MAX_CHARS:
         raise ValueError(f'Дополнительные строки: не длиннее {EXTRA_MAX_CHARS} символов')
-    lines, table = [], False
+    lines, table, seen, dropped = [], False, set(), set()
     for number, line in enumerate(text.split('\n'), 1):
         line = line.strip()
         if not line:
@@ -506,13 +506,36 @@ def validate_extra_lines(raw):
         if '#' in value:
             # awg-quick cuts everything after # — the command would silently change.
             raise ValueError(f'Строка {number}: символ # в значении awg-quick примет за комментарий')
+        normal = f'{EXTRA_KEYS.get(lowered, key)} = {value}'
+        if normal in seen:
+            # The same command twice (overlapping templates) would, e.g., add
+            # an iptables rule twice and leave one behind on every restart.
+            dropped.add(len(lines))
+            lines.append(normal)
+            continue
+        seen.add(normal)
         if lowered == 'table':
             if table:
                 raise ValueError(f'Строка {number}: Table можно указать только один раз')
             if not EXTRA_TABLE.fullmatch(value):
                 raise ValueError(f'Строка {number}: Table — off, auto, номер или имя таблицы')
             table = True
-        lines.append(f'{EXTRA_KEYS[lowered]} = {value}')
+        lines.append(normal)
+    # A comment whose whole block was a repeat goes with it.
+    keep = []
+    for index, line in enumerate(lines):
+        if index in dropped:
+            continue
+        if line.startswith('#'):
+            block = []
+            for later in range(index + 1, len(lines)):
+                if lines[later].startswith('#'):
+                    break
+                block.append(later)
+            if block and all(later in dropped for later in block):
+                continue
+        keep.append(line)
+    lines = keep
     if len(lines) > EXTRA_MAX_LINES:
         raise ValueError(f'Дополнительные строки: не больше {EXTRA_MAX_LINES}')
     return '\n'.join(lines)
@@ -1145,11 +1168,9 @@ def client_extra_update(con):
     for name in names:
         current = rows[name]
         if mode == 'append' and current and lines:
-            # Applying the same template twice must not double the commands.
-            present = ('\n' + lines + '\n') in ('\n' + current + '\n')
-            new = current if present else current + '\n' + lines
+            # Lines the client already has are dropped by the validation.
             try:
-                new = validate_extra_lines(new)
+                new = validate_extra_lines(current + '\n' + lines)
             except ValueError as exc:
                 raise ValueError(f'{name}: {exc}') from None
         else:

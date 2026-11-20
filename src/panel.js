@@ -905,9 +905,18 @@
       if (!area) return;
       const text = item.dataset.extraText || '';
       const current = area.value.replace(/\s+$/, '');
-      // Inserting the same template twice must not double the commands.
-      if (!('\n' + current + '\n').includes('\n' + text + '\n')) {
-        area.value = current ? current + '\n' + text : text;
+      // Templates overlap (the gateway already has NAT and MSS clamping):
+      // only the commands that are not in the field yet are added.
+      const norm = line => {
+        const at = line.indexOf('=');
+        return at < 0 ? line.trim() : line.slice(0, at).trim().toLowerCase() + '=' + line.slice(at + 1).trim();
+      };
+      const have = new Set(current.split('\n').filter(l => l.trim() && !l.trim().startsWith('#')).map(norm));
+      const lines = text.split('\n');
+      const fresh = lines.filter(l => !l.startsWith('#') && !have.has(norm(l)));
+      if (fresh.length) {
+        const block = [...lines.filter(l => l.startsWith('#')), ...fresh].join('\n');
+        area.value = current ? current + '\n' + block : block;
       }
       area.rows = Math.min(14, Math.max(area.rows, area.value.split('\n').length + 1));
       item.closest('details')?.removeAttribute('open');

@@ -4,7 +4,7 @@
 
 An installer and a web console for running **AmneziaWG 3.1** on your own server: a kernel module built with DKMS, an interactive setup wizard and a bilingual (EN/RU) panel for servers, clients, traffic and backups. No Docker, no control plane in the cloud, nothing loaded from a CDN.
 
-Version **0.14.3** · MIT licence · not affiliated with the AmneziaVPN developers.
+Version **0.14.4** · MIT licence · not affiliated with the AmneziaVPN developers.
 
 ![Infrastructure overview](docs/screenshots/en-dashboard.png)
 
@@ -175,7 +175,7 @@ The “Insert a template ▾” menu:
 | MSS clamping only | fits TCP packets to the tunnel MTU |
 | NAT only | masquerades the traffic that goes into the tunnel |
 
-To give several clients the same lines, select them in the list and press “Extra lines”: the lines replace theirs or are added to them, and inserting the same lines twice does not duplicate them. In the list such clients have a blue dot on their icon and need a new `.conf` after a change.
+To give several clients the same lines, select them in the list and press “Extra lines”: the lines replace theirs or are added to them, and the panel keeps each identical command once, even when templates overlap (the gateway already includes NAT and MSS clamping). In the list such clients have a blue dot on their icon and need a new `.conf` after a change.
 
 ## Server console
 
