@@ -29,6 +29,12 @@ def ui(tmp_path, monkeypatch):
                     'panel':{'ok':True,'output':'active'}}
         if op=='backup-list':return {'backups':[{'name':'awg31-20261113T012228Z-b68af64ecb.tar.gz','size':2660}]}
         if op=='audit-list':return {'entries':[{'timestamp':'2026-11-13T01:00Z','event':'backup_created','target':'awg0'}]}
+        if op=='audit-search':return {'entries':[{'timestamp':'2026-11-13T01:00Z','event':'backup_created','target':'awg0'}],
+                                      'total':1,'page':1,'pages':1,'size':50,'events':['backup_created','login_failed']}
+        if op=='logging-status':return {'settings':{'history':False,'retention_days':30,'masking':'partial'},
+                                        'debug':{'enabled':False,'until':0,'available':True}}
+        if op=='logs-read':return {'source':data.get('source'),'level':data.get('level'),'lines':['2026-11-20T10:00:00 uvicorn[1]: started']}
+        if op=='sessions':return {'name':data.get('name'),'sessions':[],'history':False,'retention_days':30,'masking':'partial'}
         if op=='servers':return {'servers':[{'interface':'awg0','subnet':'10.77.10.0/24','port':45678,'clients':0,'running':True}]}
         if op=='list':return {'interface':'awg0','subnet':'10.77.10.0/24','server_ip':'10.77.10.1',
                              'port':45678,'mtu':1380,'endpoint':'vpn.example.test','dns':'1.1.1.1','mode':'full','uplink':'ens3',
@@ -87,7 +93,7 @@ def test_diagnostics_cards_health_and_no_duplicate_title(ui):
 def test_maintenance_independent_subpages_and_404(ui):
     _,client,calls=ui
     assert client.get('/maintenance?tab=unknown').status_code==404
-    for tab in ('diagnostics','backups','restore','profiles','security','audit','system'):
+    for tab in ('diagnostics','backups','restore','profiles','security','logs','audit','system'):
         r=client.get('/maintenance?tab='+tab)
         assert r.status_code==200,tab
         assert 'class="maint-tabs"' in r.text

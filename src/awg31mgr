@@ -22,7 +22,7 @@ CONFIG_DIR = Path(os.environ.get('AWG31_CONFIG_DIR', '/etc/amnezia/amneziawg'))
 CTL = os.environ.get('AWG31_CTL_PATH', '/usr/local/sbin/awg31ctl')
 VALID = re.compile(r'^awg(?:0|[1-9][0-9]?)$')
 OPTIONAL_PROFILE = ('client_to_client', 'private_access', 'ipv6_block', 'host_access')
-OPS = {'status', 'list', 'add', 'add-batch', 'download', 'enable', 'disable', 'delete', 'delete-batch', 'settings', 'client-network', 'client-policy', 'history'}
+OPS = {'status', 'list', 'add', 'add-batch', 'download', 'enable', 'disable', 'delete', 'delete-batch', 'settings', 'client-network', 'client-policy', 'history', 'sessions'}
 ADMIN = {'servers', 'server-create', 'server-start', 'server-stop', 'server-restart', 'server-delete',
          'sample-all','host-history','backup-create','backup-list','backup-export','backup-check','backup-restore','profile-export',
          'profile-import','audit','audit-list','password-change','diagnostics',
@@ -30,7 +30,8 @@ ADMIN = {'servers', 'server-create', 'server-start', 'server-stop', 'server-rest
          'session-revoke','obfuscation-generate','totp-enable','totp-disable','totp-reset',
          'telegram-status','telegram-connect','telegram-disconnect','telegram-set','telegram-test',
          'backup-encryption','backup-encryption-set','backup-export-encrypted',
-         'backup-encryption-change','backup-remote','backup-remote-set','backup-remote-test'}
+         'backup-encryption-change','backup-remote','backup-remote-set','backup-remote-test',
+         'audit-search','logging-status','logging-set','logs-read','handshake-debug','support-report'}
 
 
 def load_source(name, path):
@@ -152,7 +153,7 @@ def main():
     # The web API still sends structured JSON through a non-TTY pipe.
     no_payload = {'servers', 'sample-all', 'backup-create', 'backup-list', 'backup-policy', 'backup-run', 'audit-list',
                   'session-revoke', 'obfuscation-generate', 'totp-reset', 'telegram-status', 'telegram-test',
-                  'backup-encryption', 'backup-remote', 'backup-remote-test'}
+                  'backup-encryption', 'backup-remote', 'backup-remote-test', 'logging-status', 'support-report'}
     raw = '' if op in no_payload or sys.stdin.isatty() else sys.stdin.read(32768)
     data=json.loads(raw) if raw.strip() else {}
     if not isinstance(data,dict): raise ValueError('Expected JSON object')
@@ -160,6 +161,12 @@ def main():
     if op=='servers': return {'servers':[info(x) for x in interfaces()]}
     if op=='audit': return admin.audit(data)
     if op=='audit-list': return admin.audit_recent()
+    if op=='audit-search': return admin.audit_list(data)
+    if op=='logging-status': return {'settings':admin.logging_settings(),'debug':admin.handshake_debug()}
+    if op=='logging-set': return admin.logging_set(data)
+    if op=='logs-read': return admin.logs_read(data,sys.modules[__name__])
+    if op=='handshake-debug': return admin.handshake_debug(data)
+    if op=='support-report': return admin.support_report(sys.modules[__name__])
     if op=='password-change': return admin.password_change(data)
     if op=='session-revoke': return admin.session_revoke()
     if op=='totp-enable': return admin.totp_enable(data)

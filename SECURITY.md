@@ -26,6 +26,14 @@
 
 A valid panel session is not enough for changes that outlive it. The panel password is asked again for: connecting or disconnecting the Telegram bot, changing the bot's administrators or viewers, enabling, disabling or changing backup encryption. Replacing the TOTP key needs a code of the current key as well. The controller recognises panel requests by the caller the kernel reports to the control helper (`SO_PEERCRED`) or by `SUDO_USER` on the sudo path; a request cannot claim to come from the console. The root console is not asked.
 
+## Logs and client addresses (0.14)
+
+- The journal viewer reads a fixed list of systemd units and the kernel journal (only AmneziaWG lines) through `awg31mgr logs-read`; the source, level, line count and search text are checked, and no other `journalctl` arguments can be passed.
+- Public IP addresses are masked when they are written (connection history, audit log, and so the bot's notifications) and when journal lines are shown. Full masking stores an HMAC-SHA-256 label made with a random per-server key in `/etc/awg31-panel/ip-mask.key` (root, 0600): the same address gets the same label, and the label cannot be turned back into the address without the key. Changing the masking does not rewrite entries already stored.
+- Connection history is off by default; entries older than the retention period are deleted every minute, and a deleted client's history is deleted with it.
+- Handshake debug writes to `/sys/kernel/debug/dynamic_debug/control` and schedules a systemd timer that switches it off after 15 minutes, so it cannot be left on by accident.
+- The support report removes keys (`[key]`), Telegram tokens (`[token]`), `PrivateKey`/`PresharedKey`/`PublicKey`/`HeaderProtectionKey`/`Endpoint` lines and public addresses (always fully masked). It is generated on request and not stored on the server.
+
 ## Added in 0.10
 
 - **Two-factor sign-in.** TOTP (RFC 6238). Turning it on or off needs the password and a valid code; replacing the key needs the password, a code of the current key and a code of the new one. A code is accepted once. Console recovery: `sudo awg31 totp-off` (root only, not reachable from the panel or the bot).

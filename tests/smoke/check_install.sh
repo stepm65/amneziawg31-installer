@@ -357,6 +357,35 @@ else
     echo 'SKIPPED: no S3 test server on this machine'
 fi
 
+step 'Logs: journals, connection history, handshake debug, support report'
+echo '{"source":"panel","lines":50}' | "$MGR" logs-read | python3 -c 'import json,sys; d=json.load(sys.stdin); assert d["lines"], "the panel journal is empty"'
+echo '{"source":"server:awg0","lines":20}' | "$MGR" logs-read >/dev/null || fail 'the awg-quick journal cannot be read'
+if echo '{"source":"ssh"}' | "$MGR" logs-read >/dev/null 2>&1; then fail 'an unknown journal was read'; fi
+echo '{"history":true,"retention_days":7,"masking":"full"}' | "$MGR" logging-set >/dev/null
+[[ "$(stat -c %a /etc/awg31-panel/ip-mask.key)" == 600 ]] || fail 'the masking key is readable by others'
+"$MGR" sample-all >/dev/null
+echo '{"interface":"awg0","name":"ci-client"}' | "$MGR" sessions | python3 -c 'import json,sys; d=json.load(sys.stdin); assert d["history"] is True and isinstance(d["sessions"], list), d'
+debug="$(echo '{"enable":true}' | "$MGR" handshake-debug 2>&1 || :)"
+if [[ "$debug" == *'"enabled": true'* ]]; then
+    grep -q 'amneziawg.*=p' /sys/kernel/debug/dynamic_debug/control || fail 'handshake debug is on but the kernel does not print'
+    systemctl list-timers --all --no-pager | grep -q awg31-debug-off || fail 'nothing switches handshake debug off again'
+    echo '{"enable":false}' | "$MGR" handshake-debug >/dev/null
+    if grep -q 'amneziawg.*=p' /sys/kernel/debug/dynamic_debug/control; then fail 'handshake debug stayed on'; fi
+    echo "handshake debug: on and off"
+else
+    echo "handshake debug not available on this kernel: $debug"
+fi
+"$MGR" support-report | python3 -c '
+import base64, io, json, re, sys, tarfile
+data = base64.b64decode(json.load(sys.stdin)["data"])
+text = "".join(m.name + tarfile.open(fileobj=io.BytesIO(data)).extractfile(m).read().decode("utf-8", "replace")
+               for m in tarfile.open(fileobj=io.BytesIO(data)).getmembers() if m.isfile())
+key = re.search(r"PrivateKey\s*=\s*(\S+)", open("/etc/amnezia/amneziawg/awg0.conf").read()).group(1)
+assert key not in text, "the server private key is in the support report"
+assert "awg0.conf" in text and "journal-panel.txt" in text
+print("support report:", len(data), "bytes, no private key")'
+echo '{"history":false,"masking":"partial"}' | "$MGR" logging-set >/dev/null
+
 step 'A new kernel without the module is noticed before the reboot'
 bash /usr/local/libexec/awg31/scripts/kernel-check.sh >/dev/null || fail 'kernel check fails on a healthy system'
 mkdir -p /lib/modules/99.0.0-awg31smoke/kernel

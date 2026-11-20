@@ -4,7 +4,7 @@
 
 An installer and a web console for running **AmneziaWG 3.1** on your own server: a kernel module built with DKMS, an interactive setup wizard and a bilingual (EN/RU) panel for servers, clients, traffic and backups. No Docker, no control plane in the cloud, nothing loaded from a CDN.
 
-Version **0.13.1** · MIT licence · not affiliated with the AmneziaVPN developers.
+Version **0.14.0** · MIT licence · not affiliated with the AmneziaVPN developers.
 
 ![Infrastructure overview](docs/screenshots/en-dashboard.png)
 
@@ -128,7 +128,23 @@ curl -Ls https://raw.githubusercontent.com/stepm65/amneziawg31-installer/main/in
 |---|---|
 | ![Two-factor sign-in](docs/screenshots/en-security.png) | ![Telegram bot](docs/screenshots/en-telegram.png) |
 
+| Logs | Connection history |
+|---|---|
+| ![Logs](docs/screenshots/en-logs.png) | ![Connection history](docs/screenshots/en-sessions.png) |
+
 Screenshots show demo data.
+
+### Logs
+
+AmneziaWG itself writes nothing about connections, and the panel runs without a request log. **Maintenance → Logs** gathers what there is:
+
+- **Journal viewer:** the panel, the bot, the helper, client polling, backups, the new-kernel check, each server's `awg-quick@` unit and the AmneziaWG kernel messages — by level, number of lines and text, refreshed every 5 seconds if you like, or downloaded as `.txt`. Only this fixed list of journals can be read.
+- **Connection history** (off by default): built once a minute from handshakes — when a client connected, from which address, how long it stayed and how much it transferred. Shown on the client's page; kept 1–365 days (30 by default).
+- **Address masking** of public IPs, as in 3x-ui: none (`203.0.113.45:51820`), partial (`203.0.113.x`, the default) or full (`IP-3f2a1c`, a label that cannot be turned back into the address). It applies to the connection history, the audit log (sign-in attempts), bot notifications and the journal viewer, and it applies when the data is written: with full masking the address is never stored. Tunnel and private addresses are left as they are.
+- **Handshake debug** turns on detailed AmneziaWG kernel messages for 15 minutes and switches them off by itself — for a client that cannot connect, for example after the obfuscation was changed.
+- **Support report:** one archive with diagnostics, versions, server settings and the latest journal lines. Keys, tokens, `Endpoint` lines and public addresses are replaced; look through it before you send it.
+
+The **audit log** has pages, filters by event, dates and text, a CSV export, and reads the rotated files too.
 
 ### I1–I5 templates
 
@@ -246,6 +262,7 @@ sudo bash amneziawg31-installer/scripts/resume-panel.sh
 | `/etc/awg31-panel/auth.json` | password hash and session key |
 | `/var/backups/awg31-panel/` | backups and pre-change snapshots |
 | `/var/log/awg31-panel/audit.jsonl` | audit log |
+| `/etc/awg31-panel/logging.json`, `ip-mask.key` | history and masking settings; the masking key (root only) |
 | `/etc/awg31-bot/telegram.json` | Telegram bot token and administrator IDs |
 | `/run/awg31/control.sock` | socket of the control helper (`awg31-helper.service`) |
 | `/opt/awg31-panel/` | panel code, Python environment, fonts |

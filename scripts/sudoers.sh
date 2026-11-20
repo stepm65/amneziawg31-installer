@@ -11,13 +11,14 @@
 AWG31_SUDO_COMMANDS=(
   servers server-create server-start server-stop server-restart server-delete
   status list add download enable disable delete delete-batch settings
-  client-network client-policy history host-history diagnostics
+  client-network client-policy history sessions host-history diagnostics
   profile-export profile-import
   backup-create backup-list backup-export backup-delete backup-policy
   backup-policy-set backup-check backup-restore
   audit audit-list password-change session-revoke obfuscation-generate
   add-batch totp-enable totp-disable telegram-status telegram-connect telegram-disconnect telegram-set telegram-test
   backup-encryption backup-encryption-set backup-encryption-change backup-remote
+  audit-search logging-status logging-set logs-read handshake-debug support-report
 )
 
 # The Telegram bot runs as its own user with a narrower list: it cannot delete

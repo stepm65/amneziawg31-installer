@@ -23,7 +23,7 @@ import qrcode
 from amnezialink import build_vpn_uri
 import quicinitial
 from fastapi import FastAPI, Form, HTTPException, Request
-from fastapi.responses import HTMLResponse, RedirectResponse, Response
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from fastapi.exception_handlers import http_exception_handler
 from starlette.middleware.sessions import SessionMiddleware
 
@@ -622,6 +622,7 @@ ICONS = {
     'chevron-left': '<path d="m15 18-6-6 6-6"/>',
     'chevron-right': '<path d="m9 18 6-6-6-6"/>',
     'download': '<path d="M12 3v12m-4-4 4 4 4-4M4 17v4h16v-4"/>',
+    'logs': '<rect x="4" y="3" width="16" height="18" rx="2"/><path d="M8 8h8M8 12h8M8 16h5"/>',
     'tag': '<path d="M3 12V4a1 1 0 0 1 1-1h8l9 9-9 9z"/><circle cx="7.5" cy="7.5" r="1.5"/>',
     'arrow-up': '<path d="M12 19V5M5 12l7-7 7 7"/>',
     'archive': '<rect x="3" y="4" width="18" height="5" rx="1"/><path d="M5 9v12h14V9M10 14h4"/>',
@@ -682,7 +683,8 @@ TG_THRESHOLD_EVENTS = ('cpu', 'memory', 'disk')
 TG_SCHEDULES = (('0 * * * *', 'tg_s_hourly'), ('0 */6 * * *', 'tg_s_6h'), ('0 */12 * * *', 'tg_s_12h'),
                 ('0 9 * * *', 'tg_s_daily9'), ('0 21 * * *', 'tg_s_daily21'), ('0 9 * * 1', 'tg_s_weekly'))
 READ_ONLY_OPS = frozenset({'servers', 'list', 'status', 'diagnostics', 'history', 'host-history', 'backup-list',
-                           'backup-policy', 'backup-encryption', 'backup-remote', 'telegram-status', 'audit-list'})
+                           'backup-policy', 'backup-encryption', 'backup-remote', 'telegram-status', 'audit-list',
+                           'audit-search', 'logging-status', 'logs-read', 'sessions'})
 _REQUEST_CACHE = contextvars.ContextVar('awg31_ctl_cache', default=None)
 
 
@@ -2317,7 +2319,8 @@ def detail(request: Request, name: str, interface: str = ''):
       </div><label class="check-field"><input type="checkbox" name="owner_export" value="1"{' checked' if obj.get('owner_export') else ''}><span>{h(t('owner_export'))}</span></label><button class="btn btn-primary" type="submit">{h(t('save_policy'))}</button>
       </form></section>'''
     return page(t('client') + ' ' + name,
-                '<div class="client-detail">' + contents + network_form + policy_form + '</div>', request)
+                '<div class="client-detail">' + contents + network_form + policy_form
+                + sessions_section(request, name, t, lang) + '</div>', request)
 
 
 @app.post('/client/{name}/network')
@@ -2458,6 +2461,7 @@ MAINTENANCE_TABS = (
     ('profiles', 'maint_profiles', 'file'),
     ('security', 'maint_security', 'lock'),
     ('telegram', 'maint_telegram', 'radio'),
+    ('logs', 'maint_logs', 'logs'),
     ('audit', 'maint_audit', 'list'),
     ('system', 'maint_system', 'terminal'),
 )
@@ -2510,7 +2514,7 @@ def maintenance(request: Request, tab: str = 'diagnostics'):
     info_key={
         'diagnostics':'maint_diagnostics_hint','backups':'maint_backups_hint','restore':'maint_restore_hint',
         'profiles':'maint_profile_hint','security':'maint_security_hint','audit':'maint_audit_hint',
-        'telegram':'maint_telegram_hint',
+        'telegram':'maint_telegram_hint','logs':'maint_logs_hint',
         'system':'maint_system_hint'}
     section_title=next(t(label) for key,label,_ in MAINTENANCE_TABS if key==tab)
     body=f'''<div class="maint-workspace"><nav class="maint-tabs" aria-label="{h(t('maint_choose'))}">
@@ -2806,12 +2810,10 @@ def maintenance(request: Request, tab: str = 'diagnostics'):
                        f'<div class="tg-actions"><button class="btn btn-primary" type="submit">{icon("check",17)}{h(t("tg_save"))}</button>'
                        f'<button class="btn btn-secondary" type="submit" formaction="/maintenance/telegram/test" formnovalidate>{icon("send",16)}{h(t("tg_test"))}</button>'
                        f'</div></div></form></section>')
+        elif tab=='logs':
+            body+=logs_tab(request,t,lang)
         elif tab=='audit':
-            entries=ctl('audit-list',{}).get('entries',[])
-            rows=''.join(f'''<li class="audit-entry"><span class="audit-time">{h(item.get('timestamp',''))}</span>
-                <span class="audit-event">{h(item.get('event',''))}</span><span class="audit-target">{h(item.get('target',''))}</span></li>'''
-                for item in reversed(entries))
-            body+=f'''<ol class="audit-entries">{rows or '<li class="empty-state">'+h(t('audit_empty'))+'</li>'}</ol>'''
+            body+=audit_tab(request,t)
     except (RuntimeError,ValueError,KeyError,TypeError) as exc:
         return error_page(request,t('maintenance_error'),exc)
     body+='</div></div>'
@@ -3059,3 +3061,300 @@ async def change_password(request: Request):
     except RuntimeError as exc: return error_page(request,tr(lang,'maintenance_error'),exc)
     request.session.clear()
     return RedirectResponse('/login',status_code=303)
+
+
+# ------------------------------------------------------------------ 0.14: logs, connection history, masking
+LOG_SOURCE_KEYS = ('panel', 'bot', 'helper', 'sampler', 'backup', 'kernel-check', 'kernel')
+LOG_LINE_CHOICES = (100, 200, 500, 1000)
+
+
+def utc_minute(stamp):
+    try: return datetime.fromtimestamp(int(stamp), timezone.utc).strftime('%Y-%m-%d %H:%M')
+    except (TypeError, ValueError, OverflowError, OSError): return '—'
+
+
+def duration_text(seconds, lang):
+    seconds = max(0, int(seconds))
+    hours, minutes = seconds // 3600, seconds % 3600 // 60
+    if hours >= 24: return f'{hours // 24} {"д" if lang == "ru" else "d"} {hours % 24} {"ч" if lang == "ru" else "h"}'
+    if hours: return f'{hours} {"ч" if lang == "ru" else "h"} {minutes} {"мин" if lang == "ru" else "min"}'
+    return f'{max(1, minutes)} {"мин" if lang == "ru" else "min"}'
+
+
+def log_query(request):
+    """The viewer's choices from the query string, checked the same way the controller checks them."""
+    params = request.query_params
+    source = params.get('source', 'panel')
+    if source not in LOG_SOURCE_KEYS and not re.fullmatch(r'server:awg(?:0|[1-9][0-9]?)', source): source = 'panel'
+    level = params.get('level', 'all')
+    if level not in ('error', 'warning', 'all'): level = 'all'
+    try: lines = int(params.get('lines', 200))
+    except ValueError: lines = 200
+    if lines not in LOG_LINE_CHOICES: lines = 200
+    query = ''.join(c for c in params.get('query', '')[:100] if ord(c) >= 32)
+    return {'source': source, 'level': level, 'lines': lines, 'query': query}
+
+
+def logs_tab(request, t, lang):
+    choice = log_query(request)
+    status = ctl('logging-status', {})
+    settings, debug = status.get('settings', {}), status.get('debug', {})
+    servers = [s.get('interface') for s in server_list() if isinstance(s, dict)]
+    try:
+        lines = ctl('logs-read', choice).get('lines', [])
+        log_error = ''
+    except RuntimeError as exc:
+        lines, log_error = [], str(exc)
+    sources = [(key, t('log_src_' + key.replace('-', '_'))) for key in LOG_SOURCE_KEYS] + \
+              [(f'server:{iface}', t('log_src_server').format(iface=iface)) for iface in servers]
+    def options(pairs, current):
+        return ''.join(f'<option value="{h(value)}"{" selected" if str(value) == str(current) else ""}>{h(label)}</option>'
+                       for value, label in pairs)
+    viewer = f'''<section class="logs-card">
+      <h3>{icon('logs', 18)}{h(t('logs_view'))}</h3>
+      <p class="logs-warning">{icon('info', 16)}{h(t('logs_view_hint'))}</p>
+      <form class="logs-filter" method="get" action="/maintenance" data-logs-form>
+        <input type="hidden" name="tab" value="logs">
+        <label><span>{h(t('logs_source'))}</span><select name="source">{options(sources, choice['source'])}</select></label>
+        <label><span>{h(t('logs_level'))}</span><select name="level">{options((('all', t('logs_level_all')), ('warning', t('logs_level_warning')), ('error', t('logs_level_error'))), choice['level'])}</select></label>
+        <label><span>{h(t('logs_lines'))}</span><select name="lines">{options(((n, str(n)) for n in LOG_LINE_CHOICES), choice['lines'])}</select></label>
+        <label class="logs-search"><span>{h(t('logs_search'))}</span><input name="query" value="{h(choice['query'])}" maxlength="100" autocomplete="off" spellcheck="false"></label>
+        <div class="logs-buttons">
+          <button class="btn btn-primary" type="submit">{icon('search', 16)}{h(t('logs_show'))}</button>
+          <button class="btn btn-secondary" type="submit" formaction="/maintenance/logs/download">{icon('download', 16)}{h(t('logs_download'))}</button>
+          <label class="logs-auto"><input type="checkbox" data-logs-auto><span>{h(t('logs_auto'))}</span></label>
+        </div>
+      </form>
+      {f'<p class="error-message">{h(log_error)}</p>' if log_error else ''}
+      <pre class="log-view" data-log-view tabindex="0" aria-label="{h(t('logs_view'))}">{h(chr(10).join(lines)) or h(t('logs_empty'))}</pre>
+      <p class="logs-count" data-log-count>{h(t('logs_count').format(n=len(lines)))}</p>
+    </section>'''
+    masking = settings.get('masking', 'partial')
+    history_form = f'''<section class="logs-card">
+      <h3>{icon('clock', 18)}{h(t('logs_history'))}</h3>
+      <form method="post" action="/maintenance/logs/settings">{csrf(request)}
+        <div class="tg-row"><div class="tg-row-text"><strong>{h(t('logs_history_on'))}</strong><small>{h(t('logs_history_hint'))}</small></div>
+          <div class="tg-row-control"><label class="tg-switch"><input type="checkbox" role="switch" name="history" value="1"{" checked" if settings.get('history') else ""} aria-label="{h(t('logs_history_on'))}"><span aria-hidden="true"></span></label></div></div>
+        <div class="tg-row"><div class="tg-row-text"><strong>{h(t('logs_retention'))}</strong><small>{h(t('logs_retention_hint'))}</small></div>
+          <div class="tg-row-control"><input type="number" name="retention_days" min="1" max="365" required value="{int(settings.get('retention_days', 30))}"></div></div>
+        <div class="tg-row"><div class="tg-row-text"><strong>{h(t('logs_masking'))}</strong><small>{h(t('logs_masking_hint'))}</small></div>
+          <div class="tg-row-control"><select name="masking">{options((('none', t('logs_mask_none')), ('partial', t('logs_mask_partial')), ('full', t('logs_mask_full'))), masking)}</select></div></div>
+        <div class="tg-actions logs-save"><button class="btn btn-primary" type="submit">{icon('check', 16)}{h(t('logs_save'))}</button></div>
+      </form></section>'''
+    until = int(debug.get('until') or 0)
+    if debug.get('enabled'):
+        debug_state = f'<span class="tg-state is-on">{h(t("logs_debug_on").format(until=utc_minute(until)))}</span>'
+        debug_button = f'<button class="btn btn-secondary" type="submit" name="enable" value="0">{h(t("logs_debug_stop"))}</button>'
+    else:
+        debug_state = f'<span class="tg-state">{h(t("logs_debug_off"))}</span>'
+        debug_button = (f'<button class="btn btn-primary" type="submit" name="enable" value="1"'
+                        f'{"" if debug.get("available", True) else " disabled"}>{icon("activity", 16)}{h(t("logs_debug_start"))}</button>')
+    debug_card = f'''<section class="logs-card">
+      <div class="logs-card-head"><h3>{icon('activity', 18)}{h(t('logs_debug'))}</h3>{debug_state}</div>
+      <p class="logs-warning">{icon('alert', 16)}{h(t('logs_debug_warning'))}</p>
+      <p class="info-line">{h(t('logs_debug_hint'))}</p>
+      <form method="post" action="/maintenance/logs/debug" class="tg-actions">{csrf(request)}{debug_button}
+        <a class="btn btn-secondary" href="/maintenance?tab=logs&amp;source=kernel">{h(t('logs_debug_view'))}</a></form>
+    </section>'''
+    report_card = f'''<section class="logs-card">
+      <h3>{icon('archive', 18)}{h(t('logs_report'))}</h3>
+      <p class="info-line">{h(t('logs_report_hint'))}</p>
+      <form method="post" action="/maintenance/logs/report" class="tg-actions">{csrf(request)}
+        <button class="btn btn-secondary" type="submit">{icon('download', 16)}{h(t('logs_report_button'))}</button></form>
+    </section>'''
+    return f'<div class="logs-workspace">{viewer}{history_form}{debug_card}{report_card}</div>'
+
+
+def audit_tab(request, t):
+    params = request.query_params
+    query = {'event': params.get('event', ''), 'since': params.get('since', '')[:10], 'until': params.get('until', '')[:10],
+             'query': params.get('query', '')[:80], 'page': params.get('page', '1')}
+    result = ctl('audit-search', query)
+    def keep(**changes):
+        merged = {**{k: v for k, v in query.items() if v and k != 'page'}, **changes}
+        return '/maintenance?tab=audit&' + '&'.join(f'{quote(str(k))}={quote(str(v))}' for k, v in merged.items() if v)
+    events = ''.join(f'<option value="{h(e)}"{" selected" if e == query["event"] else ""}>{h(e)}</option>' for e in result.get('events', []))
+    rows = ''.join(f'''<li class="audit-entry"><span class="audit-time">{h(item.get('timestamp', '')[:19].replace('T', ' '))}</span>
+        <span class="audit-event">{h(item.get('event', ''))}</span><span class="audit-target">{h(item.get('target', ''))}</span></li>'''
+        for item in result.get('entries', []))
+    page_no, pages = int(result.get('page', 1)), int(result.get('pages', 1))
+    pager = (f'<nav class="audit-pager" aria-label="{h(t("audit_pages"))}">'
+             + (f'<a class="btn btn-secondary btn-small" href="{h(keep(page=page_no - 1))}">← {h(t("audit_newer"))}</a>' if page_no > 1 else '')
+             + f'<span>{h(t("audit_page").format(page=page_no, pages=pages, total=result.get("total", 0)))}</span>'
+             + (f'<a class="btn btn-secondary btn-small" href="{h(keep(page=page_no + 1))}">{h(t("audit_older"))} →</a>' if page_no < pages else '')
+             + '</nav>')
+    return f'''<form class="logs-filter audit-filter" method="get" action="/maintenance">
+        <input type="hidden" name="tab" value="audit">
+        <label><span>{h(t('audit_event'))}</span><select name="event"><option value="">{h(t('audit_all_events'))}</option>{events}</select></label>
+        <label><span>{h(t('audit_since'))}</span><input type="date" name="since" value="{h(query['since'])}"></label>
+        <label><span>{h(t('audit_until'))}</span><input type="date" name="until" value="{h(query['until'])}"></label>
+        <label class="logs-search"><span>{h(t('logs_search'))}</span><input name="query" value="{h(query['query'])}" maxlength="80" autocomplete="off"></label>
+        <div class="logs-buttons"><button class="btn btn-primary" type="submit">{icon('search', 16)}{h(t('logs_show'))}</button>
+        <button class="btn btn-secondary" type="submit" formaction="/maintenance/audit.csv">{icon('download', 16)}CSV</button></div>
+      </form>
+      <ol class="audit-entries">{rows or '<li class="empty-state">' + h(t('audit_empty')) + '</li>'}</ol>{pager}'''
+
+
+def sessions_section(request, name, t, lang):
+    try: data = control(request, 'sessions', {'name': name, 'limit': 50})
+    except RuntimeError: return ''
+    items = data.get('sessions', [])
+    if not data.get('history') and not items:
+        return (f'<section class="card detail-card client-sessions"><div class="section-title"><h2>{icon("clock", 20)}{h(t("sessions_title"))}</h2></div>'
+                f'<p class="info-line">{h(t("sessions_off"))} <a href="/maintenance?tab=logs">{h(t("sessions_enable"))}</a></p></section>')
+    now = time.time()
+    rows = ''
+    for item in items:
+        active = not item.get('ended')
+        end = int(item.get('ended') or item.get('last_seen') or 0)
+        rows += (f'<tr><td>{h(utc_minute(item.get("started")))}</td>'
+                 f'<td>{h(t("sessions_now")) if active else h(utc_minute(end))}</td>'
+                 f'<td>{h(duration_text((now if active else end) - int(item.get("started") or 0), lang))}</td>'
+                 f'<td class="mono">{h(item.get("address") or "—")}</td>'
+                 f'<td>{h(human_size(int(item.get("rx") or 0) + int(item.get("tx") or 0)))}</td></tr>')
+    table = (f'<div class="table-scroll sessions-table"><table><thead><tr><th>{h(t("sessions_start"))}</th><th>{h(t("sessions_end"))}</th>'
+             f'<th>{h(t("sessions_length"))}</th><th>{h(t("sessions_address"))}</th><th>{h(t("sessions_traffic"))}</th></tr></thead>'
+             f'<tbody>{rows}</tbody></table></div>') if rows else f'<p class="info-line">{h(t("sessions_empty"))}</p>'
+    note = t('sessions_note').format(days=data.get('retention_days', 30)) + (' ' + t('sessions_paused') if not data.get('history') else '')
+    return (f'<section class="card detail-card client-sessions"><div class="section-title"><h2>{icon("clock", 20)}{h(t("sessions_title"))}</h2></div>'
+            f'<p class="info-line">{h(note)}</p>{table}</section>')
+
+
+@app.get('/api/logs')
+def logs_api(request: Request):
+    require_auth(request)
+    try: return JSONResponse(ctl('logs-read', log_query(request)), headers={'Cache-Control': 'no-store'})
+    except RuntimeError as exc: return JSONResponse({'error': str(exc)}, status_code=400)
+
+
+@app.get('/maintenance/logs/download')
+def logs_download(request: Request):
+    require_auth(request)
+    choice = log_query(request)
+    try: lines = ctl('logs-read', choice).get('lines', [])
+    except RuntimeError as exc: return error_page(request, tr(lang_of(request), 'maintenance_error'), exc)
+    name = f"awg31-{choice['source'].replace(':', '-')}-{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}.txt"
+    return Response('\n'.join(lines) + '\n', media_type='text/plain; charset=utf-8',
+                    headers={'Content-Disposition': f'attachment; filename="{name}"', 'Cache-Control': 'no-store'})
+
+
+@app.post('/maintenance/logs/settings')
+async def logs_settings(request: Request):
+    form = await request.form(); require_csrf(request, form.get('csrf', ''))
+    try: ctl('logging-set', {'history': form.get('history') == '1', 'retention_days': str(form.get('retention_days', '30')),
+                             'masking': str(form.get('masking', 'partial'))})
+    except RuntimeError as exc: return error_page(request, tr(lang_of(request), 'maintenance_error'), exc)
+    return RedirectResponse('/maintenance?tab=logs', status_code=303)
+
+
+@app.post('/maintenance/logs/debug')
+async def logs_debug(request: Request):
+    form = await request.form(); require_csrf(request, form.get('csrf', ''))
+    try: ctl('handshake-debug', {'enable': form.get('enable') == '1'})
+    except RuntimeError as exc: return error_page(request, tr(lang_of(request), 'maintenance_error'), exc)
+    return RedirectResponse('/maintenance?tab=logs', status_code=303)
+
+
+@app.post('/maintenance/logs/report')
+async def logs_report(request: Request):
+    form = await request.form(); require_csrf(request, form.get('csrf', ''))
+    try: report = ctl('support-report', {})
+    except RuntimeError as exc: return error_page(request, tr(lang_of(request), 'maintenance_error'), exc)
+    name = str(report.get('name', ''))
+    if not re.fullmatch(r'awg31-support-[0-9]{8}T[0-9]{6}Z\.tar\.gz', name): raise HTTPException(500, detail='Invalid report')
+    return Response(base64.b64decode(report.get('data', '')), media_type='application/gzip',
+                    headers={'Content-Disposition': f'attachment; filename="{name}"', 'Cache-Control': 'no-store'})
+
+
+@app.get('/maintenance/audit.csv')
+def audit_csv(request: Request):
+    require_auth(request)
+    import csv
+    params = request.query_params
+    query = {'event': params.get('event', ''), 'since': params.get('since', '')[:10], 'until': params.get('until', '')[:10],
+             'query': params.get('query', '')[:80], 'size': 1000}
+    out = io.StringIO()
+    writer = csv.writer(out)
+    writer.writerow(['timestamp', 'event', 'target'])
+    try:
+        page_no = 1
+        while page_no <= 50:                       # at most 50 000 rows
+            result = ctl('audit-search', {**query, 'page': page_no})
+            for item in result.get('entries', []):
+                target = str(item.get('target', ''))
+                if target[:1] in '=+-@': target = "'" + target   # no formulas when opened in a spreadsheet
+                writer.writerow([item.get('timestamp', ''), item.get('event', ''), target])
+            if page_no >= int(result.get('pages', 1)): break
+            page_no += 1
+    except RuntimeError as exc: return error_page(request, tr(lang_of(request), 'maintenance_error'), exc)
+    name = f"awg31-audit-{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}.csv"
+    return Response(out.getvalue(), media_type='text/csv; charset=utf-8',
+                    headers={'Content-Disposition': f'attachment; filename="{name}"', 'Cache-Control': 'no-store'})
+
+
+TEXT['ru'].update({
+    'maint_logs': 'Журналы',
+    'maint_logs_hint': 'Системные журналы панели, бота и серверов, история подключений клиентов, маскировка адресов, отладка и отчёт для поддержки.',
+    'logs_view': 'Просмотр журналов',
+    'logs_view_hint': 'Журналы могут содержать имена клиентов и адреса. Публичные IP показываются так, как задано в маскировке ниже.',
+    'logs_source': 'Источник', 'logs_level': 'Уровень', 'logs_lines': 'Строк', 'logs_search': 'Поиск', 'logs_show': 'Показать',
+    'logs_download': 'Скачать .txt', 'logs_auto': 'Обновлять каждые 5 с', 'logs_empty': 'Записей нет.', 'logs_count': 'Строк: {n}',
+    'logs_level_all': 'Все', 'logs_level_warning': 'Предупреждения и ошибки', 'logs_level_error': 'Только ошибки',
+    'log_src_panel': 'Веб-панель', 'log_src_bot': 'Telegram-бот', 'log_src_helper': 'Помощник (привилегированные операции)',
+    'log_src_sampler': 'Опрос клиентов и лимитов', 'log_src_backup': 'Резервные копии', 'log_src_kernel_check': 'Проверка нового ядра',
+    'log_src_kernel': 'Ядро: модуль AmneziaWG', 'log_src_server': 'Сервер {iface} (awg-quick)',
+    'logs_history': 'История подключений и маскировка адресов', 'logs_history_on': 'Записывать историю подключений',
+    'logs_history_hint': 'Когда клиент подключился, с какого адреса, сколько был на связи и сколько передал. Строится из рукопожатий раз в минуту.',
+    'logs_retention': 'Срок хранения, дней', 'logs_retention_hint': 'Старые записи удаляются сами. От 1 до 365 дней.',
+    'logs_masking': 'Маскировка адресов',
+    'logs_masking_hint': 'Как хранятся и показываются публичные IP: в истории, журнале действий, уведомлениях бота и в просмотре журналов. При «Полностью» адрес не сохраняется вовсе.',
+    'logs_mask_none': 'Не скрывать (203.0.113.45:51820)', 'logs_mask_partial': 'Частично (203.0.113.x)', 'logs_mask_full': 'Полностью (IP-3f2a1c)',
+    'logs_debug': 'Отладка рукопожатий AmneziaWG', 'logs_debug_off': 'Выключена', 'logs_debug_on': 'Включена до {until} UTC',
+    'logs_debug_warning': 'Подробные сообщения модуля ядра замедляют сервер и содержат адреса клиентов. Отладка выключится сама через 15 минут.',
+    'logs_debug_hint': 'Нужна, когда клиент не может подключиться, например после смены обфускации: в журнале «Ядро: модуль AmneziaWG» видно, доходят ли рукопожатия и что с ними происходит.',
+    'logs_debug_start': 'Включить на 15 минут', 'logs_debug_stop': 'Выключить сейчас', 'logs_debug_view': 'Смотреть сообщения ядра',
+    'logs_report': 'Отчёт для поддержки',
+    'logs_report_hint': 'Архив с диагностикой, версиями, настройками серверов и последними строками журналов. Ключи, токены, Endpoint и публичные адреса в нём заменены. Просмотрите его перед отправкой.',
+    'logs_report_button': 'Скачать отчёт', 'logs_save': 'Сохранить',
+    'audit_event': 'Событие', 'audit_all_events': 'Все события', 'audit_since': 'С даты', 'audit_until': 'По дату',
+    'audit_pages': 'Страницы журнала', 'audit_newer': 'Новее', 'audit_older': 'Старше',
+    'audit_page': 'Страница {page} из {pages} · записей: {total}',
+    'sessions_title': 'История подключений', 'sessions_off': 'История подключений выключена.',
+    'sessions_enable': 'Включить в «Обслуживание → Журналы»',
+    'sessions_now': 'на связи', 'sessions_start': 'Начало (UTC)', 'sessions_end': 'Конец', 'sessions_length': 'Длительность',
+    'sessions_address': 'Адрес', 'sessions_traffic': 'Трафик', 'sessions_empty': 'Подключений пока не было.',
+    'sessions_note': 'Последние 50 подключений, хранятся {days} дн.', 'sessions_paused': 'Запись сейчас выключена.',
+})
+TEXT['en'].update({
+    'maint_logs': 'Logs',
+    'maint_logs_hint': 'System journals of the panel, bot and servers, client connection history, address masking, debugging and a support report.',
+    'logs_view': 'Journal viewer',
+    'logs_view_hint': 'Journals may contain client names and addresses. Public IPs are shown as the masking below says.',
+    'logs_source': 'Source', 'logs_level': 'Level', 'logs_lines': 'Lines', 'logs_search': 'Search', 'logs_show': 'Show',
+    'logs_download': 'Download .txt', 'logs_auto': 'Refresh every 5 s', 'logs_empty': 'No entries.', 'logs_count': 'Lines: {n}',
+    'logs_level_all': 'All', 'logs_level_warning': 'Warnings and errors', 'logs_level_error': 'Errors only',
+    'log_src_panel': 'Web panel', 'log_src_bot': 'Telegram bot', 'log_src_helper': 'Helper (privileged operations)',
+    'log_src_sampler': 'Client and quota polling', 'log_src_backup': 'Backups', 'log_src_kernel_check': 'New kernel check',
+    'log_src_kernel': 'Kernel: AmneziaWG module', 'log_src_server': 'Server {iface} (awg-quick)',
+    'logs_history': 'Connection history and address masking', 'logs_history_on': 'Record connection history',
+    'logs_history_hint': 'When a client connected, from which address, how long it stayed and how much it transferred. Built from handshakes once a minute.',
+    'logs_retention': 'Keep for, days', 'logs_retention_hint': 'Older entries are removed automatically. From 1 to 365 days.',
+    'logs_masking': 'Address masking',
+    'logs_masking_hint': 'How public IPs are stored and shown: in the history, the audit log, bot notifications and the journal viewer. With “Full” the address is never stored.',
+    'logs_mask_none': 'Do not hide (203.0.113.45:51820)', 'logs_mask_partial': 'Partial (203.0.113.x)', 'logs_mask_full': 'Full (IP-3f2a1c)',
+    'logs_debug': 'AmneziaWG handshake debug', 'logs_debug_off': 'Off', 'logs_debug_on': 'On until {until} UTC',
+    'logs_debug_warning': 'Detailed kernel module messages slow the server down and contain client addresses. Debug switches itself off after 15 minutes.',
+    'logs_debug_hint': 'Use it when a client cannot connect, for example after changing the obfuscation: the “Kernel: AmneziaWG module” journal shows whether handshakes arrive and what happens to them.',
+    'logs_debug_start': 'Switch on for 15 minutes', 'logs_debug_stop': 'Switch off now', 'logs_debug_view': 'View kernel messages',
+    'logs_report': 'Support report',
+    'logs_report_hint': 'An archive with diagnostics, versions, server settings and the latest journal lines. Keys, tokens, Endpoint and public addresses are replaced. Look through it before you send it.',
+    'logs_report_button': 'Download the report', 'logs_save': 'Save',
+    'audit_event': 'Event', 'audit_all_events': 'All events', 'audit_since': 'From', 'audit_until': 'To',
+    'audit_pages': 'Audit log pages', 'audit_newer': 'Newer', 'audit_older': 'Older',
+    'audit_page': 'Page {page} of {pages} · {total} entries',
+    'sessions_title': 'Connection history', 'sessions_off': 'Connection history is off.',
+    'sessions_enable': 'Switch it on under Maintenance → Logs',
+    'sessions_now': 'online', 'sessions_start': 'Start (UTC)', 'sessions_end': 'End', 'sessions_length': 'Duration',
+    'sessions_address': 'Address', 'sessions_traffic': 'Traffic', 'sessions_empty': 'No connections yet.',
+    'sessions_note': 'The last 50 connections, kept for {days} days.', 'sessions_paused': 'Recording is off now.',
+})

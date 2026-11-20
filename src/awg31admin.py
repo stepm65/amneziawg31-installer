@@ -26,7 +26,7 @@ VALID_AUDIT = {'login_success', 'login_failed', 'password_changed', 'client_adde
                'backup_downloaded', 'backup_deleted', 'backup_policy_changed', 'backup_pruned',
                'backup_failed', 'client_config_sent', 'totp_enabled', 'totp_disabled',
                'telegram_changed', 'backup_encryption_changed', 'backup_uploaded', 'backup_upload_failed',
-               'backup_remote_changed'}
+               'backup_remote_changed', 'logging_changed', 'debug_changed', 'support_report'}
 
 
 def _host_uplink():
@@ -325,6 +325,8 @@ def audit(data):
     if event not in VALID_AUDIT: raise ValueError('Unknown audit event')
     target = str(data.get('target',''))
     if len(target)>120 or any(ord(x)<32 for x in target): raise ValueError('Invalid audit target')
+    # Public addresses (sign-in attempts) are kept as the panel's masking setting says.
+    target = mask_text(target)
     path = audit_file(); path.parent.mkdir(parents=True,exist_ok=True,mode=0o700)
     record={'timestamp':datetime.now(timezone.utc).isoformat(),'event':event,'target':target}
     fd=os.open(path,os.O_WRONLY|os.O_APPEND|os.O_CREAT|os.O_NOFOLLOW,0o600)
@@ -336,14 +338,18 @@ def audit(data):
 
 
 def audit_recent():
+    """The last 100 entries, oldest first. The bot asks every minute: only the end of the file is read."""
     path=audit_file()
-    if not path.exists(): return {'entries':[]}
-    if path.stat().st_size>10*1024*1024: raise RuntimeError('Audit log is too large; rotate it')
+    if not path.is_file() or path.is_symlink(): return {'entries':[]}
+    with open(path,'rb') as stream:
+        stream.seek(max(0,path.stat().st_size-256*1024))
+        tail=stream.read().decode('utf-8',errors='replace').splitlines()
     items=[]
-    for line in path.read_text(encoding='utf-8').splitlines()[-100:]:
-        try: items.append(json.loads(line))
-        except ValueError: continue
-    return {'entries':items}
+    for line in tail[-101:]:
+        try: item=json.loads(line)
+        except ValueError: continue                  # also the line cut by the seek
+        if isinstance(item,dict): items.append(item)
+    return {'entries':items[-100:]}
 
 
 def session_revoke():
@@ -1276,3 +1282,276 @@ def next_kernel_state():
     except OSError: return {'ok':True,'output':''}
     if state=='missing' and re.fullmatch(r'[A-Za-z0-9._+~-]{1,100}',version): return {'ok':False,'output':version}
     return {'ok':True,'output':version if state=='ok' else ''}
+
+
+# ------------------------------------------------------------------ logging: settings and IP masking
+# The same settings file and masking rules as in awg31ctl (a test keeps the two equal).
+LOGGING_DEFAULTS={'history':False,'retention_days':30,'masking':'partial'}
+MASK_MODES=('none','partial','full')
+_IPV4=re.compile(r'(?<![0-9.])(?:[0-9]{1,3}\.){3}[0-9]{1,3}(?![0-9.])')
+_IPV6=re.compile(r'(?<![0-9A-Fa-f:])(?:[0-9A-Fa-f]{0,4}:){2,7}[0-9A-Fa-f]{0,4}(?![0-9A-Fa-f:])')
+
+
+def logging_file():
+    return Path(os.environ.get('AWG31_LOGGING','/etc/awg31-panel/logging.json'))
+
+
+def mask_key_file():
+    return Path(os.environ.get('AWG31_IP_MASK_KEY','/etc/awg31-panel/ip-mask.key'))
+
+
+def logging_settings():
+    try: data=json.loads(logging_file().read_text())
+    except (OSError,ValueError): data={}
+    result=dict(LOGGING_DEFAULTS)
+    if isinstance(data,dict):
+        result['history']=bool(data.get('history',False))
+        try: result['retention_days']=min(365,max(1,int(data.get('retention_days',30))))
+        except (TypeError,ValueError): pass
+        if data.get('masking') in MASK_MODES: result['masking']=data['masking']
+    return result
+
+
+def mask_key():
+    """A random per-server key: the same address always gets the same label, and the label cannot be reversed."""
+    path=mask_key_file()
+    try: return path.read_bytes()
+    except FileNotFoundError: pass
+    path.parent.mkdir(parents=True,exist_ok=True)
+    try:
+        fd=os.open(path,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600)
+    except FileExistsError:
+        return path.read_bytes()
+    key=secrets.token_bytes(32)
+    try: os.write(fd,key)
+    finally: os.close(fd)
+    return key
+
+
+def mask_ip(text,mode):
+    """One address (IPv4 or IPv6, without a port) as the chosen mode shows it."""
+    import ipaddress
+    try: address=ipaddress.ip_address(text)
+    except ValueError: return text
+    if mode=='none': return text
+    if mode=='partial':
+        if address.version==4: return '.'.join(text.split('.')[:3])+'.x'
+        return ':'.join(address.exploded.split(':')[:3])+':…'
+    return 'IP-'+hmac.new(mask_key(),address.packed,hashlib.sha256).hexdigest()[:6]
+
+
+def mask_text(text,mode=None):
+    """Public addresses inside free text (log lines, audit targets). Private and local ones stay:
+    client tunnel addresses and LAN routes are needed to read the logs and say nothing about people."""
+    import ipaddress
+    mode=mode or logging_settings()['masking']
+    if mode=='none' or not text: return text
+    def replace(match):
+        raw=match.group(0)
+        try: address=ipaddress.ip_address(raw)
+        except ValueError: return raw
+        return mask_ip(raw,mode) if address.is_global else raw
+    return _IPV6.sub(replace,_IPV4.sub(replace,str(text)))
+
+
+def logging_set(data):
+    current=logging_settings()
+    history=bool(data.get('history',current['history']))
+    try: retention=int(data.get('retention_days',current['retention_days']))
+    except (TypeError,ValueError): raise ValueError('History: keep it from 1 to 365 days') from None
+    if not 1<=retention<=365: raise ValueError('History: keep it from 1 to 365 days')
+    masking=str(data.get('masking',current['masking']))
+    if masking not in MASK_MODES: raise ValueError('Address masking: none, partial or full')
+    settings={'history':history,'retention_days':retention,'masking':masking}
+    path=logging_file(); path.parent.mkdir(parents=True,exist_ok=True)
+    _atomic_private_file(path,json.dumps(settings,indent=1)+'\n',mode=0o644)
+    if masking=='full': mask_key()
+    if settings!=current:
+        audit({'event':'logging_changed','target':f"history {'on' if history else 'off'}, {retention}d, masking {masking}"})
+    return {'ok':True,'settings':settings}
+
+
+# ------------------------------------------------------------------ journals
+LOG_SOURCES={'panel':['-u','awg31-panel.service'],'bot':['-u','awg31-bot.service'],
+             'helper':['-u','awg31-helper.service'],'sampler':['-u','awg31-sampler.service'],
+             'backup':['-u','awg31-backup.service'],'kernel-check':['-u','awg31-kernel-check.service'],
+             'kernel':['-k']}
+LOG_LEVELS={'error':'3','warning':'4','all':''}
+
+
+def logs_read(data,manager=None):
+    """Lines from a fixed list of journals; nothing else can be read this way."""
+    source=str(data.get('source','panel'))
+    if source in LOG_SOURCES: args=list(LOG_SOURCES[source])
+    elif re.fullmatch(r'server:awg(?:0|[1-9][0-9]?)',source):
+        iface=source.split(':',1)[1]
+        if manager is not None and iface not in manager.interfaces(): raise ValueError('Server not found')
+        args=['-u',f'awg-quick@{iface}.service']
+    else: raise ValueError('Unknown log source')
+    try: lines=int(data.get('lines',200))
+    except (TypeError,ValueError): lines=200
+    lines=min(2000,max(20,lines))
+    level=str(data.get('level','all'))
+    if level not in LOG_LEVELS: raise ValueError('Level: error, warning or all')
+    query=str(data.get('query',''))[:100]
+    if any(ord(c)<32 for c in query): raise ValueError('Invalid search text')
+    command=['journalctl','--no-pager','--no-hostname','-o','short-iso','-q']+args
+    if LOG_LEVELS[level]: command+=['-p',LOG_LEVELS[level]]
+    # The kernel journal is shared by everything on the host: read more, keep the AmneziaWG lines.
+    command+=['-n',str(lines*20 if source=='kernel' else lines if not query else lines*10)]
+    try: cp=subprocess.run(command,capture_output=True,text=True,timeout=20,check=False)
+    except (OSError,subprocess.TimeoutExpired) as exc: raise RuntimeError(f'journalctl: {exc}') from None
+    if cp.returncode not in (0,1): raise RuntimeError((cp.stderr or 'journalctl failed').strip()[:300])
+    found=cp.stdout.splitlines()
+    if source=='kernel': found=[x for x in found if 'amneziawg' in x.lower() or 'awg' in x.lower().split(':',3)[-1][:40]]
+    if query: found=[x for x in found if query.lower() in x.lower()]
+    mode=logging_settings()['masking']
+    return {'source':source,'level':level,'lines':[mask_text(x[:2000],mode) for x in found[-lines:]]}
+
+
+# ------------------------------------------------------------------ AmneziaWG handshake debug
+DEBUG_CONTROL=Path('/sys/kernel/debug/dynamic_debug/control')
+MODULE_DIR=Path('/sys/module/amneziawg')
+
+
+def _debug_until():
+    return Path(os.environ.get('AWG31_DEBUG_UNTIL','/run/awg31/debug-until'))
+
+
+def handshake_debug(data=None):
+    """Kernel messages about handshakes for 15 minutes, then off by itself."""
+    data=data or {}
+    state=_debug_until()
+    if 'enable' not in data:
+        try: until=int(state.read_text().strip())
+        except (OSError,ValueError): until=0
+        if until and until<time.time(): until=0
+        return {'enabled':bool(until),'until':until,'available':DEBUG_CONTROL.exists()}
+    enable=bool(data.get('enable'))
+    if not DEBUG_CONTROL.exists():
+        if DEBUG_CONTROL==Path('/sys/kernel/debug/dynamic_debug/control') and not any(Path('/sys/kernel/debug').glob('*')):
+            subprocess.run(['mount','-t','debugfs','none','/sys/kernel/debug'],capture_output=True,timeout=10,check=False)
+        if not DEBUG_CONTROL.exists():
+            raise ValueError('This kernel has no dynamic debug (CONFIG_DYNAMIC_DEBUG); handshake messages are not available')
+    if not MODULE_DIR.exists(): raise ValueError('The AmneziaWG module is not loaded')
+    with open(DEBUG_CONTROL,'w') as control:
+        control.write('module amneziawg '+('+p' if enable else '-p')+'\n')
+    subprocess.run(['systemctl','stop','awg31-debug-off.timer'],capture_output=True,timeout=10,check=False)
+    if enable:
+        until=int(time.time())+900
+        state.parent.mkdir(parents=True,exist_ok=True); state.write_text(f'{until}\n')
+        cp=subprocess.run(['systemd-run','--quiet','--collect','--on-active=15min','--unit','awg31-debug-off',
+                           '--description','Switch AmneziaWG handshake debug off','/bin/sh','-c',
+                           f"echo 'module amneziawg -p' > {DEBUG_CONTROL}; rm -f {state}"],
+                          capture_output=True,text=True,timeout=15,check=False)
+        if cp.returncode:
+            with open(DEBUG_CONTROL,'w') as control: control.write('module amneziawg -p\n')
+            state.unlink(missing_ok=True)
+            raise RuntimeError('Could not schedule switching it off again: '+(cp.stderr or '').strip()[:200])
+        audit({'event':'debug_changed','target':'handshake debug on for 15 min'})
+        return {'enabled':True,'until':until,'available':True}
+    state.unlink(missing_ok=True)
+    audit({'event':'debug_changed','target':'handshake debug off'})
+    return {'enabled':False,'until':0,'available':True}
+
+
+# ------------------------------------------------------------------ audit log: paging and filters
+def audit_list(data=None):
+    """Newest first, filtered by event, date range and text; read as a stream, whatever the file size."""
+    data=data or {}
+    event=str(data.get('event',''))
+    if event and event not in VALID_AUDIT: raise ValueError('Unknown event')
+    text=str(data.get('query',''))[:80].lower()
+    since=str(data.get('since',''))[:10]; until=str(data.get('until',''))[:10]
+    for value in (since,until):
+        if value and not re.fullmatch(r'[0-9]{4}-[0-9]{2}-[0-9]{2}',value): raise ValueError('Dates: YYYY-MM-DD')
+    try: page=max(1,int(data.get('page',1)))
+    except (TypeError,ValueError): page=1
+    try: size=min(1000,max(10,int(data.get('size',50))))
+    except (TypeError,ValueError): size=50
+    matched=[]
+    import gzip
+    base=audit_file()
+    # logrotate keeps up to 30 older files (audit.jsonl.N.gz, the newest is .1): oldest first, then the live one.
+    rotated=sorted((p for p in base.parent.glob(base.name+'.*') if re.fullmatch(re.escape(base.name)+r'\.[0-9]{1,3}(?:\.gz)?',p.name)),
+                   key=lambda p:-int(p.name[len(base.name)+1:].split('.')[0])) if base.parent.is_dir() else []
+    for path in rotated+[base]:
+        if not path.is_file() or path.is_symlink(): continue
+        opener=gzip.open if path.name.endswith('.gz') else open
+        with opener(path,'rt',encoding='utf-8',errors='replace') as stream:
+            for line in stream:
+                try: item=json.loads(line)
+                except ValueError: continue
+                if not isinstance(item,dict): continue
+                stamp=str(item.get('timestamp',''))
+                if event and item.get('event')!=event: continue
+                if since and stamp[:10]<since: continue
+                if until and stamp[:10]>until: continue
+                if text and text not in (str(item.get('event',''))+' '+str(item.get('target',''))).lower(): continue
+                matched.append({'timestamp':stamp,'event':str(item.get('event','')),'target':str(item.get('target',''))})
+    matched.reverse()
+    total=len(matched)
+    return {'entries':matched[(page-1)*size:page*size],'total':total,'page':page,'size':size,
+            'pages':max(1,(total+size-1)//size),'events':sorted(VALID_AUDIT)}
+
+
+# ------------------------------------------------------------------ support report
+_KEY=re.compile(r'(?<![A-Za-z0-9+/])[A-Za-z0-9+/]{42,43}=(?![A-Za-z0-9+/=])')
+_TOKEN=re.compile(r'[0-9]{5,14}:[A-Za-z0-9_-]{30,60}')
+
+
+def redact(text):
+    """Keys, tokens and public addresses out; always the full mask, whatever the panel setting."""
+    text=_TOKEN.sub('[token]',_KEY.sub('[key]',str(text)))
+    text=re.sub(r'(?im)^(\s*(?:PrivateKey|PresharedKey|PublicKey|HeaderProtectionKey|Endpoint|Password|Secret|Token)\s*=\s*).*$',r'\1[removed]',text)
+    text=re.sub(r'(?im)^(\s*endpoint:\s*).*$',r'\1[removed]',text)              # `awg show`
+    return mask_text(text,'full')
+
+
+def support_report(manager):
+    """A tar.gz with what is needed to understand a problem, and nothing that opens the server."""
+    import sys
+    def command(args,timeout=20):
+        try:
+            cp=subprocess.run(args,capture_output=True,text=True,timeout=timeout,check=False)
+            return (cp.stdout or '')+(('\n[stderr]\n'+cp.stderr) if cp.stderr.strip() else '')
+        except (OSError,subprocess.TimeoutExpired) as exc:
+            return f'[{" ".join(args[:2])}: {exc}]'
+    files={}
+    version=''
+    for candidate in (Path('/opt/awg31-panel/VERSION'),):
+        try: version=candidate.read_text().strip()
+        except OSError: pass
+    files['system.txt']='\n'.join((
+        f'AmneziaWG 3.1 Console {version or "?"}', f'Generated {datetime.now(timezone.utc).isoformat()}',
+        '--- os-release', command(['cat','/etc/os-release']), '--- uname', command(['uname','-a']),
+        '--- module', command(['cat','/sys/module/amneziawg/version']), command(['dkms','status','-m','amneziawg']),
+        '--- python', sys.version, '--- services',
+        command(['systemctl','--no-pager','--plain','list-units','awg*','--all']),
+        '--- forwarding', command(['sysctl','net.ipv4.ip_forward']),
+        '--- addresses', command(['ip','-brief','address']), '--- routes', command(['ip','route']),
+        '--- firewall', command(['nft','list','ruleset'],30) or command(['iptables-save'])))
+    for iface in manager.interfaces():
+        try: files[f'diagnostics-{iface}.json']=json.dumps(diagnose(manager,iface),indent=1,ensure_ascii=False)
+        except Exception as exc: files[f'diagnostics-{iface}.json']=f'[{exc}]'
+        files[f'awg-show-{iface}.txt']=command(['awg','show',iface])
+        try: files[f'{iface}.conf']=manager.conf_path(iface).read_text()
+        except OSError as exc: files[f'{iface}.conf']=f'[{exc}]'
+    for source in LOG_SOURCES:
+        try: files[f'journal-{source}.txt']='\n'.join(logs_read({'source':source,'lines':300})['lines'])
+        except (OSError,RuntimeError,ValueError) as exc: files[f'journal-{source}.txt']=f'[{exc}]'
+    for iface in manager.interfaces():
+        try: files[f'journal-awg-quick-{iface}.txt']='\n'.join(logs_read({'source':'server:'+iface,'lines':200},manager)['lines'])
+        except (OSError,RuntimeError,ValueError) as exc: files[f'journal-awg-quick-{iface}.txt']=f'[{exc}]'
+    files['audit.jsonl']='\n'.join(json.dumps(x,ensure_ascii=False) for x in reversed(audit_list({'size':300})['entries']))
+    files['README.txt']=('Support report of AmneziaWG 3.1 Console. Keys, tokens, endpoints and public IP addresses\n'
+                         'are replaced ([key], [token], [removed], IP-xxxxxx). Check it before you send it anywhere.\n')
+    buffer=io.BytesIO()
+    stamp=datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')
+    with tarfile.open(fileobj=buffer,mode='w:gz') as archive:
+        for name,content in files.items():
+            raw=redact(content).encode('utf-8',errors='replace')
+            info=tarfile.TarInfo(f'awg31-support-{stamp}/{name}'); info.size=len(raw); info.mtime=int(time.time()); info.mode=0o600
+            archive.addfile(info,io.BytesIO(raw))
+    audit({'event':'support_report','target':f'{len(files)} files'})
+    return {'name':f'awg31-support-{stamp}.tar.gz','data':base64.b64encode(buffer.getvalue()).decode()}

@@ -809,3 +809,36 @@
     sync();
   }
 })();
+
+// Maintenance → Logs: refresh the journal every 5 seconds while the box is ticked.
+(() => {
+  'use strict';
+  const form = document.querySelector('[data-logs-form]');
+  const view = document.querySelector('[data-log-view]');
+  const auto = document.querySelector('[data-logs-auto]');
+  const count = document.querySelector('[data-log-count]');
+  if (!form || !view || !auto) return;
+  let timer = null;
+  const pinnedToBottom = () => view.scrollHeight - view.scrollTop - view.clientHeight < 24;
+  const load = async () => {
+    const params = new URLSearchParams(new FormData(form));
+    params.delete('tab');
+    view.classList.add('is-loading');
+    try {
+      const reply = await fetch(`/api/logs?${params}`, { headers: { Accept: 'application/json' }, credentials: 'same-origin' });
+      const data = await reply.json();
+      if (!reply.ok) throw new Error(data.error || reply.statusText);
+      const stick = pinnedToBottom();
+      view.textContent = data.lines.join('\n') || view.dataset.empty || '';
+      if (count) count.textContent = count.textContent.replace(/[0-9]+/, String(data.lines.length));
+      if (stick) view.scrollTop = view.scrollHeight;
+    } catch (error) {
+      auto.checked = false; stop();
+    } finally {
+      view.classList.remove('is-loading');
+    }
+  };
+  const stop = () => { if (timer) { clearInterval(timer); timer = null; } };
+  auto.addEventListener('change', () => { stop(); if (auto.checked) { load(); timer = setInterval(load, 5000); } });
+  view.scrollTop = view.scrollHeight;
+})();

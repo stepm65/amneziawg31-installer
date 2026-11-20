@@ -1140,3 +1140,43 @@ body.nav-collapsed .sidebar .sidebar-version a {justify-content:center;width:44p
   body.nav-collapsed .sidebar .sidebar-version span {display:inline}
   body.nav-collapsed .sidebar .sidebar-version a {justify-content:flex-start;width:auto;padding:6px 10px}
 }
+
+/* Maintenance → Logs: journal viewer, connection history settings, handshake debug, support report. */
+.logs-workspace {display:grid;gap:18px}
+.logs-card {padding:18px 20px;border:1px solid #2f353d;border-radius:14px;background:#171b20;min-width:0}
+.logs-card h3 {display:flex;align-items:center;gap:9px;margin:0 0 12px;font-size:15px;color:#eef1f4}
+.logs-card h3 .icon {color:var(--amber)}
+.logs-card-head {display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:12px}
+.logs-card-head h3 {margin:0}
+.logs-warning {display:flex;align-items:flex-start;gap:9px;margin:0 0 14px;padding:10px 12px;border-radius:10px;border:1px solid rgba(243,172,33,.32);background:rgba(243,172,33,.08);color:#f3d9a6;font-size:12.5px;line-height:1.5}
+.logs-warning .icon {flex:none;color:var(--amber);margin-top:1px}
+.logs-filter {display:grid;grid-template-columns:repeat(3,minmax(0,1fr)) minmax(0,1.4fr);gap:12px;align-items:end}
+.logs-filter label {display:grid;gap:6px;min-width:0}
+.logs-filter label > span {color:#aeb6c1;font-size:12px;font-weight:600}
+.logs-filter select,.logs-filter input:not([type=checkbox]),.logs-card .tg-row-control input,.logs-card .tg-row-control select {width:100%;min-width:0;height:40px;padding:0 11px;border-radius:9px;border:1px solid #38404a;background:#14171b;color:#eef1f4;font-size:13px}
+.logs-filter select:focus,.logs-filter input:focus {border-color:var(--amber);outline:none;box-shadow:0 0 0 3px rgba(243,172,33,.16)}
+.logs-buttons {grid-column:1/-1;display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.logs-auto {display:inline-flex!important;grid-auto-flow:column;align-items:center;gap:8px!important;margin-left:auto;color:#c9d0d8;font-size:13px;cursor:pointer}
+.logs-auto input {width:17px;height:17px;accent-color:var(--amber)}
+.log-view {margin:14px 0 0;max-height:520px;min-height:160px;overflow:auto;padding:14px 16px;border-radius:10px;border:1px solid #2b3138;background:#0e1114;color:#cdd6e0;font:12px/1.55 var(--font-mono);white-space:pre-wrap;overflow-wrap:anywhere}
+.log-view.is-loading {opacity:.6}
+.logs-count {margin:8px 0 0;color:#8a94a0;font-size:12px}
+.logs-save {margin-top:14px}
+.audit-filter {margin-bottom:14px}
+.audit-pager {display:flex;align-items:center;justify-content:center;gap:12px;margin-top:14px;color:#9aa3ae;font-size:12.5px;flex-wrap:wrap}
+.sessions-table table {min-width:600px}
+.sessions-table td.mono {font-family:var(--font-mono);font-size:12px}
+@media (max-width:900px) {
+  .logs-filter {grid-template-columns:1fr 1fr}
+  .logs-search {grid-column:1/-1}
+}
+@media (max-width:560px) {
+  .logs-filter {grid-template-columns:1fr}
+  .logs-auto {margin-left:0}
+  .logs-card {padding:16px 14px}
+}
+/* Nine sections no longer fit in one row on a laptop: wrap instead of hiding the last ones. */
+@media (min-width:651px) {
+  .maint-tabs {flex-wrap:wrap;overflow-x:visible}
+  .maint-tabs .maint-nav-link {padding:10px 11px}
+}
