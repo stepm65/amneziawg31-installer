@@ -227,6 +227,7 @@ def test_update_start_checks_password_version_and_snapshot(updater):
     started = [c for c in calls if c[0] == 'systemd-run'][-1]
     assert started[started.index('--unit') + 1] == 'awg31-update' and started[-3:] == [str(tmp / 'copy.sh'), 'update', 'v0.17.0']
     assert (tmp / 'copy.sh').read_text() == '#!/bin/bash\n'                      # a private copy of the runner
+    assert started[-4].startswith('/bin/bash "$0" ')          # read by bash: /run may be mounted noexec
     assert 'panel_update_started' in (tmp / 'audit.jsonl').read_text()
     module.update_start({'password': PASSWORD, 'action': 'rollback', 'target': 'awg31-upgrade.20261120T100000Z-abcd'})
     active['on'] = True

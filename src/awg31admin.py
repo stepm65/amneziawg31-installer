@@ -1684,13 +1684,14 @@ def update_start(data):
         raise ValueError('action: update or rollback')
     if not UPDATE_RUNNER.exists(): raise ValueError('The update runner is not installed; run sudo awg31 update once')
     if _update_running(): raise ValueError('An update is already running')
-    # A private copy: the update replaces the installed runner while it runs.
+    # A private copy: the update replaces the installed runner while it runs. It is read by
+    # bash rather than executed, because /run is mounted noexec on some systems.
     fd,copy=tempfile.mkstemp(prefix='awg31-update-run.',suffix='.sh',dir='/run')
     with os.fdopen(fd,'wb') as out: out.write(UPDATE_RUNNER.read_bytes())
     os.chmod(copy,0o700)
     cp=subprocess.run(['systemd-run','--quiet','--collect','--unit',UPDATE_UNIT,'--description',
                        'AmneziaWG 3.1 Console update started from the panel',
-                       '--property=TimeoutStartSec=30min','/bin/bash','-c',f'"$0" "$1" "$2"; code=$?; rm -f "$0"; exit $code',
+                       '--property=TimeoutStartSec=30min','/bin/bash','-c','/bin/bash "$0" "$1" "$2"; code=$?; rm -f "$0"; exit $code',
                        copy,action,target],capture_output=True,text=True,timeout=20,check=False)
     if cp.returncode:
         os.unlink(copy)
