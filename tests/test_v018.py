@@ -119,9 +119,10 @@ def test_client_record_moves_with_keys_owner_and_subscription(second):
     moved = call(lambda c: ctl.client_import_row(other), {'row': exported})
     assert moved['ip'].startswith('10.88.0.') and moved['interface'] == 'awg1'
     here = dict(other.execute('SELECT * FROM clients WHERE name=?', ('alpha',)).fetchone())
-    for key in ('private_key', 'public_key', 'psk', 'telegram_id', 'sub_hash', 'comment', 'extra_lines', 'expires_at'):
+    for key in ('private_key', 'public_key', 'psk', 'telegram_id', 'sub_hash', 'comment', 'extra_lines', 'expires_at',
+                'invite_hash', 'invite_expires'):
         assert here[key] == exported[key], key
-    assert here['exported_hash'] == '' and here['invite_hash'] == ''
+    assert here['exported_hash'] == ''                    # a pending invitation moves too; the old export is stale
     with pytest.raises(ValueError, match='уже есть клиент alpha'):
         call(lambda c: ctl.client_import_row(other), {'row': exported})
     with pytest.raises(ValueError, match='Неполная'):

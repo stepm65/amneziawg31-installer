@@ -210,7 +210,7 @@ After a parameter change, a masking profile or a client move, the bot sends the 
 
 ### Moving a client to another server
 
-On the client page, under “Move to another server”, choose the server and press **Move**. The client moves with the same keys, comment, owner, expiry, limits, traffic used, `I1–I5` packets, extra lines and subscription, and gets a free address in the new server's subnet. If the new server already has a client with that name or key, nothing moves. The client needs a new configuration: its subscription link keeps working and serves it from the new server, and the bot sends it to an owner allowed to get it.
+On the client page, under “Move to another server”, choose the server and press **Move**. The client moves with the same keys, comment, owner, expiry, limits, traffic used, `I1–I5` packets, extra lines, subscription and pending invitation, and gets a free address in the new server's subnet. If the new server already has a client with that name or key, nothing moves. The client needs a new configuration: its subscription link keeps working and serves it from the new server, and the bot sends it to an owner allowed to get it.
 
 ### Incoming packet check
 

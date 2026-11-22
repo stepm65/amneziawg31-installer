@@ -1638,7 +1638,7 @@ def probe_port(cfg, data):
 MOVE_KEEP = ('name', 'private_key', 'public_key', 'psk', 'enabled', 'created_at', 'routed_subnets', 'i_enabled',
              *I_KEYS, 'extra_lines', 'comment', 'expires_at', 'traffic_limit_bytes', 'used_bytes', 'disabled_reason',
              'telegram_id', 'owner_export', 'speed_limit_mbit', 'quota_period', 'quota_month',
-             'sub_hash', 'sub_created', 'sub_last_fetch', 'sub_last_addr', 'sub_fetches')
+             'invite_hash', 'invite_expires', 'invite_export', 'sub_hash', 'sub_created', 'sub_last_fetch', 'sub_last_addr', 'sub_fetches')
 
 
 def client_export_row(con):
