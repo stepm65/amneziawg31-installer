@@ -936,7 +936,7 @@ def test_nginx_site_has_hsts_login_limit_and_optional_allow_list():
     assert 'add_header Strict-Transport-Security "max-age=31536000" always;' in site
     assert 'limit_req_zone $binary_remote_addr zone=awg31_login:10m rate=10r/m;' in site
     assert re.search(r'location = /login \{\s+limit_req zone=awg31_login burst=5 nodelay;', site)
-    assert 'allow ' not in site and 'deny all' not in site
+    assert 'deny all' not in site and 'allow ' not in site.replace('        allow all;\n', '')
     limited = render('203.0.113.7, 198.51.100.0/24')
     assert limited.index('allow 127.0.0.1;') < limited.index('allow 203.0.113.7;') < limited.index('allow 198.51.100.0/24;') < limited.index('deny all;')
     def valid(value):

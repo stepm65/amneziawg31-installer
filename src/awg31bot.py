@@ -49,7 +49,7 @@ EVENTS = {
     'server_state': 'server', 'module': 'server', 'kernel': 'server', 'panel': 'server',
     'client_auto': 'clients', 'client_expiring': 'clients', 'client_quota': 'clients',
     'login': 'security', 'login_failed': 'security', 'password': 'security', 'owner_export': 'security',
-    'totp_recovery': 'security', 'invite': 'clients', 'update': 'server',
+    'totp_recovery': 'security', 'invite': 'clients', 'update': 'server', 'rotation': 'server',
     'backup_created': 'backups', 'backup_failed': 'backups', 'upload_failed': 'backups',
     'cpu': 'system', 'memory': 'system', 'disk': 'system',
 }
@@ -207,6 +207,16 @@ TEXT = {
         'n_totp_recovery': '🔐 Вход в веб-панель по резервному коду. Осталось кодов: {left}.',
         'n_updated': '⬆️ Панель обновлена: {target}.', 'n_update_failed': '⚠️ Обновление панели не удалось: {target}. Ход — в «Обслуживание → Обновление».',
         'n_rolled_back': '↩️ Панель откачена: {target}.',
+        'b_probe': '📡 Пакеты 15 с', 'b_rotate': '🔀 Сменить порт',
+        'confirm_rotate': ('Сменить порт и параметры обфускации <b>{iface}</b>? Сервер перезапустится. Роутеры с подпиской '
+                           'получат новые параметры сами, остальным клиентам нужно импортировать конфигурацию заново.'),
+        'rotated': '🔀 <b>{iface}</b>: порт {old} → <b>{port}</b>, обфускация новая. Откройте порт в облачном файрволе, если он есть.',
+        'probe_wait': '📡 Слушаю UDP-порт <b>{iface}</b> 15 секунд — включите VPN на клиенте…',
+        'probe_result': '📡 <b>{iface}</b>, {port}/udp за 15 с\nОт клиентов: <b>{incoming}</b>\nОтветов сервера: <b>{outgoing}</b>\nОткуда: {sources}\n\n{verdict}',
+        'probe_none': 'Пакеты не доходят до сервера: проверьте облачный файрвол; если открыт — порт или протокол режет провайдер.',
+        'probe_no_answer': 'Пакеты доходят, но сервер не отвечает: у клиента другие ключи или обфускация. Нужна свежая конфигурация.',
+        'probe_ok': 'Пакеты доходят, сервер отвечает.',
+        'n_rotated': '🔀 Параметры сервера сменены: {target}.', 'n_rotate_failed': '⚠️ Смена параметров сервера не удалась: {target}.',
         'confirm_rekey': ('Выпустить для <b>{name}</b> новый ключ? Текущая конфигурация перестанет работать сразу, '
                           'клиенту нужно будет импортировать новую. Адрес, лимиты, срок и владелец сохранятся.'),
         'rekeyed': '🔑 Ключ <b>{name}</b> перевыпущен. Новая конфигурация ниже.',
@@ -318,6 +328,16 @@ TEXT = {
         'n_totp_recovery': '🔐 Sign-in to the web panel with a recovery code. Codes left: {left}.',
         'n_updated': '⬆️ The panel was updated: {target}.', 'n_update_failed': '⚠️ The panel update failed: {target}. The log is under Maintenance → Update.',
         'n_rolled_back': '↩️ The panel was rolled back: {target}.',
+        'b_probe': '📡 Packets 15 s', 'b_rotate': '🔀 Change port',
+        'confirm_rotate': ('Change the port and obfuscation parameters of <b>{iface}</b>? The server restarts. Routers with a '
+                           'subscription pick up the new parameters by themselves; other clients must import the configuration again.'),
+        'rotated': '🔀 <b>{iface}</b>: port {old} → <b>{port}</b>, new obfuscation. Open the port in a cloud firewall if there is one.',
+        'probe_wait': '📡 Listening on the UDP port of <b>{iface}</b> for 15 seconds: switch the VPN on at the client…',
+        'probe_result': '📡 <b>{iface}</b>, {port}/udp in 15 s\nFrom clients: <b>{incoming}</b>\nServer answers: <b>{outgoing}</b>\nFrom: {sources}\n\n{verdict}',
+        'probe_none': 'Packets do not reach the server: check the cloud firewall; if it is open, the provider drops the port or protocol.',
+        'probe_no_answer': 'Packets arrive but the server does not answer: the client has other keys or obfuscation. It needs a fresh configuration.',
+        'probe_ok': 'Packets arrive and the server answers.',
+        'n_rotated': '🔀 Server parameters changed: {target}.', 'n_rotate_failed': '⚠️ The server parameter change failed: {target}.',
         'confirm_rekey': ('Issue a new key for <b>{name}</b>? The current configuration stops working at once and '
                           'the client must import the new one. Address, limits, expiry and owner stay.'),
         'rekeyed': '🔑 The key of <b>{name}</b> was replaced. The new configuration follows.',
@@ -559,6 +579,7 @@ class Bot:
         actions = ([(self.t('b_restart'), f'sa:{iface}:restart'), (self.t('b_stop'), f'sa:{iface}:stop')] if running
                    else [(self.t('b_start'), f'sa:{iface}:start')])
         return text, [[(self.t('b_clients'), f'cl:{iface}:0'), (self.t('b_add'), f'add:{iface}')], actions,
+                      [(self.t('b_probe'), f'pr:{iface}'), (self.t('b_rotate'), f'ro:{iface}')],
                       [(self.t('b_back'), 's')]]
 
     def screen_clients(self, iface, page=0):
@@ -1047,6 +1068,17 @@ class Bot:
                           [[(self.t('b_yes'), f'sy:{iface}:{name}'), (self.t('b_no'), f's:{iface}')]], message_id)
         elif kind == 'sy' and name in ('stop', 'restart'):
             self.server_action(chat, admin, iface, name, message_id)
+        elif kind == 'pr' and iface:
+            self.probe(chat, admin, iface, message_id)
+        elif kind == 'ro' and iface:
+            self.show(chat, self.t('confirm_rotate', iface=iface),
+                      [[(self.t('b_yes'), f'ry:{iface}:go'), (self.t('b_no'), f's:{iface}')]], message_id)
+        elif kind == 'ry' and iface and name == 'go':
+            self.own_actions[f'server:{iface}'] = self.clock()
+            result = self.ctl('rotate', {'interface': iface, 'parts': ['port', 'obfuscation']})
+            self.audit('server_rotated', f"{iface}: port, obfuscation, port {result.get('old_port')} → {result.get('port')}", admin)
+            self.show(chat, self.t('rotated', iface=iface, old=result.get('old_port', '?'), port=result.get('port', '?')),
+                      [[(self.t('b_back'), f's:{iface}')]], message_id)
         elif kind == 'cl':
             target = iface or self.default_server()
             self.show(chat, *self.screen_clients(target, int(name) if name.isdigit() else 0), message_id=message_id)
@@ -1089,6 +1121,17 @@ class Bot:
                       [[(self.t('b_menu'), 'm')]], message_id)
         else:
             raise BotError('bad request')
+
+    def probe(self, chat, admin, iface, message_id):
+        self.show(chat, self.t('probe_wait', iface=iface), message_id=message_id)
+        result = self.ctl('probe', {'interface': iface, 'seconds': 15})
+        self.audit('packet_probe', f"{iface}: in {result.get('incoming', 0)}, out {result.get('outgoing', 0)}", admin)
+        incoming, outgoing = int(result.get('incoming', 0)), int(result.get('outgoing', 0))
+        verdict = 'probe_none' if not incoming else 'probe_no_answer' if not outgoing else 'probe_ok'
+        sources = ', '.join(f'{addr} ×{count}' for addr, count in result.get('sources', [])[:5]) or '—'
+        self.show(chat, self.t('probe_result', iface=iface, port=result.get('port', '?'), incoming=incoming,
+                               outgoing=outgoing, sources=html.escape(sources), verdict=self.plain(verdict)),
+                  [[(self.t('b_probe'), f'pr:{iface}'), (self.t('b_back'), f's:{iface}')]])
 
     def server_action(self, chat, admin, iface, action, message_id):
         self.own_actions[f'server:{iface}'] = self.clock()
@@ -1198,6 +1241,8 @@ class Bot:
             elif event in ('panel_updated', 'panel_update_failed', 'panel_rolled_back') and self.on('update'):
                 key = {'panel_updated': 'n_updated', 'panel_update_failed': 'n_update_failed', 'panel_rolled_back': 'n_rolled_back'}[event]
                 self.notify(self.t(key, target=target or '?'))
+            elif event in ('server_rotated', 'server_rotate_failed') and self.on('rotation'):
+                self.notify(self.t('n_rotated' if event == 'server_rotated' else 'n_rotate_failed', target=html.escape(target or '?')))
             elif event == 'totp_recovery_used' and self.on('totp_recovery'):
                 self.notify(self.t('n_totp_recovery', left=target.split()[0] if target else '?'))
             elif event == 'password_changed' and self.on('password'):

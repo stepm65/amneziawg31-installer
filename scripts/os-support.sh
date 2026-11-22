@@ -124,3 +124,24 @@ awg31_install_helper() {
     done
     return 1
 }
+
+# Kernel network settings for a VPN router: a loose reverse-path filter (strict
+# mode drops replies that come back over another path), no ICMP redirects, no
+# source routing, SYN cookies. One file of ours; the admin may override it with a
+# later file in /etc/sysctl.d.
+awg31_network_sysctl() {
+    cat > /etc/sysctl.d/96-awg31-network.conf <<'CONF'
+# AmneziaWG 3.1 Console: kernel network settings for VPN routing (sudo awg31 uninstall removes this file)
+net.ipv4.conf.all.rp_filter = 2
+net.ipv4.conf.default.rp_filter = 2
+net.ipv4.conf.all.accept_redirects = 0
+net.ipv4.conf.default.accept_redirects = 0
+net.ipv4.conf.all.send_redirects = 0
+net.ipv4.conf.default.send_redirects = 0
+net.ipv4.conf.all.accept_source_route = 0
+net.ipv4.conf.default.accept_source_route = 0
+net.ipv4.tcp_syncookies = 1
+CONF
+    chmod 644 /etc/sysctl.d/96-awg31-network.conf
+    sysctl -q -p /etc/sysctl.d/96-awg31-network.conf >/dev/null 2>&1 || :
+}

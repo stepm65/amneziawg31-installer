@@ -359,6 +359,7 @@ TEXT['ru'].update({
     'cps_preset_random':'Случайные байты (нейтрально)',
     'cps_preset_dns':'DNS-запрос (A-запись популярного домена)',
     'cps_preset_stun':'STUN Binding Request (как у звонков WebRTC)',
+    'cps_preset_dtls':'DTLS 1.2 ClientHello (WebRTC, Zoom), случайное поле random',
     'cps_preset_quictls':'QUIC Initial с настоящим ClientHello и SNI (1200 байт)',
     'cps_preset_quic':'QUIC Initial — только форма, случайное содержимое (короткая запись)',
     'cps_host':'Домен для SNI (шаблон QUIC с ClientHello)',
@@ -399,6 +400,7 @@ TEXT['en'].update({
     'cps_preset_random':'Random bytes (neutral)',
     'cps_preset_dns':'DNS query (A record of a popular domain)',
     'cps_preset_stun':'STUN Binding Request (as used by WebRTC calls)',
+    'cps_preset_dtls':'DTLS 1.2 ClientHello (WebRTC, Zoom), random field changes',
     'cps_preset_quictls':'QUIC Initial with a genuine ClientHello and SNI (1200 bytes)',
     'cps_preset_quic':'QUIC Initial — shape only, random payload (short notation)',
     'cps_host':'Server name for SNI (QUIC template with ClientHello)',
@@ -618,6 +620,7 @@ ICONS = {
     'logout': '<path d="M10 17l5-5-5-5M15 12H3"/><path d="M12 3h7a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-7"/>',
     'lock': '<rect x="4" y="10" width="16" height="12" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/>',
     'activity': '<path d="M3 12h4l3-7 4 14 3-7h4"/>',
+    'link': '<path d="M10 13a5 5 0 0 0 7.5.5l3-3a5 5 0 0 0-7-7l-1.7 1.7M14 11a5 5 0 0 0-7.5-.5l-3 3a5 5 0 0 0 7 7l1.7-1.7"/>',
     'search': '<circle cx="11" cy="11" r="7"/><path d="m20 20-4-4"/>',
     'clock': '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
     'calendar': '<rect x="3" y="5" width="18" height="16" rx="2"/><path d="M16 3v4M8 3v4M3 11h18"/>',
@@ -679,7 +682,7 @@ def controller_message(lang, message):
 NOTIFY_GROUPS = ('server', 'clients', 'security', 'backups')
 # The Telegram notification cards: (group, icon, events). Same keys as awg31bot.EVENTS.
 TG_EVENT_GROUPS = (
-    ('server', 'server', ('server_state', 'module', 'kernel', 'panel', 'update')),
+    ('server', 'server', ('server_state', 'module', 'kernel', 'panel', 'update', 'rotation')),
     ('clients', 'users', ('client_auto', 'client_expiring', 'client_quota', 'invite')),
     ('security', 'shield', ('login', 'login_failed', 'password', 'owner_export', 'totp_recovery')),
     ('backups', 'archive', ('backup_created', 'backup_failed', 'upload_failed')),
@@ -1224,7 +1227,7 @@ def obfuscation_generate(request: Request, interface: str = '', timing_ranges: b
     return Response(json.dumps(params),media_type='application/json',
                     headers={'Cache-Control':'no-store'})
 
-CPS_PRESETS = ('random', 'dns', 'stun', 'quictls', 'quic')
+CPS_PRESETS = ('random', 'dns', 'stun', 'dtls', 'quictls', 'quic')
 CPS_SNI_SUGGESTIONS = ('www.google.com', 'www.cloudflare.com', 'www.youtube.com', 'yandex.ru', 'vk.com')
 CPS_DNS_NAMES = ('www.google.com', 'www.cloudflare.com', 'www.microsoft.com', 'www.apple.com',
                  'www.wikipedia.org', 'www.github.com')
@@ -1243,6 +1246,9 @@ def cps_value(preset='random', host=''):
     if preset == 'stun':
         # RFC 5389 Binding Request: type, zero length, magic cookie, 96-bit transaction ID.
         return '<b 0x000100002112a442><r 12>'
+    if preset == 'dtls':
+        # DTLS 1.2 ClientHello of a WebRTC call (use_srtp), with a fresh random field.
+        return dtls_client_hello()
     if preset == 'quictls':
         # A complete QUIC v1 Initial with a TLS 1.3 ClientHello for `host`: unlike
         # the shape-only template below, it survives decryption by a middlebox.
@@ -1992,7 +1998,7 @@ def server_content(request: Request, section: str = 'overview'):
               {policy_extra_fields({'_lang':lang}, 'new')}
             </div>
             <label class="check-field"><input type="checkbox" name="owner_export" value="1"><span>{h(t('owner_export'))}</span></label>
-            {cps_block('new', {}, False, lang)}
+            {cps_block('new', *mask_defaults(state), lang)}
           </div>
           <div class="modal-footer"><button class="btn btn-primary" type="submit">{icon('plus',16)}{h(t('add_client_submit'))}</button></div>
           </form>
@@ -2110,6 +2116,7 @@ def server_content(request: Request, section: str = 'overview'):
         form_field('dns', state['dns'], t('client_dns')),
         switch_field('client-to-client', 'client_to_client', 'c2c', state, lang),
         switch_field('host-access', 'host_access', 'host', state, lang),
+        switch_field('mss-clamp', 'mss_clamp', 'mss', state, lang, order=('off', 'on')),
         *([switch_field('private-access', 'private_access', 'private', state, lang),
            switch_field('ipv6-block', 'ipv6_block', 'ipv6', state, lang, order=('off', 'on'))]
           if state.get('mode') == 'full' else []),
@@ -2142,7 +2149,7 @@ def server_content(request: Request, section: str = 'overview'):
         <div class="fields-grid config-fields">{fields}</div>{advanced}
         <div class="config-savebar"><span>{icon('info',16)}{h(t('settings_hint'))}</span>
         <button class="btn btn-primary" type="submit">{icon('check',18)}{h(t('save_restart'))}</button></div>
-        </form></section>'''
+        </form></section>''' + rotation_card(request, state, t)
     section_titles={'overview':t('server_home'), 'clients':t('server_clients'),
                     'monitoring':t('server_monitor'), 'settings':t('server_settings'),
                     'servers':t('all_servers')}
@@ -2175,6 +2182,9 @@ def server_content(request: Request, section: str = 'overview'):
           <section class="card server-connection-card"><div class="server-home-top"><h2>{h('Подключение' if lang=='ru' else 'Connection')}</h2>
             <a class="quiet-link" href="/servers/{h(state['interface'])}/settings">{h(t('server_settings'))}{icon('chevron-right',15)}</a></div>
             <dl class="server-details">{details_html}</dl>
+            <form method="post" action="/servers/{h(state['interface'])}/probe" class="probe-form">{csrf(request)}
+            <button class="btn btn-secondary btn-small" type="submit" data-busy-text="{h(t('probe_running'))}">{icon('activity',15)}{h(t('probe_button'))}</button>
+            <small>{h(t('probe_hint'))}</small></form>
           </section></div>'''
     if section=='monitoring':
         section_html = '<div class="server-monitor-stack">' + head[head.index('<section class="card graph-card"'):head.rfind('</section></div>')+10] + history_html + '</div>'
@@ -2338,7 +2348,7 @@ async def settings(request: Request, interface: str = ''):
     form=await request.form()
     require_csrf(request,form.get('csrf',''))
     lang=lang_of(request)
-    payload={k: str(form[k]) for k in ('endpoint','port','mtu','dns','client_to_client','private_access','ipv6_block','host_access') if k in form}
+    payload={k: str(form[k]) for k in ('endpoint','port','mtu','dns','client_to_client','private_access','ipv6_block','host_access','mss_clamp') if k in form}
     payload.update({k: str(form[k]) for k in OBF_EDIT_FIELDS if k in form})
     try:
         control(request,'settings',payload)
@@ -2694,6 +2704,7 @@ def access_card(request, name, obj, t):
           <p class="access-hint">{h(t('rekey_hint'))}</p>
           <form method="post" action="/client/{name_url}/rekey" data-confirm="{h(t('rekey_confirm'))}">{csrf(request)}
           <button class="btn btn-danger" type="submit">{icon('restart',16)}{h(t('rekey_button'))}</button></form></div>
+        {subscription_block(request, name, obj, t)}
       </div></section>'''
 
 
@@ -2879,7 +2890,7 @@ async def totp_recovery_route(request: Request):
     return recovery_codes_page(request, result.get('recovery_codes', []), lambda key: tr(lang, key), '/maintenance?tab=security')
 
 TEXT['ru'].update({
-    'access_title': 'Доступ: приглашение и ключ',
+    'access_title': 'Доступ: приглашение, ключ, подписка',
     'invite_title': 'Пригласить в Telegram-бота',
     'invite_hint': 'Одноразовая ссылка на бота. Человек открывает её, нажимает «Старт» и становится владельцем клиента: '
                    'видит состояние, трафик и срок, а если разрешено — сам получает конфигурацию. Узнавать его Telegram ID не нужно.',
@@ -2926,7 +2937,7 @@ TEXT['ru'].update({
     'tg_e_invite': 'Приглашение использовано', 'tg_e_totp_recovery': 'Вход по резервному коду',
 })
 TEXT['en'].update({
-    'access_title': 'Access: invitation and key',
+    'access_title': 'Access: invitation, key, subscription',
     'invite_title': 'Invite to the Telegram bot',
     'invite_hint': 'A one-time link to the bot. The person opens it, presses Start and becomes the owner of the client: '
                    'they see its state, traffic and expiry and, if allowed, get the configuration themselves. No need to learn their Telegram ID.',
@@ -2971,6 +2982,495 @@ TEXT['en'].update({
     'recovery_new': 'Create new recovery codes', 'recovery_new_hint': 'The previous codes stop working.',
     'login_code_hint': 'Or a recovery code like abcde-fghjk',
     'tg_e_invite': 'Invitation used', 'tg_e_totp_recovery': 'Sign-in with a recovery code',
+})
+
+
+# ---------------------------------------------------------------- 0.17: routers, rotation, masking, probe
+NGINX_SITE = Path(os.environ.get('AWG31_NGINX_SITE', '/etc/nginx/conf.d/awg31-panel.conf'))
+SUB_TOKEN_RE = re.compile(r'^[A-Za-z0-9_-]{40,64}$')
+_sub_hits = {}                # client address -> times of recent requests
+_sub_failures = {}            # client address -> times of recent unknown tokens
+
+
+def public_site():
+    """The HTTPS address Nginx serves the panel on, read from the site Nginx was set up with."""
+    try:
+        text = NGINX_SITE.read_text()
+    except OSError:
+        return {}
+    host = re.search(r'^\s*server_name\s+([A-Za-z0-9.-]+)\s*;', text, re.M)
+    port = re.search(r'^\s*listen\s+(?:[0-9.]+:)?([0-9]+)\s+ssl', text, re.M)
+    cert = re.search(r'^\s*ssl_certificate\s+(/[^;\s]+)\s*;', text, re.M)
+    if not host or not port:
+        return {}
+    number = int(port.group(1))
+    base = f'https://{host.group(1)}' + ('' if number == 443 else f':{number}')
+    return {'base': base, 'cert': cert.group(1) if cert else '', 'sub_location': 'location /sub/' in text}
+
+
+def certificate_pin(path):
+    """sha256//… of a self-signed certificate's public key, so a router can trust exactly this one.
+    Empty for a certificate from a public CA (it renews, and curl checks it the usual way)."""
+    if not path:
+        return ''
+    try:
+        names = subprocess.run(['openssl', 'x509', '-in', path, '-noout', '-subject', '-issuer', '-nameopt', 'compat'],
+                               capture_output=True, text=True, timeout=10)
+        lines = dict(line.split('=', 1) for line in names.stdout.splitlines() if '=' in line)
+        if names.returncode or lines.get('subject', '').strip() != lines.get('issuer', '').strip():
+            return ''
+        pub = subprocess.run(['openssl', 'x509', '-in', path, '-noout', '-pubkey'], capture_output=True, timeout=10)
+        der = subprocess.run(['openssl', 'pkey', '-pubin', '-outform', 'der'], input=pub.stdout, capture_output=True, timeout=10)
+        if pub.returncode or der.returncode or not der.stdout:
+            return ''
+        return 'sha256//' + base64.b64encode(hashlib.sha256(der.stdout).digest()).decode()
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return ''
+
+
+def watchdog_script(url, pin, lang):
+    """A small POSIX sh script for a router or container: it keeps the tunnel's .conf current."""
+    note = ('Обновляет конфигурацию туннеля по ссылке-подписке AmneziaWG 3.1 Console.' if lang == 'ru'
+            else 'Keeps the tunnel configuration current from an AmneziaWG 3.1 Console subscription.')
+    return f'''#!/bin/sh
+# {note}
+#   sh awg-sub.sh          check once (for cron: */5 * * * *)
+#   sh awg-sub.sh --loop   check every INTERVAL seconds
+# Needs curl (BusyBox wget works only for a certificate from a public CA).
+URL='{url}'
+PIN='{pin}'
+IFACE="${{AWG_IFACE:-awg0}}"                                   # the tunnel interface = the .conf file name
+CONF="${{AWG_CONF:-/etc/amnezia/amneziawg/$IFACE.conf}}"
+INTERVAL="${{AWG_INTERVAL:-300}}"
+STALE="${{AWG_STALE:-180}}"                                    # seconds without a handshake = tunnel broken
+
+log() {{ echo "awg-sub: $*"; command -v logger >/dev/null 2>&1 && logger -t awg-sub "$*"; return 0; }}
+
+fetch() {{  # $1 = file; prints the HTTP status
+    etag=''; [ -f "$CONF.etag" ] && etag="$(cat "$CONF.etag")"
+    if command -v curl >/dev/null 2>&1; then
+        if [ -n "$PIN" ]; then
+            curl -sS --max-time 25 -k --pinnedpubkey "$PIN" -H "If-None-Match: $etag" -D "$1.h" -o "$1" -w '%{{http_code}}' "$URL" 2>/dev/null || echo 000
+        else
+            curl -sS --max-time 25 -H "If-None-Match: $etag" -D "$1.h" -o "$1" -w '%{{http_code}}' "$URL" 2>/dev/null || echo 000
+        fi
+    elif [ -z "$PIN" ] && wget -q -T 25 -O "$1" "$URL"; then
+        echo 200
+    else
+        echo 000
+    fi
+}}
+
+stale() {{
+    last="$(awg show "$IFACE" latest-handshakes 2>/dev/null | awk '{{print $2}}' | sort -n | tail -n 1)"
+    [ -z "$last" ] || [ "$last" -eq 0 ] || [ $(( $(date +%s) - last )) -gt "$STALE" ]
+}}
+
+check() {{
+    tmp="$CONF.new"
+    code="$(fetch "$tmp")"
+    if [ "$code" = 000 ] && stale; then
+        # The broken tunnel may carry the default route: ask again without it.
+        awg-quick down "$IFACE" >/dev/null 2>&1
+        code="$(fetch "$tmp")"
+        [ "$code" = 200 ] || awg-quick up "$IFACE" >/dev/null 2>&1
+    fi
+    case "$code" in
+        200)
+            if grep -q '^\\[Interface\\]' "$tmp" && ! cmp -s "$tmp" "$CONF"; then
+                [ -f "$CONF" ] && cp "$CONF" "$CONF.bak"
+                mv "$tmp" "$CONF"; chmod 600 "$CONF"
+                sed -n 's/^[Ee][Tt][Aa][Gg]: *//p' "$tmp.h" 2>/dev/null | tr -d '\\r' > "$CONF.etag"
+                log "new configuration, restarting $IFACE"
+                awg-quick down "$IFACE" >/dev/null 2>&1
+                awg-quick up "$IFACE" || {{ log 'the new configuration failed, going back'; mv "$CONF.bak" "$CONF"; awg-quick up "$IFACE"; }}
+            else
+                sed -n 's/^[Ee][Tt][Aa][Gg]: *//p' "$tmp.h" 2>/dev/null | tr -d '\\r' > "$CONF.etag"
+                ip link show "$IFACE" >/dev/null 2>&1 || awg-quick up "$IFACE" >/dev/null 2>&1
+            fi ;;
+        304) ip link show "$IFACE" >/dev/null 2>&1 || awg-quick up "$IFACE" >/dev/null 2>&1 ;;
+        403) log 'the client is switched off in the panel' ;;
+        404) log 'the subscription link is no longer valid: ask for a new one' ;;
+        *) log "the subscription is not reachable (HTTP $code)" ;;
+    esac
+    rm -f "$tmp" "$tmp.h"
+}}
+
+if [ "${{1:-}}" = --loop ]; then
+    while :; do check; sleep "$INTERVAL"; done
+else
+    check
+fi
+'''
+
+
+def client_address(request):
+    """The router's address. The panel listens on 127.0.0.1 only, so a request from there
+    came through Nginx, which puts the real address into X-Real-IP."""
+    peer = request.client.host if request.client else 'unknown'
+    if peer in ('127.0.0.1', '::1'):
+        forwarded = request.headers.get('x-real-ip', '').strip()
+        if re.fullmatch(r'[0-9A-Fa-f:.]{2,45}', forwarded):
+            return forwarded
+    return str(peer)[:80]
+
+
+def sub_allowed(address):
+    """30 requests a minute per address; after 10 unknown tokens in 15 minutes, the address waits."""
+    now = time.monotonic()
+    if len(_sub_hits) > 4096:
+        for key in [k for k, v in _sub_hits.items() if not v or now - v[-1] > 60]: _sub_hits.pop(key, None)
+    if len(_sub_failures) > 4096:
+        for key in [k for k, v in _sub_failures.items() if not v or now - v[-1] > 900]: _sub_failures.pop(key, None)
+    hits = [x for x in _sub_hits.get(address, []) if now - x < 60]
+    failures = [x for x in _sub_failures.get(address, []) if now - x < 900]
+    _sub_failures[address] = failures
+    if len(hits) >= 30 or len(failures) >= 10:
+        return False
+    _sub_hits[address] = hits + [now]
+    return True
+
+
+@app.get('/sub/{interface}/{token}')
+def subscription_get(request: Request, interface: str, token: str):
+    """A router's configuration by its subscription token. No session: the token is the key."""
+    address = client_address(request)
+    plain = {'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff'}
+    if not sub_allowed(address):
+        return Response('Too many requests\n', status_code=429, media_type='text/plain', headers={**plain, 'Retry-After': '60'})
+    if not SERVER_RE.fullmatch(interface) or not SUB_TOKEN_RE.fullmatch(token):
+        _sub_failures.setdefault(address, []).append(time.monotonic())
+        return Response('Not found\n', status_code=404, media_type='text/plain', headers=plain)
+    try:
+        result = ctl('sub-fetch', {'interface': interface, 'token': token, 'addr': address})
+    except RuntimeError:
+        _sub_failures.setdefault(address, []).append(time.monotonic())
+        return Response('Not found\n', status_code=404, media_type='text/plain', headers=plain)
+    if not result.get('found'):
+        _sub_failures.setdefault(address, []).append(time.monotonic())
+        return Response('Not found\n', status_code=404, media_type='text/plain', headers=plain)
+    if not result.get('enabled'):
+        return Response('The client is switched off\n', status_code=403, media_type='text/plain', headers=plain)
+    etag = f'"{result["etag"]}"'
+    headers = {**plain, 'ETag': etag}
+    if etag in [x.strip() for x in request.headers.get('if-none-match', '').split(',')]:
+        return Response(status_code=304, headers=headers)
+    headers['Content-Disposition'] = f'inline; filename="{interface}-{result["name"]}.conf"'
+    return Response(result['config'], media_type='text/plain; charset=utf-8', headers=headers)
+
+
+def subscription_block(request, name, obj, t):
+    name_url = quote(name, safe='')
+    site = public_site()
+    sub = obj.get('subscription') or {}
+    if not site:
+        body = f'<p class="info-line">{icon("info",14)}<span>{h(t("sub_no_https"))}</span></p>'
+    else:
+        warn = '' if site.get('sub_location') else f'<p class="info-line">{icon("alert",14)}<span>{h(t("sub_no_location"))}</span></p>'
+        if sub.get('active'):
+            last = (t('sub_last').format(when=str(sub.get('last_fetch', ''))[:16].replace('T', ' '), addr=sub.get('last_addr') or '—',
+                                          n=sub.get('fetches', 0)) if sub.get('last_fetch') else t('sub_never'))
+            body = (f'{warn}<p class="access-state is-on">{icon("check",15)}{h(t("sub_active").format(when=str(sub.get("created",""))[:10]))}</p>'
+                    f'<p class="access-hint">{h(last)}</p><div class="access-row">'
+                    f'<form method="post" action="/client/{name_url}/subscription" class="inline" data-confirm="{h(t("sub_renew_confirm"))}">{csrf(request)}'
+                    f'<button class="btn btn-secondary btn-small" type="submit">{h(t("sub_renew"))}</button></form>'
+                    f'<form method="post" action="/client/{name_url}/subscription/revoke" class="inline" data-confirm="{h(t("sub_revoke_confirm"))}">{csrf(request)}'
+                    f'<button class="btn btn-secondary btn-small" type="submit">{h(t("sub_revoke"))}</button></form></div>')
+        else:
+            body = (f'{warn}<form method="post" action="/client/{name_url}/subscription">{csrf(request)}'
+                    f'<button class="btn btn-primary" type="submit">{icon("link",16)}{h(t("sub_create"))}</button></form>')
+    return (f'<div class="access-block"><h3>{icon("link",17)}{h(t("sub_title"))}</h3>'
+            f'<p class="access-hint">{h(t("sub_hint"))}</p>{body}</div>')
+
+
+@app.post('/client/{name}/subscription')
+@app.post('/servers/{interface}/clients/{name}/subscription')
+async def subscription_create(request: Request, name: str, interface: str = ''):
+    form = await request.form(); require_csrf(request, form.get('csrf', ''))
+    if not CLIENT_NAME_RE.fullmatch(name): raise HTTPException(404)
+    lang = lang_of(request)
+    t = lambda key: tr(lang, key)
+    site = public_site()
+    if not site:
+        return error_page(request, t('error'), RuntimeError(t('sub_no_https')))
+    try: result = control(request, 'sub-token', {'name': name})
+    except RuntimeError as exc: return error_page(request, t('error'), exc)
+    server = selected_server(request)
+    audit_event('subscription_created', f'{server}/{name}')
+    url = f'{site["base"]}/sub/{server}/{result["token"]}'
+    pin = certificate_pin(site.get('cert', ''))
+    script = watchdog_script(url, pin, lang)
+    body = f'''<section class="card detail-card invite-card">
+      <div class="section-title"><h2>{icon('link',20)}{h(t('sub_ready'))}: <span class="mono">{h(name)}</span></h2></div>
+      <p class="info-line">{icon('info',14)}<span>{h(t('sub_ready_hint'))}</span></p>
+      <label class="field" for="sub-link"><span>{h(t('sub_link'))}</span><input id="sub-link" class="mono" readonly value="{h(url)}"></label>
+      <div class="cfgx-actions"><button class="btn btn-primary" type="button" data-copy-target="sub-link">{h(t('copy'))}</button>
+      <a class="btn btn-secondary" href="{h(scoped_client(request, name))}">{h(t('invite_back'))}</a></div>
+      {f'<p class="info-line">{icon("lock",14)}<span>{h(t("sub_pinned"))}</span></p>' if pin else ''}
+      <h3 class="sub-script-title">{h(t('sub_script'))}</h3>
+      <p class="access-hint">{h(t('sub_script_hint'))}</p>
+      <textarea id="sub-script" class="extra-text sub-script" rows="14" readonly spellcheck="false">{h(script)}</textarea>
+      <div class="cfgx-actions"><button class="btn btn-secondary" type="button" data-copy-target="sub-script">{h(t('copy'))}</button>
+      <button class="btn btn-secondary" type="button" data-download-from="sub-script" data-download-name="awg-sub.sh">{icon('download',15)}{h(t('sub_download'))}</button></div>
+      <p class="access-hint">{h(t('invite_once'))}</p>
+      <p class="sr-only" aria-live="polite" id="copy-status" data-copy-ok="{h(t('copy_ok'))}" data-copy-failed="{h(t('copy_failed'))}"></p>
+    </section>'''
+    return page(t('sub_ready'), body, request)
+
+
+@app.post('/client/{name}/subscription/revoke')
+@app.post('/servers/{interface}/clients/{name}/subscription/revoke')
+async def subscription_revoke(request: Request, name: str, interface: str = ''):
+    form = await request.form(); require_csrf(request, form.get('csrf', ''))
+    if not CLIENT_NAME_RE.fullmatch(name): raise HTTPException(404)
+    try: control(request, 'sub-token', {'name': name, 'action': 'revoke'})
+    except RuntimeError as exc: return error_page(request, tr(lang_of(request), 'error'), exc)
+    audit_event('subscription_revoked', f'{selected_server(request)}/{name}')
+    return RedirectResponse(scoped_client(request, name), status_code=303)
+
+
+# Masking profiles: a port plus an I1 of the same kind for every client.
+MASK_PROFILES = (('quic', 443, 'quic'), ('stun', 3478, 'stun'), ('dtls', 8801, 'dtls'), ('dns', 53, 'dns'))
+
+
+def mask_defaults(state):
+    """The new-client form starts with an I1 of the server's masking profile, when there is one."""
+    preset = {key: preset for key, _, preset in MASK_PROFILES}.get(state.get('mask_profile', 'none'))
+    return ({'i1': cps_value(preset)}, True) if preset else ({}, False)
+
+
+def dtls_client_hello():
+    """A DTLS 1.2 ClientHello as a WebRTC browser sends it (use_srtp included); the random field changes on every send."""
+    suites = bytes.fromhex('c02bc02fcca9cca8c009c013c00ac014009c002f0035')
+    extensions = b''.join((
+        bytes.fromhex('00170000'),                                 # extended_master_secret
+        bytes.fromhex('ff01000100'),                               # renegotiation_info
+        bytes.fromhex('000a0008') + bytes.fromhex('0006001d00170018'),   # supported_groups x25519, P-256, P-384
+        bytes.fromhex('000b00020100'),                             # ec_point_formats
+        bytes.fromhex('000d0014') + bytes.fromhex('0012040308040401050308050501080606010201'),  # signature_algorithms
+        bytes.fromhex('000e0007') + bytes.fromhex('000400070001') + b'\x00',  # use_srtp: AEAD_AES_128_GCM, AES128_CM_SHA1_80
+    ))
+    tail = (b'\x00' + b'\x00' + len(suites).to_bytes(2, 'big') + suites + b'\x01\x00'
+            + len(extensions).to_bytes(2, 'big') + extensions)
+    body_len = 2 + 32 + len(tail)
+    handshake = b'\x01' + body_len.to_bytes(3, 'big') + b'\x00\x00' + b'\x00\x00\x00' + body_len.to_bytes(3, 'big')
+    record = b'\x16\xfe\xff' + b'\x00\x00' + b'\x00' * 6 + (len(handshake) + body_len).to_bytes(2, 'big')
+    return '<b 0x' + (record + handshake + b'\xfe\xfd').hex() + '><r 32><b 0x' + tail.hex() + '>'
+
+
+@app.post('/servers/{interface}/mask')
+async def server_mask(request: Request, interface: str):
+    form = await request.form(); require_csrf(request, form.get('csrf', ''))
+    if not SERVER_RE.fullmatch(interface): raise HTTPException(404)
+    profile = str(form.get('profile', ''))
+    choices = {key: (port, preset) for key, port, preset in MASK_PROFILES}
+    if profile != 'none' and profile not in choices: raise HTTPException(422)
+    lang = lang_of(request)
+    try:
+        state = ctl('list', {'interface': interface})
+        values = ({c['name']: cps_value(choices[profile][1]) for c in state.get('clients', [])}
+                  if profile != 'none' and form.get('clients') == '1' else {})
+        port = choices[profile][0] if profile != 'none' and form.get('use_port') == '1' else 0
+        result = ctl('mask-apply', {'interface': interface, 'profile': profile, 'i1': values, 'port': port})
+    except RuntimeError as exc:
+        return error_page(request, tr(lang, 'error'), exc)
+    audit_event('mask_profile_applied', f'{interface}: {profile}, {len(result.get("updated", []))} clients, port {result.get("port")}')
+    return RedirectResponse(f'/servers/{interface}/settings?masked=1#rotation', status_code=303)
+
+
+@app.post('/servers/{interface}/rotate')
+async def server_rotate(request: Request, interface: str):
+    form = await request.form(); require_csrf(request, form.get('csrf', ''))
+    if not SERVER_RE.fullmatch(interface): raise HTTPException(404)
+    parts = [p for p in ('port', 'obfuscation', 'key') if form.get(p) == '1']
+    if not parts: raise HTTPException(422)
+    try: result = ctl('rotate', {'interface': interface, 'parts': parts})
+    except RuntimeError as exc: return error_page(request, tr(lang_of(request), 'error'), exc)
+    audit_event('server_rotated', f'{interface}: {", ".join(parts)}, port {result.get("old_port")} → {result.get("port")}')
+    return RedirectResponse(f'/servers/{interface}/settings?rotated=1#rotation', status_code=303)
+
+
+@app.post('/servers/{interface}/rotate-schedule')
+async def server_rotate_schedule(request: Request, interface: str):
+    form = await request.form(); require_csrf(request, form.get('csrf', ''))
+    if not SERVER_RE.fullmatch(interface): raise HTTPException(404)
+    try: days = int(form.get('days', 0))
+    except (TypeError, ValueError): raise HTTPException(422) from None
+    parts = [p for p in ('port', 'obfuscation', 'key') if form.get(p) == '1'] or ['port', 'obfuscation']
+    try: ctl('rotate-schedule', {'interface': interface, 'days': days, 'parts': parts})
+    except RuntimeError as exc: return error_page(request, tr(lang_of(request), 'error'), exc)
+    audit_event('settings_changed', f'{interface}: rotation every {days} d ({", ".join(parts)})')
+    return RedirectResponse(f'/servers/{interface}/settings?scheduled=1#rotation', status_code=303)
+
+
+def rotation_card(request, state, t):
+    iface = state['interface']
+    rotation = state.get('rotation') or {}
+    clients = state.get('clients', [])
+    routers = sum(1 for c in clients if c.get('subscription'))
+    notice = ''
+    for key, text in (('rotated', 'rot_done'), ('masked', 'mask_done'), ('scheduled', 'rot_scheduled')):
+        if request.query_params.get(key) == '1':
+            notice = f'<p class="bulk-notice" role="status">{icon("check",16)}<span>{h(t(text))}</span></p>'
+    current = state.get('mask_profile', 'none')
+    options = ''.join(f'<option value="{key}"{" selected" if key == current else ""}>{h(t("mask_" + key))} — {port}/udp</option>'
+                      for key, port, _ in MASK_PROFILES)
+    options = f'<option value="none"{" selected" if current in ("none", "") else ""}>{h(t("mask_none"))}</option>' + options
+    parts = set(rotation.get('parts') or ['port', 'obfuscation'])
+    checks = lambda chosen: ''.join(
+        f'<label class="check-field"><input type="checkbox" name="{p}" value="1"{" checked" if p in chosen else ""}><span>{h(t("rot_" + p))}</span></label>'
+        for p in ('port', 'obfuscation', 'key'))
+    days = ''.join(f'<option value="{d}"{" selected" if d == rotation.get("days", 0) else ""}>{h(t("rot_every_" + str(d)))}</option>'
+                   for d in (0, 1, 3, 7, 14, 30))
+    last = str(rotation.get('rotated_at') or '')[:16].replace('T', ' ')
+    return f'''{notice}<section class="card settings-card rotation-card" id="rotation">
+      <div class="config-group-header"><div><h2>{h(t('rot_title'))}</h2><p>{h(t('rot_intro'))}</p></div></div>
+      <p class="info-line">{icon('info',14)}<span>{h(t('rot_routers').format(n=routers, total=len(clients)))}</span></p>
+      <div class="rotation-grid">
+        <form method="post" action="/servers/{h(iface)}/mask" class="rotation-block" data-confirm="{h(t('mask_confirm'))}">{csrf(request)}
+          <h3>{icon('shield',17)}{h(t('mask_title'))}</h3><p class="access-hint">{h(t('mask_hint'))}</p>
+          <label class="field"><span>{h(t('mask_profile'))}</span><select name="profile">{options}</select></label>
+          <label class="check-field"><input type="checkbox" name="clients" value="1" checked><span>{h(t('mask_clients'))}</span></label>
+          <label class="check-field"><input type="checkbox" name="use_port" value="1"><span>{h(t('mask_port'))}</span></label>
+          <button class="btn btn-secondary" type="submit">{h(t('mask_apply'))}</button></form>
+        <form method="post" action="/servers/{h(iface)}/rotate" class="rotation-block" data-confirm="{h(t('rot_confirm'))}">{csrf(request)}
+          <h3>{icon('restart',17)}{h(t('rot_now_title'))}</h3><p class="access-hint">{h(t('rot_now_hint'))}</p>
+          {checks({'port', 'obfuscation'})}
+          <p class="access-hint">{h(t('rot_last').format(when=last) if last else t('rot_never'))}</p>
+          <button class="btn btn-danger" type="submit">{icon('restart',16)}{h(t('rot_now'))}</button></form>
+        <form method="post" action="/servers/{h(iface)}/rotate-schedule" class="rotation-block">{csrf(request)}
+          <h3>{icon('calendar',17)}{h(t('rot_schedule'))}</h3><p class="access-hint">{h(t('rot_schedule_hint'))}</p>
+          <label class="field"><span>{h(t('rot_period'))}</span><select name="days">{days}</select></label>
+          {checks(parts)}
+          <button class="btn btn-secondary" type="submit">{h(t('rot_save'))}</button></form>
+      </div></section>'''
+
+
+@app.post('/servers/{interface}/probe')
+async def server_probe(request: Request, interface: str):
+    form = await request.form(); require_csrf(request, form.get('csrf', ''))
+    if not SERVER_RE.fullmatch(interface): raise HTTPException(404)
+    lang = lang_of(request)
+    t = lambda key: tr(lang, key)
+    try: result = ctl('probe', {'interface': interface, 'seconds': 15})
+    except RuntimeError as exc: return error_page(request, t('error'), exc)
+    audit_event('packet_probe', f'{interface}: in {result.get("incoming", 0)}, out {result.get("outgoing", 0)}')
+    incoming, outgoing = int(result.get('incoming', 0)), int(result.get('outgoing', 0))
+    verdict, tone = (('probe_none', 'is-warn') if not incoming else ('probe_no_answer', 'is-warn') if not outgoing else ('probe_ok', ''))
+    sources = ''.join(f'<li><span class="mono">{h(addr)}</span> — {int(count)}</li>' for addr, count in result.get('sources', []))
+    sizes = ', '.join(f'{int(size)} B × {int(count)}' for size, count in result.get('sizes', []))
+    body = f'''<section class="card detail-card probe-card">
+      <div class="section-title"><h2>{icon('activity',20)}{h(t('probe_title'))}: {h(interface)}, {int(result.get('port', 0))}/udp</h2></div>
+      <div class="probe-numbers"><div><strong>{incoming}</strong><span>{h(t('probe_in'))}</span></div>
+      <div><strong>{outgoing}</strong><span>{h(t('probe_out'))}</span></div><div><strong>{int(result.get('seconds', 15))} {'с' if lang == 'ru' else 's'}</strong><span>{h(t('probe_time'))}</span></div></div>
+      <p class="bulk-notice {tone}" role="status">{icon('info',16)}<span>{h(t(verdict).format(port=result.get('port')))}</span></p>
+      {f'<h3>{h(t("probe_sources"))}</h3><ul class="probe-list">{sources}</ul>' if sources else ''}
+      {f'<p class="access-hint">{h(t("probe_sizes"))}: <span class="mono">{h(sizes)}</span></p>' if sizes else ''}
+      <p class="access-hint">{h(t('probe_note').format(init=result.get('expected_init'), jmin=result.get('junk', ['?', '?'])[0], jmax=result.get('junk', ['?', '?'])[1]))}</p>
+      <form method="post" action="/servers/{h(interface)}/probe">{csrf(request)}
+      <button class="btn btn-primary" type="submit" data-busy-text="{h(t('probe_running'))}">{icon('activity',16)}{h(t('probe_again'))}</button>
+      <a class="btn btn-secondary" href="/servers/{h(interface)}/overview">{h(t('back'))}</a></form>
+    </section>'''
+    return page(t('probe_title'), body, request)
+
+
+TEXT['ru'].update({
+    'sub_title': 'Подписка для роутера',
+    'sub_hint': 'Постоянная ссылка, по которой роутер или контейнер сам забирает актуальную конфигурацию: после смены порта, '
+                'обфускации или ключа он подключится снова без вашего участия. Ссылка содержит закрытый ключ клиента — только для HTTPS.',
+    'sub_no_https': 'Подписка работает через HTTPS-адрес панели, а он не настроен. Настройте его командой sudo awg31 nginx.',
+    'sub_no_location': 'В настройках Nginx нет адреса /sub/: обновите консоль (sudo awg31 update), он добавится сам.',
+    'sub_create': 'Включить подписку', 'sub_active': 'Подписка включена с {when}',
+    'sub_last': 'Последний запрос {when} UTC с {addr}, всего запросов: {n}', 'sub_never': 'Роутер ещё ни разу не обращался.',
+    'sub_renew': 'Новая ссылка', 'sub_renew_confirm': 'Выпустить новую ссылку? Прежняя перестанет работать сразу, роутер нужно будет перенастроить.',
+    'sub_revoke': 'Отключить', 'sub_revoke_confirm': 'Отключить подписку? Роутер больше не сможет забирать конфигурацию.',
+    'sub_ready': 'Подписка для роутера', 'sub_link': 'Ссылка-подписка',
+    'sub_ready_hint': 'Ссылка отдаёт текущий .conf клиента вместе с дополнительными строками. Если конфигурация не менялась, сервер отвечает «304 Not Modified», и роутер ничего не скачивает.',
+    'sub_pinned': 'Сертификат панели самоподписанный: в скрипт встроен отпечаток его ключа, и роутер доверяет только ему.',
+    'sub_script': 'Скрипт для роутера', 'sub_download': 'Скачать awg-sub.sh',
+    'sub_script_hint': 'Положите скрипт рядом с конфигурацией в контейнере (MikroTik, OpenWrt, Docker, Linux) и запускайте раз в 5 минут '
+                       '(cron: */5 * * * * sh /etc/amnezia/awg-sub.sh) или фоном: sh awg-sub.sh --loop. В начале скрипта укажите имя интерфейса туннеля (AWG_IFACE).',
+    'rot_title': 'Маскировка и смена параметров',
+    'rot_intro': 'Если порт или протокол начали блокировать: смените маскировку, порт, обфускацию или ключ сервера. Клиенты, их адреса и лимиты остаются.',
+    'rot_routers': 'Роутеров с подпиской: {n} из {total}. Они получат новые параметры сами, остальным клиентам нужно заново импортировать конфигурацию.',
+    'mask_title': 'Профиль маскировки', 'mask_profile': 'Профиль',
+    'mask_hint': 'Порт сервера и пакет I1 одного вида для всех клиентов. Профиль не гарантирует обход блокировок: проверяйте на своей сети.',
+    'mask_none': 'Без профиля', 'mask_quic': 'HTTP/3 (QUIC)', 'mask_stun': 'WebRTC / STUN', 'mask_dtls': 'DTLS 1.2 (WebRTC, Zoom)', 'mask_dns': 'DNS-запрос',
+    'mask_clients': 'Записать I1 этого вида всем клиентам (и новым тоже)', 'mask_port': 'Перевести сервер на порт профиля',
+    'mask_apply': 'Применить профиль',
+    'mask_confirm': 'Применить профиль? Конфигурации клиентов изменятся; при смене порта сервер перезапустится.',
+    'mask_done': 'Профиль маскировки применён. Клиентам без подписки нужно заново импортировать конфигурацию.',
+    'rot_now_title': 'Сменить сейчас', 'rot_now_hint': 'Новый случайный порт 20000–59999, новые параметры обфускации, при желании — новый ключ сервера. Сервер перезапустится.',
+    'rot_port': 'Порт', 'rot_obfuscation': 'Обфускация (S1–S4, H1–H4, ключ заголовков, Jc)', 'rot_key': 'Ключ сервера',
+    'rot_now': 'Сменить', 'rot_confirm': 'Сменить параметры сервера сейчас? Подключённые клиенты отключатся до получения новой конфигурации.',
+    'rot_last': 'Последняя смена: {when} UTC', 'rot_never': 'Параметры ещё не менялись.',
+    'rot_done': 'Параметры сервера сменены. Порт в облачном файрволе откройте сами; ufw и firewalld панель настроила.',
+    'rot_schedule': 'По расписанию', 'rot_period': 'Как часто',
+    'rot_schedule_hint': 'Удобно, когда клиенты — роутеры с подпиской: они подхватят новые параметры сами. Телефоны и компьютеры без подписки отключатся.',
+    'rot_every_0': 'Выключено', 'rot_every_1': 'Каждый день', 'rot_every_3': 'Раз в 3 дня', 'rot_every_7': 'Раз в неделю',
+    'rot_every_14': 'Раз в 2 недели', 'rot_every_30': 'Раз в 30 дней',
+    'rot_scheduled': 'Расписание сохранено.', 'rot_save': 'Сохранить расписание',
+    'mss_label': 'Подгонка TCP под MTU (clamp MSS)', 'mss_on': 'Включена', 'mss_off': 'Выключена',
+    'mss_hint': 'Сервер уменьшает размер TCP-сегментов клиентов под MTU туннеля. Лечит сайты, которые открываются не полностью.',
+    'probe_button': 'Проверить входящие пакеты (15 с)', 'probe_title': 'Входящие пакеты',
+    'probe_hint': 'Сервер 15 секунд слушает свой UDP-порт: видно, доходят ли пакеты клиента и отвечает ли сервер. Включите VPN на клиенте сразу после нажатия.',
+    'probe_in': 'пакетов от клиентов', 'probe_out': 'ответов сервера', 'probe_time': 'наблюдение',
+    'probe_none': 'Ни одного пакета на {port}/udp. Трафик не доходит до сервера: проверьте облачный файрвол и порт; если всё открыто — порт или протокол режет провайдер, попробуйте другой порт или профиль маскировки.',
+    'probe_no_answer': 'Пакеты доходят, но сервер не отвечает: у клиента другие ключи или параметры обфускации. Импортируйте на клиенте свежую конфигурацию.',
+    'probe_ok': 'Пакеты доходят, сервер отвечает: соединение на уровне сети работает.',
+    'probe_sources': 'Откуда', 'probe_sizes': 'Размеры пакетов',
+    'probe_note': 'Для сверки: рукопожатие клиента — {init} байт и больше, мусорные пакеты Jc — от {jmin} до {jmax} байт.',
+    'probe_running': 'Слушаю 15 секунд…', 'probe_again': 'Проверить ещё раз',
+    'tg_e_rotation': 'Смена параметров сервера',
+})
+TEXT['en'].update({
+    'sub_title': 'Subscription for a router',
+    'sub_hint': 'A permanent link from which a router or container fetches the current configuration by itself: after a change of port, '
+                'obfuscation or key it reconnects without you. The link carries the client’s private key: HTTPS only.',
+    'sub_no_https': 'Subscriptions work through the panel’s HTTPS address, and there is none. Set it up with sudo awg31 nginx.',
+    'sub_no_location': 'The Nginx site has no /sub/ location: update the console (sudo awg31 update) and it is added.',
+    'sub_create': 'Switch the subscription on', 'sub_active': 'Subscription on since {when}',
+    'sub_last': 'Last request {when} UTC from {addr}, {n} requests in all', 'sub_never': 'The router has not asked yet.',
+    'sub_renew': 'New link', 'sub_renew_confirm': 'Issue a new link? The previous one stops at once and the router must be set up again.',
+    'sub_revoke': 'Switch off', 'sub_revoke_confirm': 'Switch the subscription off? The router can no longer fetch its configuration.',
+    'sub_ready': 'Subscription for a router', 'sub_link': 'Subscription link',
+    'sub_ready_hint': 'The link returns the client’s current .conf with its extra lines. When nothing changed, the server answers 304 Not Modified and the router downloads nothing.',
+    'sub_pinned': 'The panel’s certificate is self-signed: the script carries the fingerprint of its key and the router trusts that one only.',
+    'sub_script': 'Script for the router', 'sub_download': 'Download awg-sub.sh',
+    'sub_script_hint': 'Put the script next to the configuration in the container (MikroTik, OpenWrt, Docker, Linux) and run it every 5 minutes '
+                       '(cron: */5 * * * * sh /etc/amnezia/awg-sub.sh) or in the background: sh awg-sub.sh --loop. Set the tunnel interface name (AWG_IFACE) at its top.',
+    'rot_title': 'Masking and parameter change',
+    'rot_intro': 'When the port or the protocol gets blocked: change the masking, the port, the obfuscation or the server key. Clients, their addresses and limits stay.',
+    'rot_routers': 'Routers with a subscription: {n} of {total}. They pick up new parameters by themselves; other clients must import the configuration again.',
+    'mask_title': 'Masking profile', 'mask_profile': 'Profile',
+    'mask_hint': 'The server port and an I1 packet of the same kind for every client. A profile does not guarantee getting past blocking: test it on your network.',
+    'mask_none': 'No profile', 'mask_quic': 'HTTP/3 (QUIC)', 'mask_stun': 'WebRTC / STUN', 'mask_dtls': 'DTLS 1.2 (WebRTC, Zoom)', 'mask_dns': 'DNS query',
+    'mask_clients': 'Write an I1 of this kind for every client (new ones too)', 'mask_port': 'Move the server to the profile’s port',
+    'mask_apply': 'Apply the profile',
+    'mask_confirm': 'Apply the profile? Client configurations change; a port change restarts the server.',
+    'mask_done': 'The masking profile is applied. Clients without a subscription must import the configuration again.',
+    'rot_now_title': 'Change now', 'rot_now_hint': 'A new random port 20000–59999, new obfuscation parameters and, if you like, a new server key. The server restarts.',
+    'rot_port': 'Port', 'rot_obfuscation': 'Obfuscation (S1–S4, H1–H4, header key, Jc)', 'rot_key': 'Server key',
+    'rot_now': 'Change', 'rot_confirm': 'Change the server parameters now? Connected clients drop until they get the new configuration.',
+    'rot_last': 'Last change: {when} UTC', 'rot_never': 'The parameters have not been changed yet.',
+    'rot_done': 'The server parameters changed. Open the port in a cloud firewall yourself; ufw and firewalld were set by the panel.',
+    'rot_schedule': 'On a schedule', 'rot_period': 'How often',
+    'rot_schedule_hint': 'Useful when the clients are routers with a subscription: they pick up the new parameters by themselves. Phones and computers without one drop.',
+    'rot_every_0': 'Off', 'rot_every_1': 'Every day', 'rot_every_3': 'Every 3 days', 'rot_every_7': 'Every week',
+    'rot_every_14': 'Every 2 weeks', 'rot_every_30': 'Every 30 days',
+    'rot_scheduled': 'The schedule is saved.', 'rot_save': 'Save the schedule',
+    'mss_label': 'Fit TCP to the MTU (MSS clamping)', 'mss_on': 'On', 'mss_off': 'Off',
+    'mss_hint': 'The server shrinks clients’ TCP segments to the tunnel MTU. Cures sites that load only partly.',
+    'probe_button': 'Check incoming packets (15 s)', 'probe_title': 'Incoming packets',
+    'probe_hint': 'For 15 seconds the server listens on its UDP port: you see whether a client’s packets arrive and whether the server answers. Switch the VPN on at the client right after pressing.',
+    'probe_in': 'packets from clients', 'probe_out': 'server answers', 'probe_time': 'watched',
+    'probe_none': 'Not a single packet on {port}/udp. Traffic does not reach the server: check the cloud firewall and the port; if everything is open, the provider drops the port or protocol: try another port or masking profile.',
+    'probe_no_answer': 'Packets arrive but the server does not answer: the client has other keys or obfuscation parameters. Import a fresh configuration on the client.',
+    'probe_ok': 'Packets arrive and the server answers: the connection works at the network level.',
+    'probe_sources': 'From', 'probe_sizes': 'Packet sizes',
+    'probe_note': 'For comparison: a client handshake is {init} bytes or more, Jc junk packets are {jmin} to {jmax} bytes.',
+    'probe_running': 'Listening for 15 seconds…', 'probe_again': 'Check again',
+    'tg_e_rotation': 'Server parameter change',
 })
 
 

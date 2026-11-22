@@ -75,6 +75,8 @@ fi
 port="$(systemctl cat awg31-panel.service | sed -nE 's/.*--port ([0-9]+).*/\1/p' | tail -n1)"
 [[ "$port" =~ ^[0-9]+$ ]] || die 'Cannot detect localhost panel port'
 source "$DIR/scripts/os-support.sh"
+say 'Kernel network settings for VPN routing (/etc/sysctl.d/96-awg31-network.conf)'
+awg31_network_sysctl
 say 'Updating the control helper'
 awg31_install_helper "$DIR" || say 'WARNING: the control helper did not start; the panel keeps working through sudo'
 systemctl restart awg31-panel.service
@@ -84,6 +86,9 @@ completed=1
 trap - EXIT
 install -d -o root -g root -m 755 /usr/local/libexec/awg31/scripts
 install -o root -g root -m 755 "$DIR/scripts/setup-nginx.sh" /usr/local/libexec/awg31/scripts/setup-nginx.sh
+if [[ -f /etc/nginx/conf.d/awg31-panel.conf ]] && command -v nginx >/dev/null 2>&1; then
+    bash "$DIR/scripts/setup-nginx.sh" --add-subscription || say 'WARNING: the Nginx site was not extended for subscriptions'
+fi
 install -o root -g root -m 644 "$DIR/scripts/os-support.sh" /usr/local/libexec/awg31/scripts/os-support.sh
 install -o root -g root -m 755 "$DIR/scripts/awg31-menu" /usr/local/bin/awg31
 install -o root -g root -m 755 "$DIR/scripts/uninstall.sh" /usr/local/libexec/awg31/scripts/uninstall.sh

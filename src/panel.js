@@ -1007,3 +1007,27 @@
   };
   setTimeout(tick, 1500);
 })();
+
+// 0.17: save a text field as a file (the router script) and a busy label on long checks.
+(() => {
+  'use strict';
+  for (const btn of document.querySelectorAll('[data-download-from]')) {
+    btn.addEventListener('click', () => {
+      const source = document.getElementById(btn.dataset.downloadFrom);
+      if (!source) return;
+      const url = URL.createObjectURL(new Blob([source.value], {type: 'text/x-sh'}));
+      const link = document.createElement('a');
+      link.href = url; link.download = btn.dataset.downloadName || 'download.txt';
+      document.body.appendChild(link); link.click(); link.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    });
+  }
+  for (const btn of document.querySelectorAll('button[data-busy-text]')) {
+    const form = btn.form;
+    if (!form) continue;
+    form.addEventListener('submit', () => {
+      // After the submit has started: disabling earlier would drop the button from the request.
+      setTimeout(() => { btn.disabled = true; btn.textContent = btn.dataset.busyText; }, 0);
+    });
+  }
+})();

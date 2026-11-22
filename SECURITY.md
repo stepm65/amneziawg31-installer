@@ -34,6 +34,15 @@ A valid panel session is not enough for changes that outlive it. The panel passw
 - Handshake debug writes to `/sys/kernel/debug/dynamic_debug/control` and schedules a systemd timer that switches it off after 15 minutes, so it cannot be left on by accident.
 - The support report removes keys (`[key]`), Telegram tokens (`[token]`), `PrivateKey`/`PresharedKey`/`PublicKey`/`HeaderProtectionKey`/`Endpoint` lines and public addresses (always fully masked). It is generated on request and not stored on the server.
 
+## Router subscriptions, rotation and the packet check (0.17)
+
+- A subscription link carries a 256-bit random token; the database keeps only `sha256("awg31-sub:" + token)`, and the panel shows the link once. Issuing a new link or switching the subscription off invalidates the old one at once. The link returns the client's private key, so the panel offers it only when an Nginx HTTPS site exists; for a self-signed certificate the router script pins the certificate's public key.
+- `/sub/` is the only path that answers without a session. Nginx admits every address there (the panel's allow list does not apply) but limits it to 30 requests a minute per address; the panel adds its own limit and makes an address wait 15 minutes after 10 unknown tokens. The panel trusts `X-Real-IP` only from 127.0.0.1, i.e. from Nginx. A switched-off client gets 403 and no configuration. Fetch time and the (masked) address are recorded.
+- The panel user may create, revoke and fetch subscriptions; the bot user may not. The bot may run the packet check and the port/obfuscation change, as the administrator could from the server screen.
+- Rotation and masking profiles save a copy of the server configuration and state first (`/var/backups/awg31-panel/settings`). Only ufw and firewalld are changed for the new port; nothing else in the host firewall is touched.
+- The packet check opens an `AF_PACKET` socket as root for 5–30 seconds, reads only UDP headers to and from the server port and returns counts, sizes and masked sender addresses; no payload is stored.
+- `/etc/sysctl.d/96-awg31-network.conf` sets loose reverse-path filtering, refuses ICMP redirects and source routing, stops sending redirects and enables SYN cookies. It is removed on uninstall.
+
 ## Added in 0.10
 
 - **Two-factor sign-in.** TOTP (RFC 6238). Turning it on or off needs the password and a valid code; replacing the key needs the password, a code of the current key and a code of the new one. A code is accepted once. Console recovery: `sudo awg31 totp-off` (root only, not reachable from the panel or the bot).

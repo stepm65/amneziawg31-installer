@@ -29,7 +29,8 @@ VALID_AUDIT = {'login_success', 'login_failed', 'password_changed', 'client_adde
                'backup_remote_changed', 'logging_changed', 'debug_changed', 'support_report',
                'client_rekeyed', 'client_invite_created', 'client_invite_used', 'totp_recovery_used',
                'totp_recovery_new', 'clients_exported', 'panel_update_started', 'panel_updated',
-               'panel_update_failed', 'panel_rolled_back'}
+               'panel_update_failed', 'panel_rolled_back', 'server_rotated', 'server_rotate_failed',
+               'mask_profile_applied', 'subscription_created', 'subscription_revoked', 'packet_probe'}
 
 
 def _host_uplink():
@@ -534,7 +535,7 @@ TELEGRAM_EVENTS={
     'server_state':'server','module':'server','kernel':'server','panel':'server',
     'client_auto':'clients','client_expiring':'clients','client_quota':'clients',
     'login':'security','login_failed':'security','password':'security','owner_export':'security',
-    'totp_recovery':'security','invite':'clients','update':'server',
+    'totp_recovery':'security','invite':'clients','update':'server','rotation':'server',
     'backup_created':'backups','backup_failed':'backups','upload_failed':'backups',
     'cpu':'system','memory':'system','disk':'system',
 }

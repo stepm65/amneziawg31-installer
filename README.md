@@ -4,7 +4,7 @@
 
 An installer and a web console for running **AmneziaWG 3.1** on your own server: a kernel module built with DKMS, an interactive setup wizard and a bilingual (EN/RU) panel for servers, clients, traffic and backups. No Docker, no control plane in the cloud, nothing loaded from a CDN.
 
-Version **0.16.0** · MIT licence · not affiliated with the AmneziaVPN developers.
+Version **0.17.0** · MIT licence · not affiliated with the AmneziaVPN developers.
 
 ![Infrastructure overview](docs/screenshots/en-dashboard.png)
 
@@ -24,6 +24,9 @@ Version **0.16.0** · MIT licence · not affiliated with the AmneziaVPN develope
 - **Security by layout:** the panel runs as an unprivileged user on `127.0.0.1`; root actions go through one narrow `sudo` allowlist, served by a local root helper so pages stay fast with hundreds of clients; strict CSP, CSRF tokens, scrypt password hash, audit log.
 - **Telegram bot (optional):** clients, configurations with QR codes, server start and stop, backups and notifications, through its own narrower `sudo` allowlist.
 - **Optional Nginx** reverse proxy with a self-signed or your own certificate.
+- **Router subscriptions:** a permanent HTTPS link from which a router or container fetches its current `.conf` by itself (with `ETag` and a 304 answer when nothing changed), plus a ready script for MikroTik, OpenWrt, Docker and Linux.
+- **When the port gets blocked:** masking profiles (port plus a QUIC, STUN, DTLS or DNS shaped `I1`), a new port, obfuscation and server key in one press or on a schedule, and a 15-second incoming packet check in the panel and the bot.
+- **Server networking:** TCP fitted to the tunnel MTU on the server (MSS clamping) and protective kernel settings (`rp_filter`, no ICMP redirects, SYN cookies).
 
 ## Requirements
 
@@ -154,6 +157,7 @@ The **audit log** has pages, filters by event, dates and text, a CSV export, and
 | Random bytes | one packet of 40–119 random bytes |
 | DNS query | a well-formed A-record query for a popular domain, random ID |
 | STUN binding request | a 20-byte RFC 5389 request with a random transaction ID |
+| DTLS 1.2 ClientHello | the first packet of a WebRTC call (with `use_srtp`), a fresh random field each time |
 | QUIC Initial with ClientHello | a complete 1200-byte QUIC v1 Initial with a TLS 1.3 ClientHello and the server name (SNI) you choose; it decrypts as genuine QUIC and is accepted by a real QUIC server implementation in the tests |
 | QUIC Initial, shape only | the same header and size, random payload, random connection ID on every send; short notation that fits into a QR code, but it does not decrypt as QUIC |
 
@@ -182,6 +186,28 @@ The “Insert a template ▾” menu:
 | NAT only | masquerades the traffic that goes into the tunnel |
 
 To give several clients the same lines, select them in the list and press “Extra lines”: the lines replace theirs or are added to them, and the panel keeps each identical command once, even when templates overlap (the gateway already includes NAT and MSS clamping). In the list such clients have a blue dot on their icon and need a new `.conf` after a change.
+
+### Router subscriptions
+
+A router or a container that brings the tunnel up with `awg-quick` can fetch its own configuration. On the client page, under “Subscription for a router”, press **Switch the subscription on**: the panel shows a link like `https://your-address/sub/awg0/…` once, with the `awg-sub.sh` script (copy or download it). The panel keeps only a fingerprint of the link; a lost link cannot be shown again, so issue a new one and the old one stops at once.
+
+The link returns the client's current `.conf` with its extra `[Interface]` lines. When nothing changed since the last request, the server answers `304 Not Modified`. Run the script every 5 minutes from cron (`*/5 * * * * sh /etc/amnezia/awg-sub.sh`) or in the background (`sh awg-sub.sh --loop`): it checks a new file, keeps the previous one as `.bak`, restarts the tunnel and goes back to the old file if the new one does not come up. When there has been no handshake for over 3 minutes, the script takes the tunnel down for a moment and asks the link directly, which helps when the tunnel carries the default route. For a self-signed certificate the script carries the fingerprint of its key (`curl --pinnedpubkey`).
+
+Subscriptions work only through the panel's HTTPS address (`sudo awg31 nginx`): the link carries the client's private key. The `/sub/` path is open to every address even when the panel admits only chosen ones, but it is rate limited (by Nginx and by the panel; after 10 wrong links an address waits 15 minutes). A switched-off client gets 403. The time and address of the last request are on the client page.
+
+### When the port gets blocked
+
+Under **Server settings → Masking and parameter change**:
+
+- **Masking profile** moves the server to the profile's port and writes the same kind of `I1` for every client: QUIC (443), STUN (3478), DTLS 1.2 as in WebRTC calls (8801) or a DNS query (53). The content is random each time; only the packet shape repeats. A profile does not guarantee getting past blocking: test it on the network where you use the VPN. New clients get the profile's `I1` by themselves.
+- **Change now**: a new random port 20000–59999, new `S1–S4`, `H1–H4`, header key and `Jc`, and a new server key if you like. Clients, their addresses, keys and limits stay; so do your `Jmin/Jmax`, timings, `RandomTrailers` and `DisableCookies`. ufw and firewalld get the new port opened automatically; a cloud firewall is up to you.
+- **On a schedule**: the same every 1, 3, 7, 14 or 30 days. Useful when the clients are routers with a subscription: they pick up the new parameters by themselves. Phones and computers without one drop until they import again.
+
+A copy of the server settings is saved before every change. Changes go to the audit log, the bot tells the administrators (event “Server parameter change”), and the bot's server menu has a “🔀 Change port” button.
+
+### Incoming packet check
+
+The **Check incoming packets (15 s)** button on the server page (and “📡 Packets 15 s” in the bot) listens on the server's UDP port for 15 seconds. Switch the VPN on at the client right after pressing. Not a single packet: traffic does not reach the server (cloud firewall or the provider's blocking). Packets arrive but the server does not answer: the client has other keys or obfuscation. Both: the network is fine, look at the client. Packet sizes and sender addresses are shown (masked as in the logs).
 
 ## Server console
 
@@ -300,6 +326,7 @@ sudo bash amneziawg31-installer/scripts/resume-panel.sh
 | `/etc/awg31-bot/telegram.json` | Telegram bot token and administrator IDs |
 | `/run/awg31/control.sock` | socket of the control helper (`awg31-helper.service`) |
 | `/opt/awg31-panel/` | panel code, Python environment, fonts |
+| `/etc/sysctl.d/96-awg31-network.conf` | protective kernel network settings (removed with the console) |
 
 ## Security notes
 

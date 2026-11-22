@@ -15,7 +15,7 @@ ip -4 addr show dev awg0 2>&1 || true
 printf '\n%s\n' '== Services =='
 systemctl is-active awg-quick@awg0 awg31-panel 2>&1 || true
 printf '\n%s\n' '== Full tunnel: IPv4 forwarding / NAT =='
-sysctl net.ipv4.ip_forward 2>&1 || true
+sysctl net.ipv4.ip_forward net.ipv4.conf.all.rp_filter net.ipv4.tcp_syncookies 2>&1 || true
 printf '%s\n' 'Forward rules related to awg0:'
 iptables -w -S FORWARD 2>&1 | grep -F awg0 || true
 printf '%s\n' 'MASQUERADE rules (inspect subnet/uplink):'

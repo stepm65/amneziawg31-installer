@@ -18,6 +18,7 @@ import sqlite3
 import subprocess
 import sys
 import tempfile
+import time as _time
 from datetime import datetime, timezone, timedelta
 
 DB = Path(os.environ.get('AWG31_DB', '/var/lib/awg31-panel/state.sqlite3'))
@@ -156,7 +157,13 @@ def get_conn(create=False):
                        # A one-time Telegram invitation: only its SHA-256 is kept.
                        'invite_hash': "TEXT NOT NULL DEFAULT ''",
                        'invite_expires': "TEXT NOT NULL DEFAULT ''",
-                       'invite_export': 'INTEGER NOT NULL DEFAULT 0'}
+                       'invite_export': 'INTEGER NOT NULL DEFAULT 0',
+                       # A router's subscription: only the SHA-256 of its token is kept.
+                       'sub_hash': "TEXT NOT NULL DEFAULT ''",
+                       'sub_created': "TEXT NOT NULL DEFAULT ''",
+                       'sub_last_fetch': "TEXT NOT NULL DEFAULT ''",
+                       'sub_last_addr': "TEXT NOT NULL DEFAULT ''",
+                       'sub_fetches': 'INTEGER NOT NULL DEFAULT 0'}
         for name, definition in new_columns.items():
             if name not in columns:
                 con.execute(f'ALTER TABLE clients ADD COLUMN {name} {definition}')
@@ -570,7 +577,7 @@ def awg_lines(cfg, for_client=False):
 
 
 PRIVATE_NETWORKS = ('10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16')
-SWITCHES = {'client_to_client': None, 'private_access': 'on', 'ipv6_block': 'off', 'host_access': 'on'}
+SWITCHES = {'client_to_client': None, 'private_access': 'on', 'ipv6_block': 'off', 'host_access': 'on', 'mss_clamp': 'off'}
 
 
 def switch(cfg, name):
@@ -593,14 +600,22 @@ def firewall_lines(cfg, net, peers):
     """
     lines = []
 
-    def top(rule, chain='FORWARD'):
-        lines.append(f'PostUp = iptables -w -D {chain} {rule} 2>/dev/null || true')
-        lines.append(f'PostUp = iptables -w -I {chain} 1 {rule}')
-        lines.append(f'PostDown = iptables -w -D {chain} {rule} 2>/dev/null || true')
+    def top(rule, chain='FORWARD', table=''):
+        t = f'-t {table} ' if table else ''
+        lines.append(f'PostUp = iptables -w {t}-D {chain} {rule} 2>/dev/null || true')
+        lines.append(f'PostUp = iptables -w {t}-I {chain} 1 {rule}')
+        lines.append(f'PostDown = iptables -w {t}-D {chain} {rule} 2>/dev/null || true')
 
-    def gone(rule, chain='FORWARD'):
-        lines.append(f'PostUp = iptables -w -D {chain} {rule} 2>/dev/null || true')
-        lines.append(f'PostDown = iptables -w -D {chain} {rule} 2>/dev/null || true')
+    def gone(rule, chain='FORWARD', table=''):
+        t = f'-t {table} ' if table else ''
+        lines.append(f'PostUp = iptables -w {t}-D {chain} {rule} 2>/dev/null || true')
+        lines.append(f'PostDown = iptables -w {t}-D {chain} {rule} 2>/dev/null || true')
+
+    # TCP sessions of clients are fitted to the tunnel MTU here, on the server:
+    # sites that hang half-loaded on a phone are the usual symptom without it.
+    for rule in (f'-o {IFACE} -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu',
+                 f'-i {IFACE} -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu'):
+        (top if switch(cfg, 'mss_clamp') == 'on' else gone)(rule, 'FORWARD', 'mangle')
 
     # Services of the server itself (SSH, the panel behind Nginx, ...) as seen from
     # VPN clients. Off: replies, ping and - when the server is the clients' DNS -
@@ -828,7 +843,7 @@ def init():
     data = validate_settings(read_json(), initial=True)
     data.update({'private_key': keygen(), 'header_key': keygen()})
     data['public_key'] = pubkey(data['private_key'])
-    data.update({'Jc': 4, 'Jmin': 10, 'Jmax': 50, 'S1': 12, 'S2': 12, 'S3': 12, 'S4': 12})
+    data.update({'Jc': 4, 'Jmin': 10, 'Jmax': 50, 'S1': 12, 'S2': 12, 'S3': 12, 'S4': 12, 'mss_clamp': 'on'})
     # Random per-server obfuscation is the default. The static profile below
     # (H1-H4 = 1..4, S = 12) looks like plain WireGuard and is identical on every
     # host, so it must be requested explicitly with AWG31_GENERATE_PARAMS=0.
@@ -948,12 +963,20 @@ def sample_usage(con, now=None):
                         ('expired' if expired else 'quota',row['name']))
             changed.append(row['name'])
     if changed or revived: apply(get_settings(con),con)
+    rotated = None
+    if rotation_due(get_settings(con), now):
+        cfg = get_settings(con)
+        try:
+            rotated = rotate(con, [p for p in str(cfg.get('rotate_parts') or 'port,obfuscation').split(',') if p], reason='schedule')
+        except (ValueError, RuntimeError) as exc:
+            rotated = {'ok': False, 'error': str(exc)[:200]}
+            put_settings(con, {'rotate_since': now.isoformat(timespec='seconds')})   # try again in a full period
     con.execute('INSERT INTO traffic_samples(measured_at,rx_delta,tx_delta) VALUES(?,?,?)',
                 (instant,rx_delta,tx_delta))
     con.execute('DELETE FROM traffic_samples WHERE measured_at<?',(instant-32*86400,))
     track_sessions(con, moved, instant)
     con.commit()
-    return {'ok':True,'rx_delta':rx_delta,'tx_delta':tx_delta,'disabled':changed,'enabled':revived}
+    return {'ok':True,'rx_delta':rx_delta,'tx_delta':tx_delta,'disabled':changed,'enabled':revived,'rotated':rotated}
 
 
 def traffic_history(con, request):
@@ -1083,6 +1106,8 @@ def clients_action(con, which):
                 'invite_expires':row['invite_expires'] if row['invite_hash'] and row['invite_expires']
                                  and datetime.fromisoformat(row['invite_expires']) > datetime.now(timezone.utc) else '',
                 'invite_export':bool(row['invite_export']),
+                'subscription':{'active':bool(row['sub_hash']),'created':row['sub_created'],'last_fetch':row['sub_last_fetch'],
+                                'last_addr':row['sub_last_addr'],'fetches':row['sub_fetches']},
                 'speed_limit_mbit':row['speed_limit_mbit'], 'quota_period':row['quota_period'],
                 **{key:row[key] for key in I_KEYS}}
     if which == 'enable':
@@ -1346,6 +1371,250 @@ def invite_redeem(con):
     return {'found': True, 'name': row['name'], 'export': bool(row['invite_export'])}
 
 
+# ------------------------------------------------------------------ 0.17: routers, rotation, masking, probe
+SUB_RE = re.compile(r'^[A-Za-z0-9_-]{40,64}$')
+ROTATE_DAYS = (0, 1, 3, 7, 14, 30)
+ROTATE_PARTS = ('port', 'obfuscation', 'key')
+MASK_PROFILES = {'none': 0, 'quic': 443, 'stun': 3478, 'dtls': 8801, 'dns': 53}
+
+
+def sub_digest(token):
+    return hashlib.sha256(('awg31-sub:' + token).encode()).hexdigest()
+
+
+def subscription_token(con):
+    """Create (or replace) or revoke a client's subscription token; the token is shown once."""
+    data = read_json()
+    name = str(data.get('name', ''))
+    if not NAME_RE.fullmatch(name): raise ValueError('Неверное имя клиента')
+    if not con.execute('SELECT 1 FROM clients WHERE name=?', (name,)).fetchone(): raise ValueError('Клиент не найден')
+    if data.get('action') == 'revoke':
+        con.execute("UPDATE clients SET sub_hash='', sub_created='' WHERE name=?", (name,))
+        con.commit()
+        return {'ok': True, 'name': name}
+    token = secrets.token_urlsafe(32)                    # 43 characters, 256 bits
+    con.execute("UPDATE clients SET sub_hash=?, sub_created=?, sub_last_fetch='', sub_last_addr='', sub_fetches=0 WHERE name=?",
+                (sub_digest(token), datetime.now(timezone.utc).isoformat(timespec='seconds'), name))
+    con.commit()
+    return {'ok': True, 'name': name, 'token': token}
+
+
+def subscription_fetch(con):
+    """A router asks for its configuration: the current .conf (with its extra lines) and its fingerprint."""
+    data = read_json()
+    token = str(data.get('token', ''))
+    if not SUB_RE.fullmatch(token): raise ValueError('Invalid token')
+    row = con.execute('SELECT * FROM clients WHERE sub_hash=?', (sub_digest(token),)).fetchone()
+    if not row:
+        return {'found': False}
+    row = dict(row)
+    if not row['enabled']:
+        return {'found': True, 'enabled': False, 'name': row['name']}
+    cfg = get_settings(con)
+    conf = client_config(cfg, row, peer_rows(con))
+    fingerprint = config_fingerprint(conf)
+    address = mask_endpoint(str(data.get('addr', '')), logging_settings()['masking']) if data.get('addr') else ''
+    # A router that fetched the configuration has the current one: it is no longer stale.
+    con.execute('UPDATE clients SET sub_last_fetch=?, sub_last_addr=?, sub_fetches=sub_fetches+1, exported_hash=? WHERE name=?',
+                (datetime.now(timezone.utc).isoformat(timespec='seconds'), address, fingerprint, row['name']))
+    con.commit()
+    return {'found': True, 'enabled': True, 'name': row['name'], 'config': conf, 'etag': fingerprint[:32]}
+
+
+def used_udp_ports():
+    ports = set()
+    for conf in CONF.parent.glob('*.conf'):
+        try:
+            found = re.search(r'^\s*ListenPort\s*=\s*([0-9]+)', conf.read_text(), re.M)
+        except OSError:
+            continue
+        if found: ports.add(int(found.group(1)))
+    cp = subprocess.run(['ss', '-Hlun'], capture_output=True, text=True, check=False)
+    for line in cp.stdout.splitlines():
+        parts = line.split()
+        if len(parts) >= 4:
+            port = parts[3].rsplit(':', 1)[-1]
+            if port.isdigit(): ports.add(int(port))
+    return ports
+
+
+def pick_port(current):
+    used = used_udp_ports() | {current}
+    for _ in range(200):
+        port = 20000 + secrets.randbelow(40000)
+        if port not in used: return port
+    raise RuntimeError('Не нашлось свободного UDP-порта')
+
+
+def host_firewall_port(new, old):
+    """Open the new UDP port in an active ufw or firewalld (and close the old one). A cloud firewall stays the admin's job."""
+    if new == old: return ''
+    if shutil.which('ufw') and 'Status: active' in subprocess.run(['ufw', 'status'], capture_output=True, text=True).stdout:
+        subprocess.run(['ufw', 'allow', f'{new}/udp'], capture_output=True, check=False)
+        subprocess.run(['ufw', 'delete', 'allow', f'{old}/udp'], capture_output=True, check=False)
+        return 'ufw'
+    if shutil.which('firewall-cmd') and subprocess.run(['systemctl', 'is-active', '--quiet', 'firewalld']).returncode == 0:
+        subprocess.run(['firewall-cmd', '--permanent', f'--add-port={new}/udp'], capture_output=True, check=False)
+        subprocess.run(['firewall-cmd', '--permanent', f'--remove-port={old}/udp'], capture_output=True, check=False)
+        subprocess.run(['firewall-cmd', '--reload'], capture_output=True, check=False)
+        return 'firewalld'
+    return ''
+
+
+def settings_backup(con, label):
+    backup = Path('/var/backups/awg31-panel/settings') / (
+        datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S') + '-' + IFACE + '-' + label + '-' + secrets.token_hex(3))
+    backup.mkdir(parents=True, mode=0o700, exist_ok=False)
+    os.chmod(backup, 0o700)
+    if CONF.exists():
+        shutil.copy2(CONF, backup / 'server.conf')
+        os.chmod(backup / 'server.conf', 0o600)
+    with sqlite3.connect(backup / 'state.sqlite3') as destination:
+        con.backup(destination)
+    os.chmod(backup / 'state.sqlite3', 0o600)
+    return backup
+
+
+def rotate(con, parts, reason='manual'):
+    """New port, obfuscation and/or server key in one restart. Client names, addresses, keys and limits stay."""
+    parts = [p for p in ROTATE_PARTS if p in parts]
+    if not parts: raise ValueError('Выберите, что сменить: порт, обфускацию или ключ сервера')
+    cfg = get_settings(con)
+    old_port = cfg['port']
+    stored = {}
+    if 'port' in parts:
+        stored['port'] = pick_port(old_port)
+    if 'obfuscation' in parts:
+        fresh = fresh_obfuscation()
+        # The admin's choices about trailers, cookies and padding stay as they were.
+        for keep in ('RandomTrailers', 'DisableCookies', 'ContentPaddingAddition', 'Jmin', 'Jmax', *TIMING_KEYS):
+            fresh[keep] = cfg.get(keep, fresh[keep])
+        stored.update(fresh)
+    if 'key' in parts:
+        stored['private_key'] = keygen()
+        stored['public_key'] = pubkey(stored['private_key'])
+    stored['rotated_at'] = datetime.now(timezone.utc).isoformat(timespec='seconds')
+    settings_backup(con, 'rotate')
+    put_settings(con, stored)
+    cfg = get_settings(con)
+    apply(cfg, con, restart=True)
+    con.commit()
+    firewall = host_firewall_port(cfg['port'], old_port)
+    return {'ok': True, 'parts': parts, 'reason': reason, 'port': cfg['port'], 'old_port': old_port,
+            'firewall': firewall, 'reimport_clients': True}
+
+
+def rotate_op(con):
+    data = read_json()
+    parts = data.get('parts')
+    if not isinstance(parts, list) or not all(p in ROTATE_PARTS for p in parts):
+        raise ValueError('parts: port, obfuscation, key')
+    return rotate(con, parts)
+
+
+def rotate_schedule(con):
+    data = read_json()
+    try: days = int(data.get('days', 0))
+    except (TypeError, ValueError): raise ValueError('Расписание: число дней') from None
+    if days not in ROTATE_DAYS: raise ValueError('Расписание: 0, 1, 3, 7, 14 или 30 дней')
+    parts = data.get('parts') or ['port', 'obfuscation']
+    if not isinstance(parts, list) or not parts or not all(p in ROTATE_PARTS for p in parts):
+        raise ValueError('parts: port, obfuscation, key')
+    put_settings(con, {'rotate_days': days, 'rotate_parts': ','.join(p for p in ROTATE_PARTS if p in parts),
+                       'rotate_since': datetime.now(timezone.utc).isoformat(timespec='seconds')})
+    con.commit()
+    return {'ok': True, 'days': days, 'parts': parts}
+
+
+def rotation_due(cfg, now):
+    try: days = int(cfg.get('rotate_days') or 0)
+    except ValueError: return False
+    if days <= 0: return False
+    last = max(str(cfg.get('rotated_at') or ''), str(cfg.get('rotate_since') or ''))
+    if not last: return True
+    return (now - datetime.fromisoformat(last)).total_seconds() >= days * 86400
+
+
+def mask_apply(con):
+    """A masking profile: the same kind of I1 for every client (values built by the panel) and, if asked, its port."""
+    data = read_json()
+    profile = str(data.get('profile', ''))
+    if profile not in MASK_PROFILES: raise ValueError('Неизвестный профиль маскировки')
+    values = data.get('i1') or {}
+    if not isinstance(values, dict) or len(values) > 4096: raise ValueError('i1: object name -> value')
+    rows = {r['name'] for r in con.execute('SELECT name FROM clients')}
+    if set(values) - rows: raise ValueError('One or more clients no longer exist')
+    checked = {}
+    for name, value in values.items():
+        cps = validate_i_fields({'i_enabled': '1', 'i1': str(value)})
+        checked[name] = cps['i1']
+    cfg = get_settings(con)
+    old_port = cfg['port']
+    port = int(data.get('port') or 0)
+    if port:
+        port = valid_port(port)
+        if port != old_port and port in used_udp_ports():
+            raise ValueError(f'UDP-порт {port} уже занят на сервере')
+    settings_backup(con, 'mask')
+    con.executemany('UPDATE clients SET i_enabled=1, i1=? WHERE name=?', [(v, k) for k, v in checked.items()])
+    stored = {'mask_profile': profile}
+    if port: stored['port'] = port
+    put_settings(con, stored)
+    cfg = get_settings(con)
+    if port and port != old_port:
+        apply(cfg, con, restart=True)
+    con.commit()
+    firewall = host_firewall_port(cfg['port'], old_port) if port else ''
+    return {'ok': True, 'profile': profile, 'updated': sorted(checked), 'port': cfg['port'], 'old_port': old_port,
+            'firewall': firewall, 'reimport_clients': bool(checked) or port != old_port}
+
+
+def packet_probe(con):
+    """Watch the server's UDP port for a few seconds: do client packets arrive, and does the server answer?"""
+    import socket
+    import struct
+    data = read_json()
+    seconds = min(30, max(5, int(data.get('seconds', 15) or 15)))
+    cfg = get_settings(con)
+    port = cfg['port']
+    masking = logging_settings()['masking']
+    sock = socket.socket(socket.AF_PACKET, socket.SOCK_DGRAM, socket.ntohs(0x0003))
+    sock.settimeout(0.5)
+    deadline = _time.monotonic() + seconds
+    incoming, outgoing, sizes, sources = 0, 0, {}, {}
+    try:
+        while _time.monotonic() < deadline:
+            try:
+                packet, address = sock.recvfrom(65535)
+            except socket.timeout:
+                continue
+            proto, kind = address[1], address[2]
+            if proto == 0x0800 and len(packet) >= 20 and packet[9] == 17:
+                header = (packet[0] & 0x0F) * 4
+                if len(packet) < header + 8: continue
+                src = socket.inet_ntop(socket.AF_INET, packet[12:16])
+                sport, dport, length = struct.unpack('!HHH', packet[header:header + 6])
+            elif proto == 0x86DD and len(packet) >= 48 and packet[6] == 17:
+                src = '[' + socket.inet_ntop(socket.AF_INET6, packet[8:24]) + ']'
+                sport, dport, length = struct.unpack('!HHH', packet[40:46])
+            else:
+                continue
+            payload = max(0, length - 8)
+            if kind == 4 and sport == port:            # PACKET_OUTGOING: the server answers
+                outgoing += 1
+            elif kind != 4 and dport == port:
+                incoming += 1
+                sizes[payload] = sizes.get(payload, 0) + 1
+                who = mask_endpoint(f'{src}:{sport}', masking) or 'hidden'
+                sources[who] = sources.get(who, 0) + 1
+    finally:
+        sock.close()
+    return {'ok': True, 'interface': IFACE, 'port': port, 'seconds': seconds, 'incoming': incoming, 'outgoing': outgoing,
+            'sources': sorted(sources.items(), key=lambda x: -x[1])[:10],
+            'sizes': sorted(sizes.items(), key=lambda x: -x[1])[:12],
+            'expected_init': 148 + int(cfg['S1']), 'junk': [int(cfg['Jmin']), int(cfg['Jmax'])]}
+
+
 def client_network_update(con):
     data = read_json()
     name = str(data.get('name', ''))
@@ -1509,12 +1778,16 @@ def get_status(con, with_clients=False):
     result['obfuscation']['HeaderProtectionKey'] = cfg['header_key']
     result['interface'] = IFACE
     result['running'] = subprocess.run(['ip','link','show',IFACE],capture_output=True).returncode==0
+    result['mask_profile'] = cfg.get('mask_profile', 'none')
+    result['rotation'] = {'days': int(cfg.get('rotate_days') or 0), 'parts': str(cfg.get('rotate_parts') or 'port,obfuscation').split(','),
+                          'rotated_at': cfg.get('rotated_at', ''), 'since': cfg.get('rotate_since', '')}
     if with_clients:
         stats = live_stats()
         peers = peer_rows(con)
         result['clients'] = [
             {k:p[k] for k in ('name','ip','public_key','enabled','created_at','routed_subnets','i_enabled','comment','expires_at','traffic_limit_bytes','used_bytes','disabled_reason','last_handshake','telegram_id','owner_export','speed_limit_mbit','quota_period')}
-            | {'extra_lines': bool(p.get('extra_lines')),
+            | {'extra_lines': bool(p.get('extra_lines')), 'subscription': bool(p.get('sub_hash')),
+               'sub_last_fetch': p.get('sub_last_fetch', ''),
                'stats': (stats.get(p['public_key']) or {'handshake':p['last_handshake'],'received':p['last_rx'],'sent':p['last_tx']}),
                # True when the configuration handed out earlier no longer matches the server.
                'config_stale': bool(p.get('exported_hash')) and p['exported_hash'] != config_fingerprint(client_config(cfg,p,peers))}
@@ -1525,7 +1798,8 @@ def get_status(con, with_clients=False):
 def main():
     if os.geteuid() != 0: raise PermissionError('Контроллер требует root')
     if len(sys.argv) != 2 or sys.argv[1] not in ('init','status','list','add','download','enable','disable','delete','delete-batch','client-network','client-extra','client-policy','settings','sample','history','add-batch','sessions',
-                                                    'client-rekey','client-batch','client-invite','invite-redeem'):
+                                                    'client-rekey','client-batch','client-invite','invite-redeem',
+                                                    'sub-token','sub-fetch','rotate','rotate-schedule','mask-apply','probe'):
         raise ValueError('Неподдерживаемая команда')
     LOCK.parent.mkdir(parents=True, exist_ok=True)
     with open(LOCK,'a+') as lock:
@@ -1545,6 +1819,12 @@ def main():
                 elif op == 'client-batch': result = client_batch(con)
                 elif op == 'client-invite': result = client_invite(con)
                 elif op == 'invite-redeem': result = invite_redeem(con)
+                elif op == 'sub-token': result = subscription_token(con)
+                elif op == 'sub-fetch': result = subscription_fetch(con)
+                elif op == 'rotate': result = rotate_op(con)
+                elif op == 'rotate-schedule': result = rotate_schedule(con)
+                elif op == 'mask-apply': result = mask_apply(con)
+                elif op == 'probe': result = packet_probe(con)
                 elif op == 'client-policy': result = client_policy_update(con)
                 elif op == 'sample': result = sample_usage(con)
                 elif op == 'history': result = traffic_history(con,read_json())

@@ -48,6 +48,57 @@ for item in filter(None, re.split(r'[,\s]+', sys.argv[1])):
         sys.exit(f'Invalid IPv4 address or CIDR in the allow list: {item[:40]}')
 PY
 }
+# Routers fetch their configuration from anywhere: the 256-bit token in the
+# address is the key, so the panel's address allow list does not apply here.
+proxy_subscription_location() {
+    cat <<EOF
+    location /sub/ {
+        allow all;
+        limit_req zone=awg31_sub burst=10 nodelay;
+        limit_req_status 429;
+        proxy_pass http://127.0.0.1:${1};
+        proxy_http_version 1.1;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_read_timeout 30s;
+        access_log off;
+    }
+EOF
+}
+# An Nginx site made by an older version gets the subscription location added
+# (once, with a backup, and only if nginx -t accepts the result).
+proxy_add_subscription() {
+    local conf="${AWG31_NGINX_SITE:-/etc/nginx/conf.d/awg31-panel.conf}" port backup
+    [[ -f "$conf" ]] || return 0
+    grep -q '^# AWG31 managed virtual host' "$conf" || { proxy_log "$conf is not ours; add a /sub/ location by hand"; return 0; }
+    grep -q 'location /sub/' "$conf" && return 0
+    port="$(sed -nE 's#^[[:space:]]*proxy_pass http://127\.0\.0\.1:([0-9]+);.*#\1#p' "$conf" | head -n1)"
+    [[ "$port" =~ ^[0-9]+$ ]] || { proxy_log 'Cannot find the panel port in the Nginx site; subscription location not added'; return 0; }
+    backup="$conf.awg31-before-sub"
+    cp -p -- "$conf" "$backup"
+    if python3 - "$conf" "$(proxy_subscription_location "$port")" <<'PY' && { [[ -n "${AWG31_NGINX_SITE:-}" ]] || nginx -t >/dev/null 2>&1; }
+import sys
+path, block = sys.argv[1], sys.argv[2]
+text = open(path).read()
+zone = 'limit_req_zone $binary_remote_addr zone=awg31_login:10m rate=10r/m;\n'
+marker = '    location / {'
+if zone not in text or marker not in text:
+    sys.exit(1)
+text = text.replace(zone, zone + 'limit_req_zone $binary_remote_addr zone=awg31_sub:10m rate=30r/m;\n', 1)
+text = text.replace(marker, block + '\n\n' + marker, 1)
+open(path, 'w').write(text)
+PY
+    then
+        [[ -n "${AWG31_NGINX_SITE:-}" ]] || systemctl reload nginx 2>/dev/null || :
+        rm -f -- "$backup"
+        proxy_log 'Nginx: added the /sub/ location for router subscriptions'
+    else
+        cp -p -- "$backup" "$conf"; rm -f -- "$backup"
+        proxy_log 'Nginx: could not add the /sub/ location; the site is unchanged'
+    fi
+}
 proxy_render_config() {
     local domain="$1" https_port="$2" panel_port="$3" cert="$4" key="$5" allow="${6:-}" access='' item
     for item in ${allow//,/ }; do access+="    allow ${item};"$'\n'; done
@@ -59,6 +110,7 @@ proxy_render_config() {
 # TLS listener is IPv4-only; the panel backend stays on 127.0.0.1.
 # Sign-in attempts are limited per address before they reach the panel.
 limit_req_zone \$binary_remote_addr zone=awg31_login:10m rate=10r/m;
+limit_req_zone \$binary_remote_addr zone=awg31_sub:10m rate=30r/m;
 server {
     listen ${https_port} ssl;
     server_name ${domain};
@@ -85,6 +137,8 @@ ${access}
         proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto https;
     }
+
+$(proxy_subscription_location "$panel_port")
 
     location / {
         proxy_pass http://127.0.0.1:${panel_port};
@@ -161,6 +215,7 @@ proxy_interactive() {
 proxy_main() {
     local mode host https_port panel_port cert key cert_dir conf occupied site_created=0 generated=0 changed_ipv6_vendor=0
     local selinux_changed=0
+    if [[ "${1:-}" == --add-subscription ]]; then proxy_add_subscription; return 0; fi
     if [[ "${1:-}" == --interactive ]]; then proxy_interactive; elif [[ $# -ne 0 ]]; then proxy_die 'Usage: sudo bash scripts/setup-nginx.sh [--interactive]'; fi
     mode="${AWG31_PROXY_MODE:-none}"
     case "$mode" in none|self-signed|existing) ;; *) proxy_die 'Invalid Nginx mode';; esac

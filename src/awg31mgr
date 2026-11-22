@@ -23,7 +23,8 @@ CTL = os.environ.get('AWG31_CTL_PATH', '/usr/local/sbin/awg31ctl')
 VALID = re.compile(r'^awg(?:0|[1-9][0-9]?)$')
 OPTIONAL_PROFILE = ('client_to_client', 'private_access', 'ipv6_block', 'host_access')
 OPS = {'status', 'list', 'add', 'add-batch', 'download', 'enable', 'disable', 'delete', 'delete-batch', 'settings', 'client-network', 'client-extra', 'client-policy', 'history', 'sessions',
-       'client-rekey', 'client-batch', 'client-invite', 'invite-redeem'}
+       'client-rekey', 'client-batch', 'client-invite', 'invite-redeem',
+       'sub-token', 'sub-fetch', 'rotate', 'rotate-schedule', 'mask-apply', 'probe'}
 ADMIN = {'servers', 'server-create', 'server-start', 'server-stop', 'server-restart', 'server-delete',
          'sample-all','host-history','backup-create','backup-list','backup-export','backup-check','backup-restore','profile-export',
          'profile-import','audit','audit-list','password-change','diagnostics',
@@ -233,6 +234,11 @@ def main():
                 admin.audit({'event':'client_disabled','target':f'{name}/{client_name} (auto)'})
             for client_name in results[name].get('enabled',[]):
                 admin.audit({'event':'client_enabled','target':f'{name}/{client_name} (auto)'})
+            rotated=results[name].get('rotated')
+            if rotated and rotated.get('ok'):
+                admin.audit({'event':'server_rotated','target':f'{name}: {", ".join(rotated["parts"])}, port {rotated["old_port"]} → {rotated["port"]} (schedule)'})
+            elif rotated:
+                admin.audit({'event':'server_rotate_failed','target':f'{name}: {rotated.get("error","")}'})
         try: host=admin.sample_host_metrics()
         except (OSError,ValueError,sqlite3.Error) as exc: host={'ok':False,'error':str(exc)[:150]}
         return {'ok':True,'servers':results,'host':host}

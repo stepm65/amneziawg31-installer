@@ -202,6 +202,9 @@ if [[ "$MODE" == 'full' ]]; then
     [[ "$(sysctl -n net.ipv4.ip_forward)" == '1' ]] || die 'IPv4 forwarding не включился'
 fi
 
+say 'Сетевые настройки ядра для VPN: rp_filter, redirects, SYN cookies'
+awg31_network_sysctl
+
 say 'Инициализация профиля AWG 3.1 и запуск awg0'
 # Fresh random S/H/Jc values for the primary server, exactly like servers
 # created later from the panel. Never ship the static WireGuard-like defaults.

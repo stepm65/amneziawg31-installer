@@ -216,6 +216,34 @@ if echo "{\"interface\":\"awg0\",\"code\":\"$INVITE\",\"telegram_id\":\"55500011
     fail 'the panel user may redeem an invitation'
 fi
 
+step 'Router subscription, masking profile, rotation, packet check, MSS and sysctl'
+grep -q '^net.ipv4.tcp_syncookies = 1' /etc/sysctl.d/96-awg31-network.conf || fail 'the network sysctl file is missing'
+[[ "$(sysctl -n net.ipv4.conf.all.rp_filter)" == 2 ]] || fail 'rp_filter is not loose'
+iptables -w -t mangle -S FORWARD | grep -q -- '-o awg0 .*TCPMSS --clamp-mss-to-pmtu' || fail 'no MSS clamping for a new server'
+SUB="$(echo '{"interface":"awg0","name":"team-03"}' | panel_mgr sub-token | python3 -c 'import json,sys; print(json.load(sys.stdin)["token"])')"
+if grep -rqF "$SUB" /var/lib/awg31-panel; then fail 'the subscription token is stored in clear'; fi
+echo "{\"interface\":\"awg0\",\"token\":\"$SUB\",\"addr\":\"198.51.100.7\"}" | panel_mgr sub-fetch \
+  | python3 -c 'import json,sys; r=json.load(sys.stdin); assert r["found"] and "PrivateKey = " in r["config"] and len(r["etag"]) == 32, r'
+echo '{"interface":"awg0","token":"0000000000000000000000000000000000000000000"}' | panel_mgr sub-fetch | grep -q '"found": false' \
+  || fail 'an unknown subscription token was accepted'
+echo '{"interface":"awg0","profile":"stun","i1":{"team-01":"<b 0x000100002112a442><r 12>"}}' | panel_mgr mask-apply >/dev/null
+echo '{"interface":"awg0","name":"team-01"}' | "$MGR" download | grep -q 'I1 = <b 0x000100002112a442><r 12>' || fail 'the masking profile did not set I1'
+old_port="$(awg show awg0 listen-port)"
+old_h1="$(grep '^H1 = ' "$CONF")"
+echo '{"interface":"awg0","parts":["port","obfuscation"]}' | panel_mgr rotate | python3 -c 'import json,sys; r=json.load(sys.stdin); assert r["ok"] and r["port"] != r["old_port"], r'
+new_port="$(awg show awg0 listen-port)"
+[[ "$new_port" != "$old_port" ]] || fail 'the port did not change on the interface'
+grep -q "^ListenPort = $new_port$" "$CONF" || fail 'the configuration file has the old port'
+[[ "$(grep '^H1 = ' "$CONF")" != "$old_h1" ]] || fail 'the obfuscation did not change'
+awg show awg0 peers | grep -q . || fail 'clients were lost by the rotation'
+echo "{\"interface\":\"awg0\",\"token\":\"$SUB\"}" | panel_mgr sub-fetch | grep -q "Endpoint = 203.0.113.10:$new_port" \
+  || fail 'the subscription does not hand out the new port'
+echo '{"interface":"awg0","days":7,"parts":["port"]}' | panel_mgr rotate-schedule | grep -q '"days": 7' || fail 'rotation schedule not saved'
+echo '{"interface":"awg0","days":0}' | panel_mgr rotate-schedule >/dev/null
+(sleep 2; python3 -c "import socket; s=socket.socket(socket.AF_INET, socket.SOCK_DGRAM); [s.sendto(b'x'*200, ('127.0.0.1', $new_port)) for _ in range(3)]") &
+echo '{"interface":"awg0","seconds":5}' | panel_mgr probe | python3 -c 'import json,sys; r=json.load(sys.stdin); assert r["incoming"] >= 3 and r["sizes"], r'
+wait
+
 step 'Second server next to the first one'
 uplink="$(ip -4 route show default | awk '{print $5; exit}')"
 echo "{\"interface\":\"awg1\",\"subnet\":\"10.88.0.0/24\",\"port\":\"51999\",\"mtu\":\"1280\",\"endpoint\":\"203.0.113.10\",\"dns\":\"1.1.1.1\",\"mode\":\"split\",\"uplink\":\"$uplink\"}" | "$MGR" server-create >/dev/null
@@ -482,6 +510,9 @@ systemctl is-active --quiet awg31-bot.service || fail 'bot service is not active
 if runuser -u awgpanel -- cat /etc/awg31-bot/telegram.json >/dev/null 2>&1; then fail 'the panel user can read the bot token'; fi
 if runuser -u awgbot -- cat /etc/awg31-panel/auth.json >/dev/null 2>&1; then fail 'the bot user can read the panel secrets'; fi
 runuser -u awgbot -- sudo -n "$MGR" servers </dev/null >/dev/null || fail 'bot cannot run a permitted command'
+if echo "{\"interface\":\"awg0\",\"token\":\"$SUB\"}" | runuser -u awgbot -- sudo -n "$MGR" sub-fetch >/dev/null 2>&1; then
+    fail 'the bot user may read router subscriptions'
+fi
 id -nG awgbot | tr ' ' '\n' | grep -qx awg31ctl || fail 'awgbot is not in awg31ctl'
 probe awgbot helper-only servers | grep -q '^0 ' || fail 'the bot user does not reach the helper'
 for forbidden in server-delete backup-restore backup-export password-change settings; do

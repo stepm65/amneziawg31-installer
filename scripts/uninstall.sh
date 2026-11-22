@@ -71,7 +71,7 @@ rm -f /etc/systemd/system/awg31-panel.service /etc/systemd/system/awg31-sampler.
       /etc/systemd/system/awg31-backup.timer /etc/systemd/system/awg31-bot.service /etc/systemd/system/awg31-helper.service
 systemctl daemon-reload >/dev/null 2>&1 || :
 systemctl reset-failed 'awg31-*' >/dev/null 2>&1 || :
-rm -f /etc/sudoers.d/awg31-panel /etc/sudoers.d/awg31-bot /etc/logrotate.d/awg31-panel /etc/sysctl.d/96-awg31-ipv4.conf
+rm -f /etc/sudoers.d/awg31-panel /etc/sudoers.d/awg31-bot /etc/logrotate.d/awg31-panel /etc/sysctl.d/96-awg31-ipv4.conf /etc/sysctl.d/96-awg31-network.conf
 rm -f /usr/local/sbin/awg31ctl /usr/local/sbin/awg31mgr /usr/local/sbin/awg31admin.py /usr/local/sbin/awg31helper /usr/local/bin/awg31
 rm -rf /opt/awg31-panel /usr/local/libexec/awg31
 if [[ -f /etc/nginx/conf.d/awg31-panel.conf ]]; then
