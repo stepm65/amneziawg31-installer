@@ -219,7 +219,12 @@ fi
 step 'Router subscription, masking profile, rotation, packet check, MSS and sysctl'
 grep -q '^net.ipv4.tcp_syncookies = 1' /etc/sysctl.d/96-awg31-network.conf || fail 'the network sysctl file is missing'
 [[ "$(sysctl -n net.ipv4.conf.all.rp_filter)" == 2 ]] || fail 'rp_filter is not loose'
-iptables -w -t mangle -S FORWARD | grep -q -- '-o awg0 .*TCPMSS --clamp-mss-to-pmtu' || fail 'no MSS clamping for a new server'
+if [[ -n "${AWG31_SMOKE_FROM:-}" ]]; then
+    # A server from an older release keeps what it had: MSS clamping stays off until switched on.
+    if iptables -w -t mangle -S FORWARD | grep -q TCPMSS; then fail 'the update switched MSS clamping on by itself'; fi
+else
+    iptables -w -t mangle -S FORWARD | grep -q -- '-o awg0 .*TCPMSS --clamp-mss-to-pmtu' || fail 'no MSS clamping for a new server'
+fi
 SUB="$(echo '{"interface":"awg0","name":"team-03"}' | panel_mgr sub-token | python3 -c 'import json,sys; print(json.load(sys.stdin)["token"])')"
 if grep -rqF "$SUB" /var/lib/awg31-panel; then fail 'the subscription token is stored in clear'; fi
 echo "{\"interface\":\"awg0\",\"token\":\"$SUB\",\"addr\":\"198.51.100.7\"}" | panel_mgr sub-fetch \
@@ -602,7 +607,14 @@ for attempt in $(seq 1 90); do
     [[ "$state" == ok || "$state" == failed ]] && break
     sleep 2
 done
-[[ "$state" == ok ]] || { cat /var/log/awg31-panel/update.log; fail "the rollback from the panel ended as: ${state:-unknown}"; }
+if [[ "$state" != ok ]]; then
+    panel_call update-status '{}' | head -c 3000; echo
+    systemctl status awg31-update.service --no-pager 2>&1 | tail -n 20 || :
+    journalctl -u awg31-update.service --no-pager -n 60 2>&1 || :
+    ls -la /run/awg31-update-run.* /var/log/awg31-panel/ 2>&1 || :
+    cat /var/log/awg31-panel/update.log 2>&1 || :
+    fail "the rollback from the panel ended as: ${state:-unknown}"
+fi
 grep -q 'Rolled back' /var/log/awg31-panel/update.log || fail 'the rollback log is empty'
 grep -q 'panel_rolled_back' /var/log/awg31-panel/audit.jsonl || fail 'the rollback is not in the audit log'
 panel 18081 || fail 'panel is down after the rollback'
