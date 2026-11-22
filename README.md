@@ -4,7 +4,7 @@
 
 An installer and a web console for running **AmneziaWG 3.1** on your own server: a kernel module built with DKMS, an interactive setup wizard and a bilingual (EN/RU) panel for servers, clients, traffic and backups. No Docker, no control plane in the cloud, nothing loaded from a CDN.
 
-Version **0.18.0** · MIT licence · not affiliated with the AmneziaVPN developers.
+Version **0.19.0** · MIT licence · not affiliated with the AmneziaVPN developers.
 
 ![Infrastructure overview](docs/screenshots/en-dashboard.png)
 
@@ -13,7 +13,7 @@ Version **0.18.0** · MIT licence · not affiliated with the AmneziaVPN develope
 - **AmneziaWG 3.1 only.** The wizard builds the official kernel module (pinned commit) and tools (pinned tag) and refuses to continue with any other version.
 - **Random obfuscation per server.** `S1–S4`, `H1–H4`, `Jc`, junk packet sizes (`Jmin` 40–79, `Jmax` 50–160 above it), a random padding of data packets (`ContentPaddingAddition`) and `HeaderProtectionKey` are generated for every server, including the first one, and can be regenerated in the panel.
 - **Several independent servers** (`awg0`, `awg1`, … up to 8), each with its own keys, subnet, UDP port and clients. Each new server can get a random `10.x.y.0/24` subnet; a client can move to another server with the same keys, owner, limits and subscription.
-- **Clients:** `.conf` download, QR code, `vpn://` link for AmneziaVPN, comment, expiry date, traffic quota (lifetime or reset every month), speed limit, networks behind a client (site-to-site), creating up to 50 numbered clients at once with a ZIP of configurations, actions on the selected clients (enable, disable, extend, set a quota, delete), a CSV export of the list, key replacement with one button.
+- **Clients:** `.conf` download, QR code, `vpn://` link for AmneziaVPN, comment, expiry date, traffic quota (lifetime or reset every month), speed limit, networks behind a client (site-to-site), creating up to 50 numbered clients at once with a ZIP of configurations, actions on the selected clients (enable, disable, extend, set a quota, delete), a CSV export of the list, key replacement with one button, groups and list filters by group and state.
 - **Per-server traffic switches:** clients may reach each other or are isolated (also from clients of the other servers); access to the private networks behind the server can be closed; the server's own services (SSH, the panel) can be closed to clients; client IPv6 can be routed into the tunnel and dropped. The cloud metadata address range is always closed to clients. Networks behind a client keep working in every state.
 - **Stale-configuration badge:** the client list shows who needs a new file after settings changed.
 - **I1–I5 packets:** a Generate button for each field and ready-made templates for `I1` (random bytes, DNS query, STUN binding request, QUIC-shaped packet). Enabling them with empty fields creates `I1` automatically.
@@ -166,9 +166,11 @@ Short notation does not mean a small packet: `<r 1000>` is 1000 random bytes on 
 
 Templates only set the shape of the first packets. Whether they help against a particular filter depends on that network, so test them where you use the VPN. After changing I1–I5, import the client configuration again.
 
-### Actions on the selected clients and CSV
+### Groups, filters, actions on the selected clients and CSV
 
-Select clients in the list and the buttons **Enable**, **Disable**, **Extend**, **Quota**, **Extra lines** and **Delete selected** appear above the table. Extending counts from the current expiry, or from today for expired clients; clients without expiry do not change. Clients disabled by expiry or quota come back on their own after an extension or a new quota. A report stays above the list: how many clients changed, who was skipped and why (already in that state, expired, quota used up, no expiry).
+A client can have a **group** (“office”, “family”, …): set it in the creation form, on the client page, or for the selected clients with the **Group** button. The group is shown next to the name. Above the list there are filters by group (including “No group”) and by state: connected now, never connected, needs a new configuration, expires within 3 days, off because the term ended or the quota was used, routers with a subscription, with a Telegram owner. The search also looks at the group and the comment. “Select all” selects only the visible rows, so a group can be filtered and then extended, switched off or reconfigured at once.
+
+Select clients in the list and the buttons **Enable**, **Disable**, **Extend**, **Quota**, **Group**, **Extra lines** and **Delete selected** appear above the table. Extending counts from the current expiry, or from today for expired clients; clients without expiry do not change. Clients disabled by expiry or quota come back on their own after an extension or a new quota. A report stays above the list: how many clients changed, who was skipped and why (already in that state, expired, quota used up, no expiry).
 
 The **CSV** button exports the server’s client list: name, address, state, comment, expiry, quota and usage, last handshake, speed limit, owner. The file has no keys; values a spreadsheet would read as a formula are written as text. Every export goes to the audit log.
 
@@ -206,11 +208,15 @@ Under **Server settings → Masking and parameter change**:
 
 A copy of the server settings is saved before every change. Changes go to the audit log, the bot tells the administrators (event “Server parameter change”), and the bot's server menu has a “🔀 Change port” button.
 
-After a parameter change, a masking profile or a client move, the bot sends the new configuration (file and QR code) to every client owner allowed to get it. Owners without that permission are told to ask the administrator for a new one. Routers with a subscription and switched-off clients get no message.
+After a parameter change, a masking profile, a client move, or server settings that change client configurations (address, port, DNS, MTU, obfuscation), the bot sends the new configuration (file and QR code) to every client owner allowed to get it. Owners without that permission are told to ask the administrator for a new one. Routers with a subscription and switched-off clients get no message.
 
 ### Moving a client to another server
 
 On the client page, under “Move to another server”, choose the server and press **Move**. The client moves with the same keys, comment, owner, expiry, limits, traffic used, `I1–I5` packets, extra lines, subscription and pending invitation, and gets a free address in the new server's subnet. If the new server already has a client with that name or key, nothing moves. The client needs a new configuration: its subscription link keeps working and serves it from the new server, and the bot sends it to an owner allowed to get it.
+
+### Blocking signal
+
+In the same settings section there is a **Blocking signal**. When two or more clients were connected and all of them vanish at once, with no handshake for longer than the chosen time (15, 30, 60 or 120 minutes, 30 by default), the server page shows a warning and the bot tells the administrators (event “All clients gone at once”). When clients connect again, the bot says so too. One client leaving or a stopped server is not a signal. If you like, the server changes its port and obfuscation by itself at that moment: routers with a subscription follow, and the bot sends new files to owners allowed to get them.
 
 ### Incoming packet check
 

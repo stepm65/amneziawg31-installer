@@ -254,6 +254,14 @@ echo '{"interface":"awg0","days":0}' | panel_mgr rotate-schedule >/dev/null
 echo '{"interface":"awg0","seconds":5}' | panel_mgr probe | python3 -c 'import json,sys; r=json.load(sys.stdin); assert r["incoming"] >= 3 and r["sizes"], r'
 wait
 
+step 'Client groups and the blocking signal'
+echo '{"interface":"awg0","names":["team-01","team-02"],"action":"group","group":"office"}' | panel_mgr client-batch | grep -q '"changed": \["team-01", "team-02"\]' \
+  || fail 'the group was not set'
+"$MGR" list <<<'{"interface":"awg0"}' | python3 -c 'import json,sys; c={x["name"]:x.get("group_name") for x in json.load(sys.stdin)["clients"]}; assert c["team-01"]=="office" and c["team-03"]=="", c'
+echo '{"interface":"awg0","minutes":15,"rotate":false}' | panel_mgr watch-set | grep -q '"minutes": 15' || fail 'the blocking signal was not saved'
+"$MGR" status <<<'{"interface":"awg0"}' | python3 -c 'import json,sys; w=json.load(sys.stdin)["watch"]; assert w["minutes"]==15 and w["rotate"]=="off", w'
+"$MGR" sample-all </dev/null | python3 -c 'import json,sys; r=json.load(sys.stdin); assert "watch" in r["servers"]["awg0"], r'
+
 step 'Second server next to the first one'
 uplink="$(ip -4 route show default | awk '{print $5; exit}')"
 echo "{\"interface\":\"awg1\",\"subnet\":\"10.88.0.0/24\",\"port\":\"51999\",\"mtu\":\"1280\",\"endpoint\":\"203.0.113.10\",\"dns\":\"1.1.1.1\",\"mode\":\"split\",\"uplink\":\"$uplink\"}" | "$MGR" server-create >/dev/null

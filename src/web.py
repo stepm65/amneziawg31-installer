@@ -684,7 +684,7 @@ def controller_message(lang, message):
 NOTIFY_GROUPS = ('server', 'clients', 'security', 'backups')
 # The Telegram notification cards: (group, icon, events). Same keys as awg31bot.EVENTS.
 TG_EVENT_GROUPS = (
-    ('server', 'server', ('server_state', 'module', 'kernel', 'panel', 'update', 'rotation')),
+    ('server', 'server', ('server_state', 'module', 'kernel', 'panel', 'update', 'rotation', 'blocking')),
     ('clients', 'users', ('client_auto', 'client_expiring', 'client_quota', 'invite')),
     ('security', 'shield', ('login', 'login_failed', 'password', 'owner_export', 'totp_recovery')),
     ('backups', 'archive', ('backup_created', 'backup_failed', 'upload_failed')),
@@ -1739,15 +1739,29 @@ def totp_step(secret, code):
     return None
 
 
+def known_groups(request):
+    try: return [c.get('group_name', '') for c in control(request, 'list').get('clients', [])]
+    except RuntimeError: return []
+
+
 def policy_extras(form):
     try: speed = int(str(form.get('speed_limit_mbit', '0')).strip() or 0)
     except ValueError: raise HTTPException(422, detail='Invalid speed limit') from None
     if not 0 <= speed <= 10000: raise HTTPException(422, detail='Invalid speed limit')
-    return {'speed_limit_mbit': speed, 'quota_period': 'monthly' if form.get('quota_monthly') == '1' else ''}
+    return {'speed_limit_mbit': speed, 'quota_period': 'monthly' if form.get('quota_monthly') == '1' else '',
+            'group': ' '.join(str(form.get('group', '')).split())[:64]}
+
+
+def group_field(value, prefix, lang, groups=()):
+    options = ''.join(f'<option value="{h(g)}">' for g in sorted(set(groups)) if g)
+    return (f'<label class="field" for="{prefix}-group"><span>{h(tr(lang, "group"))}</span>'
+            f'<input id="{prefix}-group" name="group" value="{h(value)}" maxlength="32" list="{prefix}-groups" autocomplete="off">'
+            f'<datalist id="{prefix}-groups">{options}</datalist><small>{h(tr(lang, "group_hint"))}</small></label>')
 
 
 def policy_extra_fields(obj, prefix):
-    return (form_field('speed_limit_mbit', str(int(obj.get('speed_limit_mbit') or 0)), tr(obj['_lang'], 'speed'), required=False, field_id=prefix + '-speed')
+    return (group_field(obj.get('group_name', ''), prefix, obj['_lang'], obj.get('_groups', ()))
+            + form_field('speed_limit_mbit', str(int(obj.get('speed_limit_mbit') or 0)), tr(obj['_lang'], 'speed'), required=False, field_id=prefix + '-speed')
             + f'<label class="check-field"><input type="checkbox" name="quota_monthly" value="1"'
               f'{" checked" if obj.get("quota_period") == "monthly" else ""}><span>{h(tr(obj["_lang"], "quota_monthly"))}</span></label>')
 
@@ -1850,7 +1864,10 @@ def server_content(request: Request, section: str = 'overview'):
     running = bool(state['running'])
     state_pill = ('running' if running else 'stopped')
     clients_all = state.get('clients', [])
+    groups_all = [c.get('group_name') or '' for c in clients_all]
     now = time.time()
+    now_ts = int(now)
+    soon = datetime.fromtimestamp(now + 3 * 86400, timezone.utc).isoformat()
     connected_count = sum(1 for c in clients_all if c.get('enabled') and
                           int(c.get('stats', {}).get('handshake', 0)) > now - 180)
     total_rx = sum(int(c.get('stats', {}).get('received', 0)) for c in clients_all)
@@ -1932,13 +1949,22 @@ def server_content(request: Request, section: str = 'overview'):
                    f'<button class="action-icon is-danger" type="submit" {action_label("delete")}>{icon("trash",18)}</button></form>'
                    '</div>')
         traffic_total = int(st.get('received', 0) or 0) + int(st.get('sent', 0) or 0)
+        group = c.get('group_name') or ''
+        flags = ' '.join(flag for flag, on in (
+            ('online', bool(st.get('handshake')) and now_ts - int(st.get('handshake') or 0) <= 180),
+            ('never', not st.get('handshake')), ('stale', bool(c.get('config_stale'))),
+            ('sub', bool(c.get('subscription'))), ('owner', bool(c.get('telegram_id'))),
+            ('expired', c.get('disabled_reason') == 'expired'), ('quota', c.get('disabled_reason') == 'quota'),
+            ('expiring', bool(c.get('expires_at')) and active and c['expires_at'] <= soon)) if on)
         rows += (f'<tr class="client-row" data-name="{h(c["name"].lower())}" data-ip="{h(c["ip"])}" data-enabled="{int(active)}" '
+                 f'data-group="{h(group)}" data-flags="{flags}" data-text="{h((group + " " + (c.get("comment") or "")).lower())}" '
                  f'data-handshake="{int(st.get("handshake") or 0)}" data-traffic="{traffic_total}"><td><input class="peer-select" type="checkbox" form="bulk-delete-form" name="names" value="{name}" aria-label="{name}"></td><td class="client-name">'
                  # A dot on the client icon marks extra [Interface] lines (variant B chosen by the author).
                  + (f'<span class="client-icon has-extra" title="{h(t("extra_badge_hint"))}">{icon("server",16)}'
                     f'<span class="extra-dot" aria-hidden="true"></span><span class="sr-only">{h(t("extra_badge_hint"))}</span></span>'
                     if c.get('extra_lines') is True else icon("server",16))
-                 + f'<span>{h(c["name"])}</span></td>'
+                 + f'<span>{h(c["name"])}</span>'
+                 + (f'<span class="group-chip">{h(group)}</span>' if group else '') + '</td>'
                  f'<td><code class="ip-pill">{h(c["ip"])}</code>'
                  f'<small class="peer-routes-compact">{h(c.get("routed_subnets", ""))}</small></td>'
                  f'<td><span class="pill pill-{status_class}"><span class="dot"></span>'
@@ -1962,6 +1988,12 @@ def server_content(request: Request, section: str = 'overview'):
         <button type="button" class="btn btn-primary" data-modal-open="add-client-modal">{icon('plus',16)}{h(t('add_client'))}</button>
         </div></div>
         <div class="table-tools"><label class="table-search">{icon('search',16)}<input id="client-search" type="search" placeholder="{h(t('search_clients'))}" aria-label="{h(t('search_clients'))}"></label>
+        <label class="table-filter"><span class="sr-only">{h(t('group'))}</span><select id="client-group-filter" aria-label="{h(t('group'))}">
+          <option value="*">{h(t('group_all'))}</option>{''.join(f'<option value="{h(g)}">{h(g)}</option>' for g in sorted(set(groups_all)) if g)}
+          <option value="">{h(t('group_none'))}</option></select></label>
+        <label class="table-filter"><span class="sr-only">{h(t('filter_state'))}</span><select id="client-state-filter" aria-label="{h(t('filter_state'))}">
+          {''.join(f'<option value="{key}">{h(t("filter_" + (key or "all")))}</option>' for key in ('', 'online', 'never', 'stale', 'expiring', 'expired', 'quota', 'sub', 'owner'))}
+          </select></label>
         <div class="client-status-filters" role="group" aria-label="{h(t('status'))}">
           <label><input type="checkbox" data-client-status="1" checked><span>{h(t('active_only'))}</span></label>
           <label><input type="checkbox" data-client-status="0" checked><span>{'Отключённые' if lang=='ru' else 'Disabled'}</span></label>
@@ -1977,6 +2009,7 @@ def server_content(request: Request, section: str = 'overview'):
         <button type="submit" form="bulk-disable-form" class="btn btn-secondary btn-small" data-needs-selection disabled>{icon('pause',15)}{h(t('bulk_disable'))}</button>
         <button type="button" class="btn btn-secondary btn-small" data-modal-open="bulk-extend-modal" data-needs-selection disabled>{icon('calendar',15)}{h(t('bulk_extend'))}</button>
         <button type="button" class="btn btn-secondary btn-small" data-modal-open="bulk-limit-modal" data-needs-selection disabled>{icon('activity',15)}{h(t('bulk_limit'))}</button>
+        <button type="button" class="btn btn-secondary btn-small" data-modal-open="bulk-group-modal" data-needs-selection disabled>{icon('tag',15)}{h(t('bulk_group'))}</button>
         <button id="bulk-extra-button" type="button" class="btn btn-secondary btn-small" data-modal-open="bulk-extra-modal" data-needs-selection disabled>{icon('file',16)}{h(t('extra_bulk'))}</button>
         <button id="bulk-delete-button" type="submit" class="btn btn-danger btn-small" disabled>{icon('trash',16)}{h(t('bulk_delete'))}</button></div></form>
         <div class="table-scroll"><table><thead><tr>
@@ -2002,7 +2035,7 @@ def server_content(request: Request, section: str = 'overview'):
               {expiry_field('', 'new-expires', lang)}
               {form_field('quota_gib','0',t('quota'),required=False,field_id='new-quota')}
               {form_field('telegram_id','',t('telegram_id'),t('telegram_id_hint'),required=False,field_id='new-telegram')}
-              {policy_extra_fields({'_lang':lang}, 'new')}
+              {policy_extra_fields({'_lang':lang, '_groups':groups_all}, 'new')}
             </div>
             <label class="check-field"><input type="checkbox" name="owner_export" value="1"><span>{h(t('owner_export'))}</span></label>
             {cps_block('new', *mask_defaults(state), lang)}
@@ -2041,6 +2074,19 @@ def server_content(request: Request, section: str = 'overview'):
           </form></div>
         </dialog>
 
+        <dialog id="bulk-group-modal" class="awg-modal">
+          <div class="modal-header"><h2>{icon('tag',20)}{h(t('bulk_group_title'))}</h2>
+          <button type="button" class="icon-btn modal-close" aria-label="{h(t('close_window'))}">{icon('x',20)}</button></div>
+          <div class="modal-body">
+          <form class="add-client-form" method="post" action="/servers/{h(state['interface'])}/clients/bulk-action" data-bulk-names>{csrf(request)}
+          <input type="hidden" name="action" value="group">
+          <p class="bulk-extra-count mono" data-bulk-names-count></p>
+          {group_field('', 'bulk', lang, groups_all)}
+          <p class="info-line">{h(t('bulk_group_hint'))}</p>
+          <div class="modal-footer"><button class="btn btn-primary" type="submit">{icon('check',16)}{h(t('bulk_apply'))}</button></div>
+          </form></div>
+        </dialog>
+
         <!-- Extra [Interface] lines for the selected clients -->
         <dialog id="bulk-extra-modal" class="awg-modal">
           <div class="modal-header"><h2>{icon('file',20)}{h(t('extra_bulk_title'))}</h2>
@@ -2073,7 +2119,7 @@ def server_content(request: Request, section: str = 'overview'):
             {form_field('start','1',t('batch_start'),field_id='batch-start')}
             {expiry_field('', 'batch-expires', lang)}
             {form_field('quota_gib','0',t('quota'),required=False,field_id='batch-quota')}
-            {policy_extra_fields({'_lang':lang}, 'batch')}
+            {policy_extra_fields({'_lang':lang, '_groups':groups_all}, 'batch')}
           </div>
           <div class="modal-footer"><button class="btn btn-primary" type="submit">{icon('download',16)}{h(t('batch_create'))}</button></div>
           </form>
@@ -2177,7 +2223,10 @@ def server_content(request: Request, section: str = 'overview'):
             (t('mode'),t('full' if state['mode']=='full' else 'split')),
         ]
         details_html=''.join(f'<div class="server-detail"><dt>{h(label)}</dt><dd>{h(value)}</dd></div>' for label,value in details)
-        section_html=f'''<div class="server-home-grid">
+        silent = (f'<p class="bulk-notice is-warn" role="alert">{icon("alert",16)}<span>{h(t("watch_silent_overview"))} '
+                  f'<a href="/servers/{h(state["interface"])}/settings#rotation">{h(t("watch_what_now"))}</a></span></p>'
+                  if (state.get('watch') or {}).get('state') == 'silent' else '')
+        section_html=silent+f'''<div class="server-home-grid">
           <section class="card server-home-card"><div class="server-home-top">
             <div><h2>{h('Состояние' if lang=='ru' else 'Status')}</h2>
               <span class="pill pill-{state_pill}"><span class="dot"></span>{h(t('vpn_running' if running else 'vpn_stopped'))}</span></div>
@@ -2360,8 +2409,9 @@ async def settings(request: Request, interface: str = ''):
     payload={k: str(form[k]) for k in ('endpoint','port','mtu','dns','client_to_client','private_access','ipv6_block','host_access','mss_clamp') if k in form}
     payload.update({k: str(form[k]) for k in OBF_EDIT_FIELDS if k in form})
     try:
-        control(request,'settings',payload)
-        audit_event('server_settings_changed',selected_server(request))
+        result = control(request,'settings',payload)
+        changed = int((result or {}).get('configs_changed', 0) or 0)
+        audit_event('server_settings_changed', selected_server(request) + (f': {changed} client configurations changed' if changed else ''))
     except RuntimeError as exc:
         return error_page(request,tr(lang,'settings_error'),exc)
     return RedirectResponse(f'/servers/{selected_server(request)}/settings?saved=1',status_code=303)
@@ -2518,7 +2568,7 @@ def detail(request: Request, name: str, interface: str = ''):
         {expiry_field(obj.get('expires_at') or '', 'policy-expires', lang)}
         {form_field('quota_gib',gib_format(obj.get('traffic_limit_bytes',0)),t('quota'),required=False,field_id='policy-quota')}
         {form_field('telegram_id',obj.get('telegram_id') or '',t('telegram_id'),t('telegram_id_hint'),required=False,field_id='policy-telegram')}
-        {policy_extra_fields({**obj,'_lang':lang}, 'policy')}
+        {policy_extra_fields({**obj,'_lang':lang,'_groups':known_groups(request)}, 'policy')}
       </div><label class="check-field"><input type="checkbox" name="owner_export" value="1"{' checked' if obj.get('owner_export') else ''}><span>{h(t('owner_export'))}</span></label><button class="btn btn-primary" type="submit">{h(t('save_policy'))}</button>
       </form></section>'''
     rekeyed = (f'<p class="bulk-notice" role="status">{icon("key",16)}<span>{h(t("rekeyed"))}</span></p>'
@@ -2781,7 +2831,7 @@ async def client_invite_create(request: Request, name: str, interface: str = '')
     return page(t('invite_ready'), body, request)
 
 
-BULK_ACTIONS = ('enable', 'disable', 'extend', 'limit')
+BULK_ACTIONS = ('enable', 'disable', 'extend', 'limit', 'group')
 
 
 @app.post('/servers/{interface}/clients/bulk-action')
@@ -2797,6 +2847,8 @@ async def clients_bulk_action(request: Request, interface: str = ''):
         except (TypeError, ValueError): raise HTTPException(422) from None
     if action == 'limit':
         payload['traffic_limit_bytes'] = gib_bytes(form.get('quota_gib', '0'))
+    if action == 'group':
+        payload['group'] = ' '.join(str(form.get('group', '')).split())[:64]
     try: result = control(request, 'client-batch', payload)
     except RuntimeError as exc: return error_page(request, tr(lang_of(request), 'error'), exc)
     server = selected_server(request)
@@ -2841,7 +2893,7 @@ def clients_csv(request: Request, interface: str = ''):
     writer = csv.writer(out)
     writer.writerow(['name', 'ip', 'enabled', 'disabled_reason', 'comment', 'created_at', 'expires_at',
                      'traffic_limit_gib', 'quota_period', 'used_gib', 'received_bytes', 'sent_bytes',
-                     'last_handshake_utc', 'speed_limit_mbit', 'telegram_id', 'owner_export', 'routed_subnets', 'config_stale'])
+                     'last_handshake_utc', 'speed_limit_mbit', 'telegram_id', 'owner_export', 'routed_subnets', 'config_stale', 'group'])
     for c in state.get('clients', []):
         st = c.get('stats') or {}
         handshake = int(st.get('handshake') or c.get('last_handshake') or 0)
@@ -2852,7 +2904,7 @@ def clients_csv(request: Request, interface: str = ''):
             int(st.get('received', 0) or 0), int(st.get('sent', 0) or 0),
             datetime.fromtimestamp(handshake, timezone.utc).strftime('%Y-%m-%d %H:%M:%S') if handshake else '',
             int(c.get('speed_limit_mbit') or 0), c.get('telegram_id', ''), int(bool(c.get('owner_export'))),
-            c.get('routed_subnets', ''), int(bool(c.get('config_stale'))))])
+            c.get('routed_subnets', ''), int(bool(c.get('config_stale'))), c.get('group_name', ''))])
     audit_event('clients_exported', f'{selected_server(request)} ({len(state.get("clients", []))})')
     stamp = datetime.now(timezone.utc).strftime('%Y%m%d-%H%M')
     # A BOM lets Excel open the Cyrillic comments as UTF-8.
@@ -3413,7 +3465,36 @@ def rotation_card(request, state, t):
           <label class="field"><span>{h(t('rot_period'))}</span><select name="days">{days}</select></label>
           {checks(parts)}
           <button class="btn btn-secondary" type="submit">{h(t('rot_save'))}</button></form>
+        {watch_block(request, state, t)}
       </div></section>'''
+
+
+def watch_block(request, state, t):
+    watch = state.get('watch') or {}
+    minutes = int(watch.get('minutes', 30) or 0)
+    options = ''.join(f'<option value="{m}"{" selected" if m == minutes else ""}>{h(t("watch_off") if not m else t("watch_after").format(n=m))}</option>'
+                      for m in (0, 15, 30, 60, 120))
+    status = (f'<p class="access-state is-warn">{icon("alert",15)}{h(t("watch_silent_now"))}</p>' if watch.get('state') == 'silent'
+              else f'<p class="access-hint">{h(t("watch_seen").format(n=watch.get("count", 0)))}</p>' if watch.get('seen') else '')
+    return (f'<form method="post" action="/servers/{h(state["interface"])}/watch" class="rotation-block">{csrf(request)}'
+            f'<h3>{icon("bell",17)}{h(t("watch_title"))}</h3><p class="access-hint">{h(t("watch_hint"))}</p>'
+            f'<label class="field"><span>{h(t("watch_minutes"))}</span><select name="minutes">{options}</select></label>'
+            f'<label class="check-field"><input type="checkbox" name="rotate" value="1"{" checked" if watch.get("rotate") == "on" else ""}>'
+            f'<span>{h(t("watch_rotate"))}</span></label>{status}'
+            f'<button class="btn btn-secondary" type="submit">{h(t("watch_save"))}</button></form>')
+
+
+@app.post('/servers/{interface}/watch')
+async def server_watch(request: Request, interface: str):
+    form = await request.form(); require_csrf(request, form.get('csrf', ''))
+    if not SERVER_RE.fullmatch(interface): raise HTTPException(404)
+    try: minutes = int(form.get('minutes', 30))
+    except (TypeError, ValueError): raise HTTPException(422) from None
+    rotate_on = form.get('rotate') == '1'
+    try: ctl('watch-set', {'interface': interface, 'minutes': minutes, 'rotate': rotate_on})
+    except RuntimeError as exc: return error_page(request, tr(lang_of(request), 'error'), exc)
+    audit_event('settings_changed', f'{interface}: no-handshake signal {minutes} min' + (', rotate' if rotate_on else ''))
+    return RedirectResponse(f'/servers/{interface}/settings?scheduled=1#rotation', status_code=303)
 
 
 @app.post('/servers/{interface}/probe')
@@ -4670,4 +4751,42 @@ TEXT['en'].update({
                  'It needs a new configuration: a router with a subscription fetches it, the bot sends it to an owner allowed to get it.',
     'move_button': 'Move', 'move_confirm': 'Move the client to another server? The current configuration stops working.',
     'moved_notice': 'The client was moved to this server. The old configuration no longer works.',
+})
+
+
+TEXT['ru'].update({
+    'group': 'Группа', 'group_hint': 'Например «офис» или «семья»: по группе можно отфильтровать список и отметить клиентов разом.',
+    'group_all': 'Все группы', 'group_none': 'Без группы', 'filter_state': 'Состояние',
+    'filter_all': 'Любое состояние', 'filter_online': 'Подключены сейчас', 'filter_never': 'Ни разу не подключались',
+    'filter_stale': 'Нужна новая конфигурация', 'filter_expiring': 'Срок истекает за 3 дня', 'filter_expired': 'Отключены по сроку',
+    'filter_quota': 'Отключены по лимиту', 'filter_sub': 'Роутеры с подпиской', 'filter_owner': 'С владельцем в Telegram',
+    'bulk_group': 'Группа', 'bulk_group_title': 'Группа для отмеченных',
+    'bulk_group_hint': 'Пустое поле убирает клиентов из группы.', 'bulk_done_group': 'Группа задана клиентам: {n}',
+    'watch_title': 'Сигнал о блокировке',
+    'watch_hint': 'Если два и больше клиента были подключены и все пропали одновременно, бот и панель предупредят. Обычно так выглядит блокировка порта или протокола.',
+    'watch_minutes': 'Предупредить, если рукопожатий нет', 'watch_off': 'Не следить', 'watch_after': '{n} мин',
+    'watch_rotate': 'Сразу сменить порт и обфускацию (роутеры с подпиской подхватят сами)',
+    'watch_save': 'Сохранить', 'watch_seen': 'Последняя активность: подключено клиентов — {n}.',
+    'watch_silent_now': 'Сейчас рукопожатий нет: клиенты пропали все сразу.',
+    'watch_silent_overview': 'Клиенты пропали все сразу и не подключаются: возможно, порт или протокол заблокирован.',
+    'watch_what_now': 'Что можно сделать',
+    'tg_e_blocking': 'Клиенты пропали все сразу (возможна блокировка)',
+})
+TEXT['en'].update({
+    'group': 'Group', 'group_hint': 'For example “office” or “family”: filter the list by group and select its clients at once.',
+    'group_all': 'All groups', 'group_none': 'No group', 'filter_state': 'State',
+    'filter_all': 'Any state', 'filter_online': 'Connected now', 'filter_never': 'Never connected',
+    'filter_stale': 'Need a new configuration', 'filter_expiring': 'Expire within 3 days', 'filter_expired': 'Off: term ended',
+    'filter_quota': 'Off: quota used', 'filter_sub': 'Routers with a subscription', 'filter_owner': 'With a Telegram owner',
+    'bulk_group': 'Group', 'bulk_group_title': 'Group for the selected clients',
+    'bulk_group_hint': 'An empty field takes the clients out of their group.', 'bulk_done_group': 'Group set for clients: {n}',
+    'watch_title': 'Blocking signal',
+    'watch_hint': 'When two or more clients were connected and all of them vanish at once, the bot and the panel warn you. That is how a blocked port or protocol usually looks.',
+    'watch_minutes': 'Warn when there are no handshakes for', 'watch_off': 'Do not watch', 'watch_after': '{n} min',
+    'watch_rotate': 'Change the port and obfuscation at once (routers with a subscription follow)',
+    'watch_save': 'Save', 'watch_seen': 'Last activity: {n} clients connected.',
+    'watch_silent_now': 'No handshakes now: all clients vanished at once.',
+    'watch_silent_overview': 'All clients vanished at once and do not reconnect: the port or protocol may be blocked.',
+    'watch_what_now': 'What you can do',
+    'tg_e_blocking': 'All clients gone at once (possible blocking)',
 })

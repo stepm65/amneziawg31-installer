@@ -236,24 +236,35 @@
     }
   }
   allPeers?.addEventListener('change', () => {
-    peerCheckboxes.forEach(x => { x.checked = allPeers.checked; });
+    // "All" means the rows the filter shows: a group can be selected and acted on at once.
+    peerCheckboxes.forEach(x => {
+      x.checked = allPeers.checked && !x.closest('tr')?.classList.contains('hidden-by-filter');
+    });
     updatePeerSelection();
   });
   peerCheckboxes.forEach(x => x.addEventListener('change', updatePeerSelection));
 
   const search = byId('client-search');
   const statusFilters = [...document.querySelectorAll('[data-client-status]')];
+  const groupFilter = byId('client-group-filter');
+  const stateFilter = byId('client-state-filter');
   function applyFilter() {
     const text = (search?.value || '').toLowerCase().trim();
     const statuses = statusFilters.filter(input => input.checked).map(input => input.dataset.clientStatus);
+    const group = groupFilter ? groupFilter.value : '*';
+    const flag = stateFilter ? stateFilter.value : '';
     for (const row of document.querySelectorAll('tr.client-row')) {
-      const matches = (!text || row.dataset.name?.includes(text) || row.dataset.ip?.includes(text)) &&
-        (!statusFilters.length || statuses.includes(row.dataset.enabled));
+      const matches = (!text || row.dataset.name?.includes(text) || row.dataset.ip?.includes(text) || row.dataset.text?.includes(text)) &&
+        (!statusFilters.length || statuses.includes(row.dataset.enabled)) &&
+        (group === '*' || (row.dataset.group || '') === group) &&
+        (!flag || (row.dataset.flags || '').split(' ').includes(flag));
       row.classList.toggle('hidden-by-filter', !matches);
     }
   }
   search?.addEventListener('input', applyFilter);
   statusFilters.forEach(input => input.addEventListener('change', applyFilter));
+  groupFilter?.addEventListener('change', applyFilter);
+  stateFilter?.addEventListener('change', applyFilter);
   applyFilter();
   // I1–I5 helpers: a random value per field and ready-made templates for I1.
   for (const box of document.querySelectorAll('[data-cps]')) {

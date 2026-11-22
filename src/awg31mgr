@@ -24,7 +24,7 @@ VALID = re.compile(r'^awg(?:0|[1-9][0-9]?)$')
 OPTIONAL_PROFILE = ('client_to_client', 'private_access', 'ipv6_block', 'host_access')
 OPS = {'status', 'list', 'add', 'add-batch', 'download', 'enable', 'disable', 'delete', 'delete-batch', 'settings', 'client-network', 'client-extra', 'client-policy', 'history', 'sessions',
        'client-rekey', 'client-batch', 'client-invite', 'invite-redeem',
-       'sub-token', 'sub-fetch', 'rotate', 'rotate-schedule', 'mask-apply', 'probe'}
+       'sub-token', 'sub-fetch', 'rotate', 'rotate-schedule', 'mask-apply', 'probe', 'watch-set'}
 ADMIN = {'servers', 'server-create', 'client-move', 'server-start', 'server-stop', 'server-restart', 'server-delete',
          'sample-all','host-history','backup-create','backup-list','backup-export','backup-check','backup-restore','profile-export',
          'profile-import','audit','audit-list','password-change','diagnostics',
@@ -251,6 +251,16 @@ def main():
                 admin.audit({'event':'server_rotated','target':f'{name}: {", ".join(rotated["parts"])}, port {rotated["old_port"]} → {rotated["port"]} (schedule)'})
             elif rotated:
                 admin.audit({'event':'server_rotate_failed','target':f'{name}: {rotated.get("error","")}'})
+            watch=results[name].get('watch') or {}
+            if watch.get('event')=='silent':
+                admin.audit({'event':'server_silent','target':f'{name}: {watch["count"]} clients gone, {watch["minutes"]} min without handshakes'})
+                done=watch.get('rotated')
+                if done and done.get('ok'):
+                    admin.audit({'event':'server_rotated','target':f'{name}: {", ".join(done["parts"])}, port {done["old_port"]} → {done["port"]} (no handshakes)'})
+                elif done:
+                    admin.audit({'event':'server_rotate_failed','target':f'{name}: {done.get("error","")}'})
+            elif watch.get('event')=='back':
+                admin.audit({'event':'server_back','target':f'{name}: {watch["active"]} clients connected again'})
         try: host=admin.sample_host_metrics()
         except (OSError,ValueError,sqlite3.Error) as exc: host={'ok':False,'error':str(exc)[:150]}
         return {'ok':True,'servers':results,'host':host}

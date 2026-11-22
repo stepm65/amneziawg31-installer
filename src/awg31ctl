@@ -163,7 +163,9 @@ def get_conn(create=False):
                        'sub_created': "TEXT NOT NULL DEFAULT ''",
                        'sub_last_fetch': "TEXT NOT NULL DEFAULT ''",
                        'sub_last_addr': "TEXT NOT NULL DEFAULT ''",
-                       'sub_fetches': 'INTEGER NOT NULL DEFAULT 0'}
+                       'sub_fetches': 'INTEGER NOT NULL DEFAULT 0',
+                       # A free-form group ("office", "family") to filter and act on clients together.
+                       'group_name': "TEXT NOT NULL DEFAULT ''"}
         for name, definition in new_columns.items():
             if name not in columns:
                 con.execute(f'ALTER TABLE clients ADD COLUMN {name} {definition}')
@@ -911,8 +913,63 @@ def validate_policy(data, old=None):
     if not 0 <= speed <= 10000: raise ValueError('Ограничение скорости: от 0 до 10000 Мбит/с (0 = без ограничения)')
     period = str(data.get('quota_period', old.get('quota_period', '')) or '').strip()
     if period not in ('', 'monthly'): raise ValueError('Период лимита: пусто или monthly')
+    group = valid_group(data.get('group', old.get('group_name', '')))
     return {'comment':comment,'expires_at':expiry,'traffic_limit_bytes':limit,'telegram_id':telegram,
-            'owner_export':int(export),'speed_limit_mbit':speed,'quota_period':period}
+            'owner_export':int(export),'speed_limit_mbit':speed,'quota_period':period,'group_name':group}
+
+
+def valid_group(raw):
+    group = ' '.join(str(raw or '').split())
+    if len(group) > 32 or any(ord(c) < 32 or c in '<>"\'`;' for c in group):
+        raise ValueError('Группа: до 32 символов, без управляющих символов и < > " \' ` ;')
+    return group
+
+
+WATCH_MINUTES = (0, 15, 30, 60, 120)
+ACTIVE_SECONDS = 180          # a handshake this recent means the client is connected
+
+
+def silence_watch(con, stats, rows, now):
+    """Two or more clients connected and then all of them gone at once, for longer than the chosen time:
+    the usual sign of a blocked port or protocol (or of a network problem on the way to the server)."""
+    cfg = get_settings(con)
+    try: minutes = int(cfg.get('watch_minutes', 30) or 0)
+    except ValueError: minutes = 0
+    instant = int(now.timestamp())
+    active = sum(1 for r in rows if r['enabled'] and (stats.get(r['public_key']) or {}).get('handshake')
+                 and instant - int(stats[r['public_key']]['handshake']) <= ACTIVE_SECONDS)
+    state = cfg.get('watch_state', 'ok')
+    if active:
+        put_settings(con, {'watch_seen': instant, 'watch_count': active, 'watch_state': 'ok'})
+        return {'event': 'back', 'active': active} if state == 'silent' else None
+    if not stats:
+        try: down = subprocess.run(['ip', 'link', 'show', IFACE], capture_output=True).returncode != 0
+        except OSError: down = True
+        if down:
+            put_settings(con, {'watch_count': 0})      # a stopped server is not a blocked one
+            return None
+    if not minutes or state == 'silent':
+        return None
+    seen, count = int(cfg.get('watch_seen') or 0), int(cfg.get('watch_count') or 0)
+    if count < 2 or not seen or instant - seen < minutes * 60:
+        return None
+    put_settings(con, {'watch_state': 'silent'})
+    result = {'event': 'silent', 'count': count, 'minutes': minutes, 'since': seen}
+    if cfg.get('watch_rotate') == 'on':
+        try: result['rotated'] = rotate(con, ['port', 'obfuscation'], reason='silence')
+        except (ValueError, RuntimeError) as exc: result['rotated'] = {'ok': False, 'error': str(exc)[:200]}
+    return result
+
+
+def watch_set(con):
+    data = read_json()
+    try: minutes = int(data.get('minutes', 30))
+    except (TypeError, ValueError): raise ValueError('Сигнал: число минут') from None
+    if minutes not in WATCH_MINUTES: raise ValueError('Сигнал: 0, 15, 30, 60 или 120 минут')
+    rotate_on = 'on' if data.get('rotate') in (True, 'on', '1', 1) else 'off'
+    put_settings(con, {'watch_minutes': minutes, 'watch_rotate': rotate_on})
+    con.commit()
+    return {'ok': True, 'minutes': minutes, 'rotate': rotate_on}
 
 
 def sample_usage(con, now=None):
@@ -976,12 +1033,13 @@ def sample_usage(con, now=None):
         except (ValueError, RuntimeError) as exc:
             rotated = {'ok': False, 'error': str(exc)[:200]}
             put_settings(con, {'rotate_since': now.isoformat(timespec='seconds')})   # try again in a full period
+    watch = silence_watch(con, stats, rows, now)
     con.execute('INSERT INTO traffic_samples(measured_at,rx_delta,tx_delta) VALUES(?,?,?)',
                 (instant,rx_delta,tx_delta))
     con.execute('DELETE FROM traffic_samples WHERE measured_at<?',(instant-32*86400,))
     track_sessions(con, moved, instant)
     con.commit()
-    return {'ok':True,'rx_delta':rx_delta,'tx_delta':tx_delta,'disabled':changed,'enabled':revived,'rotated':rotated}
+    return {'ok':True,'rx_delta':rx_delta,'tx_delta':tx_delta,'disabled':changed,'enabled':revived,'rotated':rotated,'watch':watch}
 
 
 def traffic_history(con, request):
@@ -1005,10 +1063,10 @@ def client_policy_update(con):
     if not row: raise ValueError('Клиент не найден')
     policy = validate_policy(data,dict(row))
     con.execute('''UPDATE clients SET comment=?,expires_at=?,traffic_limit_bytes=?,telegram_id=?,owner_export=?,
-                   speed_limit_mbit=?,quota_period=?,quota_month=? WHERE name=?''',
+                   speed_limit_mbit=?,quota_period=?,quota_month=?,group_name=? WHERE name=?''',
                 (policy['comment'],policy['expires_at'],policy['traffic_limit_bytes'],policy['telegram_id'],
                  policy['owner_export'],policy['speed_limit_mbit'],policy['quota_period'],
-                 datetime.now(timezone.utc).strftime('%Y-%m') if policy['quota_period'] else '',name))
+                 datetime.now(timezone.utc).strftime('%Y-%m') if policy['quota_period'] else '',policy['group_name'],name))
     if policy['speed_limit_mbit'] != int(row['speed_limit_mbit'] or 0):
         apply(get_settings(con), con)        # rewrites the tc rules, sessions are not reset
     con.commit()
@@ -1026,13 +1084,13 @@ def insert_client(con, cfg, name, data, routes=''):
     con.execute('''INSERT INTO clients
         (name, ip, private_key, public_key, psk, enabled, created_at,
          routed_subnets, i_enabled, i1, i2, i3, i4, i5, comment, expires_at, traffic_limit_bytes, telegram_id, owner_export,
-         speed_limit_mbit, quota_period, quota_month)
-         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
+         speed_limit_mbit, quota_period, quota_month, group_name)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
         (name,address,private,public,psk,1,datetime.now(timezone.utc).isoformat(),
          routes,cps['i_enabled'], *(cps[k] for k in I_KEYS),
          policy['comment'],policy['expires_at'],policy['traffic_limit_bytes'],policy['telegram_id'],policy['owner_export'],
          policy['speed_limit_mbit'],policy['quota_period'],
-         datetime.now(timezone.utc).strftime('%Y-%m') if policy['quota_period'] else ''))
+         datetime.now(timezone.utc).strftime('%Y-%m') if policy['quota_period'] else '', policy['group_name']))
     return {'name':name,'private_key':private,'ip':address,'psk':psk,**cps}
 
 
@@ -1114,6 +1172,7 @@ def clients_action(con, which):
                 'subscription':{'active':bool(row['sub_hash']),'created':row['sub_created'],'last_fetch':row['sub_last_fetch'],
                                 'last_addr':row['sub_last_addr'],'fetches':row['sub_fetches']},
                 'speed_limit_mbit':row['speed_limit_mbit'], 'quota_period':row['quota_period'],
+                'group_name':row['group_name'],
                 **{key:row[key] for key in I_KEYS}}
     if which == 'enable':
         if row['expires_at'] and datetime.fromisoformat(row['expires_at']) <= datetime.now(timezone.utc):
@@ -1256,9 +1315,10 @@ def client_batch(con):
     data = read_json()
     names = read_names(data)
     action = str(data.get('action', ''))
-    if action not in ('enable', 'disable', 'extend', 'limit'):
-        raise ValueError('action: enable, disable, extend или limit')
+    if action not in ('enable', 'disable', 'extend', 'limit', 'group'):
+        raise ValueError('action: enable, disable, extend, limit или group')
     days = limit = 0
+    group = valid_group(data.get('group', '')) if action == 'group' else ''
     if action == 'extend':
         try: days = int(data.get('days', 0))
         except (TypeError, ValueError): raise ValueError('Продление: целое число дней') from None
@@ -1313,6 +1373,11 @@ def client_batch(con):
             changed.append(name)
             if not row['enabled'] and row['disabled_reason'] == 'expired' and not try_enable(row):
                 enabled.append(name)
+        elif action == 'group':
+            if row['group_name'] == group:
+                skipped[name] = 'already'; continue
+            con.execute('UPDATE clients SET group_name=? WHERE name=?', (group, name))
+            changed.append(name)
         elif action == 'limit':
             row['traffic_limit_bytes'] = limit
             con.execute('UPDATE clients SET traffic_limit_bytes=? WHERE name=?', (limit, name))
@@ -1638,7 +1703,7 @@ def probe_port(cfg, data):
 MOVE_KEEP = ('name', 'private_key', 'public_key', 'psk', 'enabled', 'created_at', 'routed_subnets', 'i_enabled',
              *I_KEYS, 'extra_lines', 'comment', 'expires_at', 'traffic_limit_bytes', 'used_bytes', 'disabled_reason',
              'telegram_id', 'owner_export', 'speed_limit_mbit', 'quota_period', 'quota_month',
-             'invite_hash', 'invite_expires', 'invite_export', 'sub_hash', 'sub_created', 'sub_last_fetch', 'sub_last_addr', 'sub_fetches')
+             'invite_hash', 'invite_expires', 'invite_export', 'group_name', 'sub_hash', 'sub_created', 'sub_last_fetch', 'sub_last_addr', 'sub_fetches')
 
 
 def client_export_row(con):
@@ -1735,10 +1800,14 @@ def settings_update(con):
     with sqlite3.connect(backup/'state.sqlite3') as destination:
         con.backup(destination)
     os.chmod(backup/'state.sqlite3',0o600)
+    peers = peer_rows(con)
+    before = {p['name']: config_fingerprint(client_config(old, p, peers)) for p in peers}
     put_settings(con, stored)
     apply(cfg, con, restart=True)
     con.commit()
-    return {'ok':True,'reimport_clients':True,'backup':str(backup)}
+    after = get_settings(con)
+    changed = [p['name'] for p in peers if config_fingerprint(client_config(after, p, peers)) != before[p['name']]]
+    return {'ok':True,'reimport_clients':bool(changed),'configs_changed':len(changed),'backup':str(backup)}
 
 
 def logging_settings():
@@ -1841,13 +1910,17 @@ def get_status(con, with_clients=False):
     result['running'] = subprocess.run(['ip','link','show',IFACE],capture_output=True).returncode==0
     result['mask_profile'] = cfg.get('mask_profile', 'none')
     result['mask_i1'] = cfg.get('mask_i1', '') if result['mask_profile'] == 'custom' else ''
+    try: watch_minutes = int(cfg.get('watch_minutes', 30) or 0)
+    except ValueError: watch_minutes = 0
+    result['watch'] = {'minutes': watch_minutes, 'rotate': cfg.get('watch_rotate', 'off'), 'state': cfg.get('watch_state', 'ok'),
+                       'seen': int(cfg.get('watch_seen') or 0), 'count': int(cfg.get('watch_count') or 0)}
     result['rotation'] = {'days': int(cfg.get('rotate_days') or 0), 'parts': str(cfg.get('rotate_parts') or 'port,obfuscation').split(','),
                           'rotated_at': cfg.get('rotated_at', ''), 'since': cfg.get('rotate_since', '')}
     if with_clients:
         stats = live_stats()
         peers = peer_rows(con)
         result['clients'] = [
-            {k:p[k] for k in ('name','ip','public_key','enabled','created_at','routed_subnets','i_enabled','comment','expires_at','traffic_limit_bytes','used_bytes','disabled_reason','last_handshake','telegram_id','owner_export','speed_limit_mbit','quota_period')}
+            {k:p[k] for k in ('name','ip','public_key','enabled','created_at','routed_subnets','i_enabled','comment','expires_at','traffic_limit_bytes','used_bytes','disabled_reason','last_handshake','telegram_id','owner_export','speed_limit_mbit','quota_period','group_name')}
             | {'extra_lines': bool(p.get('extra_lines')), 'subscription': bool(p.get('sub_hash')),
                'sub_last_fetch': p.get('sub_last_fetch', ''),
                'stats': (stats.get(p['public_key']) or {'handshake':p['last_handshake'],'received':p['last_rx'],'sent':p['last_tx']}),
@@ -1862,7 +1935,7 @@ def main():
     if len(sys.argv) != 2 or sys.argv[1] not in ('init','status','list','add','download','enable','disable','delete','delete-batch','client-network','client-extra','client-policy','settings','sample','history','add-batch','sessions',
                                                     'client-rekey','client-batch','client-invite','invite-redeem',
                                                     'sub-token','sub-fetch','rotate','rotate-schedule','mask-apply','probe',
-                                                    'client-export','client-import'):
+                                                    'client-export','client-import','watch-set'):
         raise ValueError('Неподдерживаемая команда')
     LOCK.parent.mkdir(parents=True, exist_ok=True)
     if sys.argv[1] == 'probe':
@@ -1899,6 +1972,7 @@ def main():
                 elif op == 'mask-apply': result = mask_apply(con)
                 elif op == 'client-export': result = client_export_row(con)
                 elif op == 'client-import': result = client_import_row(con)
+                elif op == 'watch-set': result = watch_set(con)
                 elif op == 'client-policy': result = client_policy_update(con)
                 elif op == 'sample': result = sample_usage(con)
                 elif op == 'history': result = traffic_history(con,read_json())

@@ -49,7 +49,7 @@ EVENTS = {
     'server_state': 'server', 'module': 'server', 'kernel': 'server', 'panel': 'server',
     'client_auto': 'clients', 'client_expiring': 'clients', 'client_quota': 'clients',
     'login': 'security', 'login_failed': 'security', 'password': 'security', 'owner_export': 'security',
-    'totp_recovery': 'security', 'invite': 'clients', 'update': 'server', 'rotation': 'server',
+    'totp_recovery': 'security', 'invite': 'clients', 'update': 'server', 'rotation': 'server', 'blocking': 'server',
     'backup_created': 'backups', 'backup_failed': 'backups', 'upload_failed': 'backups',
     'cpu': 'system', 'memory': 'system', 'disk': 'system',
 }
@@ -219,6 +219,9 @@ TEXT = {
         'n_user_newconf': '🔄 Параметры VPN-сервера изменились. Новая конфигурация <b>{name}</b> ниже: импортируйте её заново, прежняя больше не работает.',
         'n_user_changed': '🔄 Параметры VPN-сервера изменились: конфигурация <b>{name}</b> больше не работает. Попросите у администратора новую.',
         'n_delivered': '📨 Новые конфигурации отправлены владельцам: {count}.',
+        'n_silent': ('🚫 Клиенты пропали все сразу: {target}. Возможно, порт или протокол заблокирован. '
+                     'Проверьте входящие пакеты (📡 в меню сервера) или смените порт (🔀).'),
+        'n_back': '✅ Клиенты снова подключаются: {target}.',
         'n_rotated': '🔀 Параметры сервера сменены: {target}.', 'n_rotate_failed': '⚠️ Смена параметров сервера не удалась: {target}.',
         'confirm_rekey': ('Выпустить для <b>{name}</b> новый ключ? Текущая конфигурация перестанет работать сразу, '
                           'клиенту нужно будет импортировать новую. Адрес, лимиты, срок и владелец сохранятся.'),
@@ -343,6 +346,9 @@ TEXT = {
         'n_user_newconf': '🔄 The VPN server settings changed. The new configuration of <b>{name}</b> is below: import it again, the old one no longer works.',
         'n_user_changed': '🔄 The VPN server settings changed: the configuration of <b>{name}</b> no longer works. Ask the administrator for a new one.',
         'n_delivered': '📨 New configurations sent to their owners: {count}.',
+        'n_silent': ('🚫 All clients vanished at once: {target}. The port or protocol may be blocked. '
+                     'Check incoming packets (📡 in the server menu) or change the port (🔀).'),
+        'n_back': '✅ Clients connect again: {target}.',
         'n_rotated': '🔀 Server parameters changed: {target}.', 'n_rotate_failed': '⚠️ The server parameter change failed: {target}.',
         'confirm_rekey': ('Issue a new key for <b>{name}</b>? The current configuration stops working at once and '
                           'the client must import the new one. Address, limits, expiry and owner stay.'),
@@ -879,6 +885,8 @@ class Bot:
         match = re.match(r'(awg[0-9]{1,2}): ', target)
         if not match:
             return 0
+        if event == 'server_settings_changed' and not re.match(r'awg[0-9]{1,2}: [1-9][0-9]* client configurations changed', target):
+            return 0
         if event == 'mask_profile_applied':
             changed = re.search(r', ([0-9]+) clients, port ([0-9]+) → ([0-9]+)', target)
             if not changed or (changed.group(1) == '0' and changed.group(2) == changed.group(3)):
@@ -1276,7 +1284,7 @@ class Bot:
             self.notify(self.t('n_login_failed', count=len(failed), target=failed[-1].get('target', '')))
         for entry in fresh:
             event, target = entry.get('event'), str(entry.get('target', ''))
-            if event in ('server_rotated', 'mask_profile_applied', 'client_moved'):
+            if event in ('server_rotated', 'mask_profile_applied', 'client_moved', 'server_settings_changed'):
                 # Owners get their new configuration whoever made the change, the bot included.
                 delivered = self.after_server_change(event, target)
                 if delivered and self.on('rotation'):
@@ -1292,6 +1300,8 @@ class Bot:
             elif event in ('panel_updated', 'panel_update_failed', 'panel_rolled_back') and self.on('update'):
                 key = {'panel_updated': 'n_updated', 'panel_update_failed': 'n_update_failed', 'panel_rolled_back': 'n_rolled_back'}[event]
                 self.notify(self.t(key, target=target or '?'))
+            elif event in ('server_silent', 'server_back') and self.on('blocking'):
+                self.notify(self.t('n_silent' if event == 'server_silent' else 'n_back', target=html.escape(target)))
             elif event in ('server_rotated', 'server_rotate_failed') and self.on('rotation'):
                 self.notify(self.t('n_rotated' if event == 'server_rotated' else 'n_rotate_failed', target=html.escape(target or '?')))
             elif event == 'totp_recovery_used' and self.on('totp_recovery'):

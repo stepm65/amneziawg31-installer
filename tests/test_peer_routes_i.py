@@ -85,7 +85,7 @@ def test_db_migration_keeps_legacy_peers(tmp_path,monkeypatch):
     assert row['extra_lines']==''
     assert row['invite_hash']=='' and row['invite_export']==0
     assert row['sub_hash']=='' and row['sub_fetches']==0 and row['sub_last_fetch']==''
-    assert len(row.keys())==37
+    assert len(row.keys())==38
     con.close()
 
 
