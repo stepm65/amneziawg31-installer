@@ -34,6 +34,13 @@ A valid panel session is not enough for changes that outlive it. The panel passw
 - Handshake debug writes to `/sys/kernel/debug/dynamic_debug/control` and schedules a systemd timer that switches it off after 15 minutes, so it cannot be left on by accident.
 - The support report removes keys (`[key]`), Telegram tokens (`[token]`), `PrivateKey`/`PresharedKey`/`PublicKey`/`HeaderProtectionKey`/`Endpoint` lines and public addresses (always fully masked). It is generated on request and not stored on the server.
 
+## Moving clients and owner delivery (0.18)
+
+- `awg31mgr client-move` copies the whole client record, keys included, between two servers' databases as root. The two steps it uses (`client-export`, `client-import`) are in no sudo list; the panel may run only `client-move`, the bot not even that. If removing the client from the old server fails, it is removed from the new one again, so one key is never active on two servers.
+- After a rotation, a masking profile or a move, the bot sends the new configuration only to owners whose client allows it (the same switch as for the bot's Config button), never to administrators' own clients, routers with a subscription or switched-off clients.
+- The bot's unit adds `LockPersonality`, `RestrictRealtime`, `RestrictSUIDSGID`, `ProtectHostname`, `ProtectControlGroups` and `SystemCallArchitectures=native`. `NoNewPrivileges` and the kernel module/tunable protections are left out on purpose: they would also bind the root `awg31mgr` that the bot reaches through sudo when the control helper is down.
+- The packet check no longer holds the controller lock while it listens.
+
 ## Router subscriptions, rotation and the packet check (0.17)
 
 - A subscription link carries a 256-bit random token; the database keeps only `sha256("awg31-sub:" + token)`, and the panel shows the link once. Issuing a new link or switching the subscription off invalidates the old one at once. The link returns the client's private key, so the panel offers it only when an Nginx HTTPS site exists; for a self-signed certificate the router script pins the certificate's public key.

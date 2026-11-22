@@ -1031,3 +1031,24 @@
     });
   }
 })();
+
+// 0.18: the "random subnet" box (remembered in this browser) and the custom masking profile fields.
+(() => {
+  'use strict';
+  for (const box of document.querySelectorAll('input[data-random-subnet]')) {
+    const field = document.getElementById(box.dataset.randomSubnet);
+    const sync = () => { if (field) { field.disabled = box.checked; field.required = !box.checked; } };
+    try { box.checked = localStorage.getItem('awg31-random-subnet') === '1'; } catch (_) { /* storage blocked */ }
+    sync();
+    box.addEventListener('change', () => {
+      sync();
+      try { localStorage.setItem('awg31-random-subnet', box.checked ? '1' : '0'); } catch (_) { /* storage blocked */ }
+    });
+  }
+  for (const select of document.querySelectorAll('select[data-mask-profile]')) {
+    const custom = select.form && select.form.querySelector('[data-mask-custom]');
+    const sync = () => { if (custom) custom.hidden = select.value !== 'custom'; };
+    sync();
+    select.addEventListener('change', sync);
+  }
+})();

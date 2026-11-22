@@ -49,7 +49,15 @@ if [[ -z "$DEFAULT_IP" ]]; then
     DEFAULT_IP="$(ip -4 -o addr show dev "${DEFAULT_UPLINK:-lo}" scope global | awk 'NR==1 {split($4,a,"/"); print a[1]}')"
     say 'Публичный IPv4 не определён. Для локального теста будет предложен адрес интерфейса; для доступа из интернета укажите внешний IP/DNS и настройте проброс UDP.'
 fi
-ask SUBNET 'VPN-подсеть (CIDR, /24…/29)' '10.77.10.0/24'
+# Random subnet: every installation gets its own 10.x.y.0/24 instead of the same 10.77.10.0/24.
+RANDOM_SUBNET="${AWG31_RANDOM_SUBNET:-0}"
+if [[ "$UNATTENDED" != 1 ]]; then
+    read -r -p 'Случайная VPN-подсеть 10.x.y.0/24 вместо 10.77.10.0/24? [y/N]: ' reply
+    case "${reply,,}" in y|yes|д|да) RANDOM_SUBNET=1 ;; *) RANDOM_SUBNET=0 ;; esac
+fi
+SUBNET_DEFAULT='10.77.10.0/24'
+[[ "$RANDOM_SUBNET" == 1 ]] && SUBNET_DEFAULT="$(awg31_random_subnet)"
+ask SUBNET 'VPN-подсеть (CIDR, /24…/29)' "$SUBNET_DEFAULT"
 ask PORT 'UDP-порт AmneziaWG' '51820'
 ask MTU 'MTU туннеля (576…1420)' '1280'
 ask ENDPOINT 'Публичный IPv4 или DNS-имя (без порта)' "$DEFAULT_IP"

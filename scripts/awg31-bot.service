@@ -20,6 +20,14 @@ UMask=0077
 PrivateTmp=true
 ProtectHome=true
 RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
+# Extra limits that leave sudo (the fallback path to awg31mgr) working:
+# NoNewPrivileges and the kernel-tunable/module protections would break it.
+LockPersonality=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+ProtectHostname=true
+ProtectControlGroups=true
+SystemCallArchitectures=native
 
 [Install]
 WantedBy=multi-user.target

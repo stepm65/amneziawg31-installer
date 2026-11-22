@@ -1313,3 +1313,10 @@ tr:hover .extra-dot {box-shadow:0 0 0 2px #1e2228}
 .rotation-block .check-field {margin:2px 0;align-items:flex-start;font-size:13.5px;line-height:1.4}
 .rotation-block .check-field input {flex:none;width:18px;height:18px;margin:1px 0 0}
 .rotation-block .field {margin-bottom:4px}
+
+/* 0.18 */
+.random-subnet {grid-column:1 / -1;margin:0 0 4px}
+.mask-custom {display:grid;gap:6px}
+.mask-custom[hidden] {display:none}
+.mask-custom textarea {width:100%;font-family:var(--mono,ui-monospace,monospace);font-size:12px}
+.field input:disabled {opacity:.45;cursor:not-allowed}

@@ -216,6 +216,9 @@ TEXT = {
         'probe_none': 'Пакеты не доходят до сервера: проверьте облачный файрвол; если открыт — порт или протокол режет провайдер.',
         'probe_no_answer': 'Пакеты доходят, но сервер не отвечает: у клиента другие ключи или обфускация. Нужна свежая конфигурация.',
         'probe_ok': 'Пакеты доходят, сервер отвечает.',
+        'n_user_newconf': '🔄 Параметры VPN-сервера изменились. Новая конфигурация <b>{name}</b> ниже: импортируйте её заново, прежняя больше не работает.',
+        'n_user_changed': '🔄 Параметры VPN-сервера изменились: конфигурация <b>{name}</b> больше не работает. Попросите у администратора новую.',
+        'n_delivered': '📨 Новые конфигурации отправлены владельцам: {count}.',
         'n_rotated': '🔀 Параметры сервера сменены: {target}.', 'n_rotate_failed': '⚠️ Смена параметров сервера не удалась: {target}.',
         'confirm_rekey': ('Выпустить для <b>{name}</b> новый ключ? Текущая конфигурация перестанет работать сразу, '
                           'клиенту нужно будет импортировать новую. Адрес, лимиты, срок и владелец сохранятся.'),
@@ -337,6 +340,9 @@ TEXT = {
         'probe_none': 'Packets do not reach the server: check the cloud firewall; if it is open, the provider drops the port or protocol.',
         'probe_no_answer': 'Packets arrive but the server does not answer: the client has other keys or obfuscation. It needs a fresh configuration.',
         'probe_ok': 'Packets arrive and the server answers.',
+        'n_user_newconf': '🔄 The VPN server settings changed. The new configuration of <b>{name}</b> is below: import it again, the old one no longer works.',
+        'n_user_changed': '🔄 The VPN server settings changed: the configuration of <b>{name}</b> no longer works. Ask the administrator for a new one.',
+        'n_delivered': '📨 New configurations sent to their owners: {count}.',
         'n_rotated': '🔀 Server parameters changed: {target}.', 'n_rotate_failed': '⚠️ The server parameter change failed: {target}.',
         'confirm_rekey': ('Issue a new key for <b>{name}</b>? The current configuration stops working at once and '
                           'the client must import the new one. Address, limits, expiry and owner stay.'),
@@ -839,6 +845,46 @@ class Bot:
         except BotError as exc:
             log(f'cannot answer /id: {exc}')
 
+    def deliver_new_configs(self, iface, names=None):
+        """After the server's parameters changed: owners allowed to export get the new .conf and QR code,
+        other owners are told to ask for one. Routers with a subscription fetch theirs and are skipped."""
+        try:
+            clients = self.clients(iface)
+        except BotError:
+            return 0
+        sent = 0
+        for c in clients:
+            owner = str(c.get('telegram_id') or '')
+            if names is not None and c.get('name') not in names:
+                continue
+            if not owner.isdigit() or int(owner) in self.config['admins'] or c.get('subscription') or not c.get('enabled'):
+                continue
+            if not c.get('owner_export'):
+                self.tell_owner(c, self.t('n_user_changed', name=c['name']))
+                continue
+            try:
+                self.api.call('sendMessage', chat_id=int(owner), parse_mode='HTML', text=self.t('n_user_newconf', name=c['name']))
+                self.send_config(int(owner), iface, c['name'], as_qr=False, owner=True)
+                self.send_config(int(owner), iface, c['name'], as_qr=True, owner=True)
+                sent += 1
+            except BotError as exc:             # usually: the owner never started the bot
+                log(f'cannot send the new configuration of {c.get("name")}: {exc}')
+        return sent
+
+    def after_server_change(self, event, target):
+        """Which clients got a new configuration from a rotation, a masking profile or a move."""
+        if event == 'client_moved':
+            match = re.match(r'awg[0-9]{1,2}/([A-Za-z0-9_-]{1,32}) → (awg[0-9]{1,2})/', target)
+            return self.deliver_new_configs(match.group(2), {match.group(1)}) if match else 0
+        match = re.match(r'(awg[0-9]{1,2}): ', target)
+        if not match:
+            return 0
+        if event == 'mask_profile_applied':
+            changed = re.search(r', ([0-9]+) clients, port ([0-9]+) → ([0-9]+)', target)
+            if not changed or (changed.group(1) == '0' and changed.group(2) == changed.group(3)):
+                return 0
+        return self.deliver_new_configs(match.group(1))
+
     def tell_owner(self, c, text):
         """A message to the person whose Telegram ID is on the client; never fatal."""
         owner = str(c.get('telegram_id') or '')
@@ -1230,6 +1276,11 @@ class Bot:
             self.notify(self.t('n_login_failed', count=len(failed), target=failed[-1].get('target', '')))
         for entry in fresh:
             event, target = entry.get('event'), str(entry.get('target', ''))
+            if event in ('server_rotated', 'mask_profile_applied', 'client_moved'):
+                # Owners get their new configuration whoever made the change, the bot included.
+                delivered = self.after_server_change(event, target)
+                if delivered and self.on('rotation'):
+                    self.notify(self.t('n_delivered', count=delivered))
             if event == 'client_config_sent':
                 if self.on('owner_export'):
                     self.notify(self.t('n_owner_export', target=target))

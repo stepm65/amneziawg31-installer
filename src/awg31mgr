@@ -25,7 +25,7 @@ OPTIONAL_PROFILE = ('client_to_client', 'private_access', 'ipv6_block', 'host_ac
 OPS = {'status', 'list', 'add', 'add-batch', 'download', 'enable', 'disable', 'delete', 'delete-batch', 'settings', 'client-network', 'client-extra', 'client-policy', 'history', 'sessions',
        'client-rekey', 'client-batch', 'client-invite', 'invite-redeem',
        'sub-token', 'sub-fetch', 'rotate', 'rotate-schedule', 'mask-apply', 'probe'}
-ADMIN = {'servers', 'server-create', 'server-start', 'server-stop', 'server-restart', 'server-delete',
+ADMIN = {'servers', 'server-create', 'client-move', 'server-start', 'server-stop', 'server-restart', 'server-delete',
          'sample-all','host-history','backup-create','backup-list','backup-export','backup-check','backup-restore','profile-export',
          'profile-import','audit','audit-list','password-change','diagnostics',
          'backup-delete','backup-policy','backup-policy-set','backup-run','password-reset',
@@ -79,6 +79,18 @@ def info(iface):
     active = subprocess.run(['ip','link','show',iface], capture_output=True).returncode == 0
     return {'interface':iface,'subnet':config['subnet'],'port':int(config['port']),
             'mtu':int(config['mtu']),'mode':config['mode'],'running':active,'clients':count}
+
+
+def random_subnet(iface, data):
+    """A free 10.x.y.0/24 for a new server, chosen at random (the "random subnet" box)."""
+    import secrets
+    for _ in range(64):
+        data['subnet'] = f'10.{secrets.randbelow(254) + 1}.{secrets.randbelow(256)}.0/24'
+        try:
+            return check_new(iface, data)
+        except ValueError as exc:
+            if 'subnet' not in str(exc).lower(): raise
+    raise ValueError('No free random /24 found in 10.0.0.0/8')
 
 
 def check_new(iface, data):
@@ -248,7 +260,10 @@ def main():
         raise ValueError('Invalid interface')
     payload={k:v for k,v in data.items() if k!='interface'}
     if op=='server-create':
-        check_new(iface,payload)
+        if payload.pop('random_subnet', False) in (True, '1', 'on', 1):
+            random_subnet(iface, payload)
+        else:
+            check_new(iface,payload)
         # An additional full tunnel also needs IPv4 forwarding.
         if payload.get('mode','full')=='full':
             run('sysctl','-w','net.ipv4.ip_forward=1')
@@ -256,6 +271,20 @@ def main():
         return child(iface,'init',payload)
     if not exists(iface): raise ValueError('Server not found')
     if op=='diagnostics': return admin.diagnose(sys.modules[__name__],iface)
+    if op=='client-move':
+        # Same keys, owner, limits and subscription on the other server; a new address there.
+        target=payload.get('target')
+        if not isinstance(target,str) or not VALID.fullmatch(target) or not exists(target): raise ValueError('Target server not found')
+        if target==iface: raise ValueError('The client is already on this server')
+        name=str(payload.get('name',''))
+        row=child(iface,'client-export',{'name':name})['row']
+        moved=child(target,'client-import',{'row':row})
+        try:
+            child(iface,'delete',{'name':name})
+        except (RuntimeError,ValueError):
+            child(target,'delete',{'name':name})      # never leave the same key on two servers
+            raise
+        return {'ok':True,'name':name,'from':iface,'to':target,'ip':moved['ip']}
     if op=='profile-export':
         status=child(iface,'status',{})
         editable={k:status[k] for k in ('endpoint','port','mtu','dns',*OPTIONAL_PROFILE)}
@@ -315,6 +344,10 @@ def cli():
     """The command line: one operation, JSON on stdout, {"error": ...} on stderr. awg31helper calls this too."""
     try:
         BASE.mkdir(parents=True,exist_ok=True)
+        if len(sys.argv)==2 and sys.argv[1]=='probe':
+            # The packet check only listens for up to 30 seconds: other requests need not wait for it.
+            print(json.dumps(main(),ensure_ascii=False))
+            return
         with open(BASE/'manager.lock','a+') as lock:
             fcntl.flock(lock.fileno(),fcntl.LOCK_EX)
             print(json.dumps(main(),ensure_ascii=False))

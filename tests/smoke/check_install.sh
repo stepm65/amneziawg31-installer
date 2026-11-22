@@ -243,6 +243,11 @@ grep -q "^ListenPort = $new_port$" "$CONF" || fail 'the configuration file has t
 awg show awg0 peers | grep -q . || fail 'clients were lost by the rotation'
 echo "{\"interface\":\"awg0\",\"token\":\"$SUB\"}" | panel_mgr sub-fetch | grep -q "Endpoint = 203.0.113.10:$new_port" \
   || fail 'the subscription does not hand out the new port'
+sub_key="$("$MGR" list <<<'{"interface":"awg0"}' | python3 -c 'import json,sys; print({c["name"]:c["public_key"] for c in json.load(sys.stdin)["clients"]}["team-03"])')"
+other_key="$("$MGR" list <<<'{"interface":"awg0"}' | python3 -c 'import json,sys; print({c["name"]:c["public_key"] for c in json.load(sys.stdin)["clients"]}["team-01"])')"
+echo '{"interface":"awg0","parts":["client_keys"]}' | panel_mgr rotate | grep -q '"clients_rekeyed": \["team-03"\]' || fail 'the subscribed client was not rekeyed'
+if awg show awg0 peers | grep -qxF "$sub_key"; then fail 'the old key of the subscribed client still works'; fi
+awg show awg0 peers | grep -qxF "$other_key" || fail 'a client without a subscription lost its key'
 echo '{"interface":"awg0","days":7,"parts":["port"]}' | panel_mgr rotate-schedule | grep -q '"days": 7' || fail 'rotation schedule not saved'
 echo '{"interface":"awg0","days":0}' | panel_mgr rotate-schedule >/dev/null
 (sleep 2; python3 -c "import socket; s=socket.socket(socket.AF_INET, socket.SOCK_DGRAM); [s.sendto(b'x'*200, ('127.0.0.1', $new_port)) for _ in range(3)]") &
@@ -257,6 +262,19 @@ echo '{"interface":"awg1","name":"second"}' | "$MGR" add | grep -q '10.88.0.' ||
 grep -q '^H1 = ' /etc/amnezia/amneziawg/awg1.conf
 [[ "$(grep '^H1 = ' /etc/amnezia/amneziawg/awg1.conf)" != "$(grep '^H1 = ' "$CONF")" ]] || fail 'both servers share H1'
 "$MGR" servers | grep -q '"awg1"' || fail 'awg1 is not listed'
+step 'Move a client between servers; a random subnet for a new server'
+moving_key="$("$MGR" list <<<'{"interface":"awg0"}' | python3 -c 'import json,sys; print({c["name"]:c["public_key"] for c in json.load(sys.stdin)["clients"]}["team-03"])')"
+echo '{"interface":"awg0","name":"team-03","target":"awg1"}' | panel_mgr client-move | grep -q '"ip": "10.88.0.' || fail 'client-move failed'
+awg show awg1 peers | grep -qxF "$moving_key" || fail 'the moved client is not on awg1'
+if awg show awg0 peers | grep -qxF "$moving_key"; then fail 'the moved client is still on awg0'; fi
+echo "{\"interface\":\"awg1\",\"token\":\"$SUB\"}" | panel_mgr sub-fetch | grep -q 'Endpoint = 203.0.113.10:51999' \
+  || fail 'the subscription does not follow the moved client'
+echo '{"interface":"awg1","name":"team-03","target":"awg0"}' | panel_mgr client-move >/dev/null || fail 'moving back failed'
+awg show awg0 peers | grep -qxF "$moving_key" || fail 'the client did not come back to awg0'
+echo "{\"interface\":\"awg2\",\"subnet\":\"\",\"random_subnet\":true,\"port\":\"51998\",\"mtu\":\"1280\",\"endpoint\":\"203.0.113.10\",\"dns\":\"1.1.1.1\",\"mode\":\"split\",\"uplink\":\"$uplink\"}" \
+  | panel_mgr server-create >/dev/null || fail 'a server with a random subnet was not created'
+"$MGR" servers | python3 -c 'import json,sys,re; s={x["interface"]:x for x in json.load(sys.stdin)["servers"]}; assert re.fullmatch(r"10\.[0-9]+\.[0-9]+\.0/24", s["awg2"]["subnet"]) and s["awg2"]["subnet"] != "10.77.10.0/24", s'
+echo '{"interface":"awg2","confirm":"awg2"}' | "$MGR" server-delete >/dev/null
 echo '{"interface":"awg1","confirm":"awg1"}' | "$MGR" server-delete >/dev/null
 if ip link show awg1 >/dev/null 2>&1; then fail 'awg1 still exists after deletion'; fi
 awg show awg0 >/dev/null || fail 'deleting awg1 hurt awg0'

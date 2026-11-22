@@ -4,15 +4,15 @@
 
 An installer and a web console for running **AmneziaWG 3.1** on your own server: a kernel module built with DKMS, an interactive setup wizard and a bilingual (EN/RU) panel for servers, clients, traffic and backups. No Docker, no control plane in the cloud, nothing loaded from a CDN.
 
-Version **0.17.0** · MIT licence · not affiliated with the AmneziaVPN developers.
+Version **0.18.0** · MIT licence · not affiliated with the AmneziaVPN developers.
 
 ![Infrastructure overview](docs/screenshots/en-dashboard.png)
 
 ## What you get
 
 - **AmneziaWG 3.1 only.** The wizard builds the official kernel module (pinned commit) and tools (pinned tag) and refuses to continue with any other version.
-- **Random obfuscation per server.** `S1–S4`, `H1–H4`, `Jc`, `HeaderProtectionKey` are generated for every server, including the first one, and can be regenerated in the panel.
-- **Several independent servers** (`awg0`, `awg1`, … up to 8), each with its own keys, subnet, UDP port and clients.
+- **Random obfuscation per server.** `S1–S4`, `H1–H4`, `Jc`, junk packet sizes (`Jmin` 40–79, `Jmax` 50–160 above it), a random padding of data packets (`ContentPaddingAddition`) and `HeaderProtectionKey` are generated for every server, including the first one, and can be regenerated in the panel.
+- **Several independent servers** (`awg0`, `awg1`, … up to 8), each with its own keys, subnet, UDP port and clients. Each new server can get a random `10.x.y.0/24` subnet; a client can move to another server with the same keys, owner, limits and subscription.
 - **Clients:** `.conf` download, QR code, `vpn://` link for AmneziaVPN, comment, expiry date, traffic quota (lifetime or reset every month), speed limit, networks behind a client (site-to-site), creating up to 50 numbered clients at once with a ZIP of configurations, actions on the selected clients (enable, disable, extend, set a quota, delete), a CSV export of the list, key replacement with one button.
 - **Per-server traffic switches:** clients may reach each other or are isolated (also from clients of the other servers); access to the private networks behind the server can be closed; the server's own services (SSH, the panel) can be closed to clients; client IPv6 can be routed into the tunnel and dropped. The cloud metadata address range is always closed to clients. Networks behind a client keep working in every state.
 - **Stale-configuration badge:** the client list shows who needs a new file after settings changed.
@@ -101,6 +101,7 @@ curl -Ls https://raw.githubusercontent.com/stepm65/amneziawg31-installer/main/in
 | Variable | Default |
 |---|---|
 | `AWG31_SUBNET` | `10.77.10.0/24` |
+| `AWG31_RANDOM_SUBNET` | `0`; `1` gives a random `10.x.y.0/24` (when `AWG31_SUBNET` is not set) |
 | `AWG31_PORT` | `51820` |
 | `AWG31_MTU` | `1280` |
 | `AWG31_ENDPOINT` | detected public IPv4 |
@@ -199,11 +200,17 @@ Subscriptions work only through the panel's HTTPS address (`sudo awg31 nginx`): 
 
 Under **Server settings → Masking and parameter change**:
 
-- **Masking profile** moves the server to the profile's port and writes the same kind of `I1` for every client: QUIC (443), STUN (3478), DTLS 1.2 as in WebRTC calls (8801) or a DNS query (53). The content is random each time; only the packet shape repeats. A profile does not guarantee getting past blocking: test it on the network where you use the VPN. New clients get the profile's `I1` by themselves.
-- **Change now**: a new random port 20000–59999, new `S1–S4`, `H1–H4`, header key and `Jc`, and a new server key if you like. Clients, their addresses, keys and limits stay; so do your `Jmin/Jmax`, timings, `RandomTrailers` and `DisableCookies`. ufw and firewalld get the new port opened automatically; a cloud firewall is up to you.
+- **Masking profile** moves the server to the profile's port and writes the same kind of `I1` for every client: QUIC (443), STUN (3478), DTLS 1.2 as in WebRTC calls (8801), a DNS query (53) or a Steam game server query (27015). The “Custom” profile takes a port and an `I1` packet by hand. The content is random each time; only the packet shape repeats. A profile does not guarantee getting past blocking: test it on the network where you use the VPN. New clients get the profile's `I1` by themselves.
+- **Change now**: a new random port 20000–59999, new `S1–S4`, `H1–H4`, header key and `Jc`, and, if you like, a new server key and new keys for the clients with a subscription (routers fetch them by themselves). Clients, their addresses, keys (other than those chosen) and limits stay; so do your `Jmin/Jmax`, timings, `RandomTrailers` and `DisableCookies`. ufw and firewalld get the new port opened automatically; a cloud firewall is up to you.
 - **On a schedule**: the same every 1, 3, 7, 14 or 30 days. Useful when the clients are routers with a subscription: they pick up the new parameters by themselves. Phones and computers without one drop until they import again.
 
 A copy of the server settings is saved before every change. Changes go to the audit log, the bot tells the administrators (event “Server parameter change”), and the bot's server menu has a “🔀 Change port” button.
+
+After a parameter change, a masking profile or a client move, the bot sends the new configuration (file and QR code) to every client owner allowed to get it. Owners without that permission are told to ask the administrator for a new one. Routers with a subscription and switched-off clients get no message.
+
+### Moving a client to another server
+
+On the client page, under “Move to another server”, choose the server and press **Move**. The client moves with the same keys, comment, owner, expiry, limits, traffic used, `I1–I5` packets, extra lines and subscription, and gets a free address in the new server's subnet. If the new server already has a client with that name or key, nothing moves. The client needs a new configuration: its subscription link keeps working and serves it from the new server, and the bot sends it to an owner allowed to get it.
 
 ### Incoming packet check
 

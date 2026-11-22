@@ -30,7 +30,8 @@ VALID_AUDIT = {'login_success', 'login_failed', 'password_changed', 'client_adde
                'client_rekeyed', 'client_invite_created', 'client_invite_used', 'totp_recovery_used',
                'totp_recovery_new', 'clients_exported', 'panel_update_started', 'panel_updated',
                'panel_update_failed', 'panel_rolled_back', 'server_rotated', 'server_rotate_failed',
-               'mask_profile_applied', 'subscription_created', 'subscription_revoked', 'packet_probe'}
+               'mask_profile_applied', 'subscription_created', 'subscription_revoked', 'packet_probe',
+               'client_moved'}
 
 
 def _host_uplink():

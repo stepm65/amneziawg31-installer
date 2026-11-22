@@ -360,6 +360,7 @@ TEXT['ru'].update({
     'cps_preset_dns':'DNS-запрос (A-запись популярного домена)',
     'cps_preset_stun':'STUN Binding Request (как у звонков WebRTC)',
     'cps_preset_dtls':'DTLS 1.2 ClientHello (WebRTC, Zoom), случайное поле random',
+    'cps_preset_steam':'Steam A2S_INFO (запрос к игровому серверу)',
     'cps_preset_quictls':'QUIC Initial с настоящим ClientHello и SNI (1200 байт)',
     'cps_preset_quic':'QUIC Initial — только форма, случайное содержимое (короткая запись)',
     'cps_host':'Домен для SNI (шаблон QUIC с ClientHello)',
@@ -401,6 +402,7 @@ TEXT['en'].update({
     'cps_preset_dns':'DNS query (A record of a popular domain)',
     'cps_preset_stun':'STUN Binding Request (as used by WebRTC calls)',
     'cps_preset_dtls':'DTLS 1.2 ClientHello (WebRTC, Zoom), random field changes',
+    'cps_preset_steam':'Steam A2S_INFO (a game server query)',
     'cps_preset_quictls':'QUIC Initial with a genuine ClientHello and SNI (1200 bytes)',
     'cps_preset_quic':'QUIC Initial — shape only, random payload (short notation)',
     'cps_host':'Server name for SNI (QUIC template with ClientHello)',
@@ -1227,7 +1229,7 @@ def obfuscation_generate(request: Request, interface: str = '', timing_ranges: b
     return Response(json.dumps(params),media_type='application/json',
                     headers={'Cache-Control':'no-store'})
 
-CPS_PRESETS = ('random', 'dns', 'stun', 'dtls', 'quictls', 'quic')
+CPS_PRESETS = ('random', 'dns', 'stun', 'dtls', 'steam', 'quictls', 'quic')
 CPS_SNI_SUGGESTIONS = ('www.google.com', 'www.cloudflare.com', 'www.youtube.com', 'yandex.ru', 'vk.com')
 CPS_DNS_NAMES = ('www.google.com', 'www.cloudflare.com', 'www.microsoft.com', 'www.apple.com',
                  'www.wikipedia.org', 'www.github.com')
@@ -1249,6 +1251,9 @@ def cps_value(preset='random', host=''):
     if preset == 'dtls':
         # DTLS 1.2 ClientHello of a WebRTC call (use_srtp), with a fresh random field.
         return dtls_client_hello()
+    if preset == 'steam':
+        # A2S_INFO, the query a Steam client sends to a Source engine game server.
+        return '<b 0xffffffff54' + b'Source Engine Query\x00'.hex() + '>'
     if preset == 'quictls':
         # A complete QUIC v1 Initial with a TLS 1.3 ClientHello for `host`: unlike
         # the shape-only template below, it survives decryption by a middlebox.
@@ -1412,6 +1417,8 @@ async def server_create(request:Request):
     lang=lang_of(request)
     data = {k:str(body.get(k,'')) for k in
             ('interface','subnet','port','mtu','endpoint','dns','mode','uplink')}
+    if body.get('random_subnet') == '1':
+        data['random_subnet'] = True
     try:
         iface=data['interface']
         if not SERVER_RE.fullmatch(iface):
@@ -2099,6 +2106,8 @@ def server_content(request: Request, section: str = 'overview'):
         <form method="post" action="/server/create">{csrf(request)}<div class="fields-grid">
           {form_field('interface','awg1',t('server_name'),field_id='create-interface')}
           {form_field('subnet','10.77.20.0/24',t('server_subnet'),field_id='create-subnet')}
+          <label class="check-field random-subnet"><input type="checkbox" name="random_subnet" value="1" data-random-subnet="create-subnet">
+          <span>{h(t('random_subnet'))}</span></label>
           {form_field('endpoint',state['endpoint'],t('public_endpoint'),field_id='create-endpoint')}
           {form_field('port','51821',t('server_port'),field_id='create-port')}
           {form_field('mtu','1280',t('mtu_label'),field_id='create-mtu')}
@@ -2514,6 +2523,8 @@ def detail(request: Request, name: str, interface: str = ''):
       </form></section>'''
     rekeyed = (f'<p class="bulk-notice" role="status">{icon("key",16)}<span>{h(t("rekeyed"))}</span></p>'
                if request.query_params.get('rekeyed') == '1' else '')
+    if request.query_params.get('moved') == '1':
+        rekeyed += f'<p class="bulk-notice" role="status">{icon("route",16)}<span>{h(t("moved_notice"))}</span></p>'
     return page(t('client') + ' ' + name,
                 '<div class="client-detail">' + rekeyed + contents + network_form + policy_form
                 + access_card(request, name, obj, t)
@@ -2705,6 +2716,7 @@ def access_card(request, name, obj, t):
           <form method="post" action="/client/{name_url}/rekey" data-confirm="{h(t('rekey_confirm'))}">{csrf(request)}
           <button class="btn btn-danger" type="submit">{icon('restart',16)}{h(t('rekey_button'))}</button></form></div>
         {subscription_block(request, name, obj, t)}
+        {move_block(request, name, t)}
       </div></section>'''
 
 
@@ -3141,11 +3153,19 @@ def subscription_get(request: Request, interface: str, token: str):
     if not SERVER_RE.fullmatch(interface) or not SUB_TOKEN_RE.fullmatch(token):
         _sub_failures.setdefault(address, []).append(time.monotonic())
         return Response('Not found\n', status_code=404, media_type='text/plain', headers=plain)
+    result = {}
     try:
         result = ctl('sub-fetch', {'interface': interface, 'token': token, 'addr': address})
     except RuntimeError:
-        _sub_failures.setdefault(address, []).append(time.monotonic())
-        return Response('Not found\n', status_code=404, media_type='text/plain', headers=plain)
+        pass
+    if not result.get('found'):
+        # The client may have been moved to another server: its link stays the same.
+        try: others = [s['interface'] for s in server_list() if s['interface'] != interface]
+        except RuntimeError: others = []
+        for other in others:
+            try: result = ctl('sub-fetch', {'interface': other, 'token': token, 'addr': address})
+            except RuntimeError: continue
+            if result.get('found'): break
     if not result.get('found'):
         _sub_failures.setdefault(address, []).append(time.monotonic())
         return Response('Not found\n', status_code=404, media_type='text/plain', headers=plain)
@@ -3229,12 +3249,44 @@ async def subscription_revoke(request: Request, name: str, interface: str = ''):
     return RedirectResponse(scoped_client(request, name), status_code=303)
 
 
+ROTATE_PARTS = ('port', 'obfuscation', 'key', 'client_keys')
+
+def move_block(request, name, t):
+    here = selected_server(request)
+    others = [s['interface'] for s in server_list() if s['interface'] != here]
+    if not others:
+        return ''
+    options = ''.join(f'<option value="{h(x)}">{h(x)}</option>' for x in others)
+    return (f'<div class="access-block"><h3>{icon("route",17)}{h(t("move_title"))}</h3>'
+            f'<p class="access-hint">{h(t("move_hint"))}</p>'
+            f'<form method="post" action="/client/{quote(name, safe="")}/move" class="access-form" data-confirm="{h(t("move_confirm"))}">{csrf(request)}'
+            f'<label class="field"><span>{h(t("move_target"))}</span><select name="target">{options}</select></label>'
+            f'<button class="btn btn-secondary" type="submit">{icon("route",16)}{h(t("move_button"))}</button></form></div>')
+
+
+@app.post('/client/{name}/move')
+@app.post('/servers/{interface}/clients/{name}/move')
+async def client_move(request: Request, name: str, interface: str = ''):
+    form = await request.form(); require_csrf(request, form.get('csrf', ''))
+    if not CLIENT_NAME_RE.fullmatch(name): raise HTTPException(404)
+    target = str(form.get('target', ''))
+    source = selected_server(request)
+    if not SERVER_RE.fullmatch(target) or target == source: raise HTTPException(422)
+    try: result = ctl('client-move', {'interface': source, 'name': name, 'target': target})
+    except RuntimeError as exc: return error_page(request, tr(lang_of(request), 'error'), exc)
+    audit_event('client_moved', f'{source}/{name} → {target}/{name} ({result.get("ip", "")})')
+    return RedirectResponse(f'/servers/{target}/clients/{quote(name, safe="")}?moved=1', status_code=303)
+
+
 # Masking profiles: a port plus an I1 of the same kind for every client.
-MASK_PROFILES = (('quic', 443, 'quic'), ('stun', 3478, 'stun'), ('dtls', 8801, 'dtls'), ('dns', 53, 'dns'))
+MASK_PROFILES = (('quic', 443, 'quic'), ('stun', 3478, 'stun'), ('dtls', 8801, 'dtls'), ('dns', 53, 'dns'),
+                 ('steam', 27015, 'steam'))
 
 
 def mask_defaults(state):
     """The new-client form starts with an I1 of the server's masking profile, when there is one."""
+    if state.get('mask_profile') == 'custom' and state.get('mask_i1'):
+        return {'i1': state['mask_i1']}, True
     preset = {key: preset for key, _, preset in MASK_PROFILES}.get(state.get('mask_profile', 'none'))
     return ({'i1': cps_value(preset)}, True) if preset else ({}, False)
 
@@ -3264,17 +3316,26 @@ async def server_mask(request: Request, interface: str):
     if not SERVER_RE.fullmatch(interface): raise HTTPException(404)
     profile = str(form.get('profile', ''))
     choices = {key: (port, preset) for key, port, preset in MASK_PROFILES}
-    if profile != 'none' and profile not in choices: raise HTTPException(422)
+    if profile not in ('none', 'custom') and profile not in choices: raise HTTPException(422)
     lang = lang_of(request)
+    payload = {'interface': interface, 'profile': profile}
     try:
         state = ctl('list', {'interface': interface})
-        values = ({c['name']: cps_value(choices[profile][1]) for c in state.get('clients', [])}
-                  if profile != 'none' and form.get('clients') == '1' else {})
-        port = choices[profile][0] if profile != 'none' and form.get('use_port') == '1' else 0
-        result = ctl('mask-apply', {'interface': interface, 'profile': profile, 'i1': values, 'port': port})
+        if profile == 'custom':
+            own = re.sub(r'>\s+<', '><', re.sub(r'[\r\n]+', '', str(form.get('custom_i1', '')))).strip()
+            payload['custom_i1'] = own
+            values = {c['name']: own for c in state.get('clients', [])} if form.get('clients') == '1' else {}
+            try: port = int(form.get('custom_port') or 0) if form.get('use_port') == '1' else 0
+            except ValueError: raise RuntimeError(tr(lang, 'mask_custom_port_bad')) from None
+        else:
+            values = ({c['name']: cps_value(choices[profile][1]) for c in state.get('clients', [])}
+                      if profile != 'none' and form.get('clients') == '1' else {})
+            port = choices[profile][0] if profile != 'none' and form.get('use_port') == '1' else 0
+        result = ctl('mask-apply', {**payload, 'i1': values, 'port': port})
     except RuntimeError as exc:
         return error_page(request, tr(lang, 'error'), exc)
-    audit_event('mask_profile_applied', f'{interface}: {profile}, {len(result.get("updated", []))} clients, port {result.get("port")}')
+    audit_event('mask_profile_applied', f'{interface}: {profile}, {len(result.get("updated", []))} clients, '
+                                        f'port {result.get("old_port")} → {result.get("port")}')
     return RedirectResponse(f'/servers/{interface}/settings?masked=1#rotation', status_code=303)
 
 
@@ -3282,7 +3343,7 @@ async def server_mask(request: Request, interface: str):
 async def server_rotate(request: Request, interface: str):
     form = await request.form(); require_csrf(request, form.get('csrf', ''))
     if not SERVER_RE.fullmatch(interface): raise HTTPException(404)
-    parts = [p for p in ('port', 'obfuscation', 'key') if form.get(p) == '1']
+    parts = [p for p in ROTATE_PARTS if form.get(p) == '1']
     if not parts: raise HTTPException(422)
     try: result = ctl('rotate', {'interface': interface, 'parts': parts})
     except RuntimeError as exc: return error_page(request, tr(lang_of(request), 'error'), exc)
@@ -3296,7 +3357,7 @@ async def server_rotate_schedule(request: Request, interface: str):
     if not SERVER_RE.fullmatch(interface): raise HTTPException(404)
     try: days = int(form.get('days', 0))
     except (TypeError, ValueError): raise HTTPException(422) from None
-    parts = [p for p in ('port', 'obfuscation', 'key') if form.get(p) == '1'] or ['port', 'obfuscation']
+    parts = [p for p in ROTATE_PARTS if form.get(p) == '1'] or ['port', 'obfuscation']
     try: ctl('rotate-schedule', {'interface': interface, 'days': days, 'parts': parts})
     except RuntimeError as exc: return error_page(request, tr(lang_of(request), 'error'), exc)
     audit_event('settings_changed', f'{interface}: rotation every {days} d ({", ".join(parts)})')
@@ -3311,15 +3372,20 @@ def rotation_card(request, state, t):
     notice = ''
     for key, text in (('rotated', 'rot_done'), ('masked', 'mask_done'), ('scheduled', 'rot_scheduled')):
         if request.query_params.get(key) == '1':
-            notice = f'<p class="bulk-notice" role="status">{icon("check",16)}<span>{h(t(text))}</span></p>'
+            owners = ''
+            if key != 'scheduled' and any(c.get('telegram_id') and c.get('owner_export') and not c.get('subscription')
+                                          for c in clients):
+                owners = ' ' + t('rot_owners_sent')
+            notice = f'<p class="bulk-notice" role="status">{icon("check",16)}<span>{h(t(text) + owners)}</span></p>'
     current = state.get('mask_profile', 'none')
     options = ''.join(f'<option value="{key}"{" selected" if key == current else ""}>{h(t("mask_" + key))} — {port}/udp</option>'
                       for key, port, _ in MASK_PROFILES)
-    options = f'<option value="none"{" selected" if current in ("none", "") else ""}>{h(t("mask_none"))}</option>' + options
+    options = (f'<option value="none"{" selected" if current in ("none", "") else ""}>{h(t("mask_none"))}</option>' + options
+               + f'<option value="custom"{" selected" if current == "custom" else ""}>{h(t("mask_custom"))}</option>')
     parts = set(rotation.get('parts') or ['port', 'obfuscation'])
     checks = lambda chosen: ''.join(
         f'<label class="check-field"><input type="checkbox" name="{p}" value="1"{" checked" if p in chosen else ""}><span>{h(t("rot_" + p))}</span></label>'
-        for p in ('port', 'obfuscation', 'key'))
+        for p in ROTATE_PARTS)
     days = ''.join(f'<option value="{d}"{" selected" if d == rotation.get("days", 0) else ""}>{h(t("rot_every_" + str(d)))}</option>'
                    for d in (0, 1, 3, 7, 14, 30))
     last = str(rotation.get('rotated_at') or '')[:16].replace('T', ' ')
@@ -3329,7 +3395,11 @@ def rotation_card(request, state, t):
       <div class="rotation-grid">
         <form method="post" action="/servers/{h(iface)}/mask" class="rotation-block" data-confirm="{h(t('mask_confirm'))}">{csrf(request)}
           <h3>{icon('shield',17)}{h(t('mask_title'))}</h3><p class="access-hint">{h(t('mask_hint'))}</p>
-          <label class="field"><span>{h(t('mask_profile'))}</span><select name="profile">{options}</select></label>
+          <label class="field"><span>{h(t('mask_profile'))}</span><select name="profile" data-mask-profile>{options}</select></label>
+          <div class="mask-custom" data-mask-custom{'' if current == 'custom' else ' hidden'}>
+          <label class="field"><span>{h(t('mask_custom_port'))}</span><input name="custom_port" inputmode="numeric" value="{h(state.get('port', ''))}"></label>
+          <label class="field"><span>{h(t('mask_custom_i1'))}</span><textarea name="custom_i1" rows="3" maxlength="16384" spellcheck="false"
+          placeholder="&lt;b 0x…&gt;&lt;r 32&gt;">{h(state.get('mask_i1', ''))}</textarea></label></div>
           <label class="check-field"><input type="checkbox" name="clients" value="1" checked><span>{h(t('mask_clients'))}</span></label>
           <label class="check-field"><input type="checkbox" name="use_port" value="1"><span>{h(t('mask_port'))}</span></label>
           <button class="btn btn-secondary" type="submit">{h(t('mask_apply'))}</button></form>
@@ -4572,4 +4642,32 @@ TEXT['en'].update({
     'sessions_now': 'online', 'sessions_start': 'Start (UTC)', 'sessions_end': 'End', 'sessions_length': 'Duration',
     'sessions_address': 'Address', 'sessions_traffic': 'Traffic', 'sessions_empty': 'No connections yet.',
     'sessions_note': 'The last 50 connections, kept for {days} days.', 'sessions_paused': 'Recording is off now.',
+})
+
+
+TEXT['ru'].update({
+    'random_subnet': 'Случайная подсеть 10.x.y.0/24 (каждый новый сервер — своя)',
+    'mask_steam': 'Игровой запрос Steam', 'mask_custom': 'Свой: порт и I1 вручную',
+    'mask_custom_port': 'Порт (если отмечено «Перевести сервер на порт профиля»)', 'mask_custom_i1': 'Пакет I1 для всех клиентов',
+    'mask_custom_port_bad': 'Порт: число от 1 до 65535',
+    'rot_client_keys': 'Ключи клиентов с подпиской (роутеры получат их сами)',
+    'rot_owners_sent': 'Владельцам с правом получать конфигурацию бот отправит новые файлы сам.',
+    'move_title': 'Перенос на другой сервер', 'move_target': 'Сервер',
+    'move_hint': 'Клиент переедет с теми же ключами, владельцем, лимитами, сроком и подпиской и получит адрес в подсети нового сервера. '
+                 'Ему понадобится новая конфигурация: роутер с подпиской заберёт её сам, владельцу с правом получения её пришлёт бот.',
+    'move_button': 'Перенести', 'move_confirm': 'Перенести клиента на другой сервер? Текущая конфигурация перестанет работать.',
+    'moved_notice': 'Клиент перенесён на этот сервер. Старая конфигурация больше не работает.',
+})
+TEXT['en'].update({
+    'random_subnet': 'Random subnet 10.x.y.0/24 (each new server its own)',
+    'mask_steam': 'Steam game query', 'mask_custom': 'Custom: port and I1 by hand',
+    'mask_custom_port': 'Port (when “Move the server to the profile’s port” is ticked)', 'mask_custom_i1': 'I1 packet for every client',
+    'mask_custom_port_bad': 'Port: a number from 1 to 65535',
+    'rot_client_keys': 'Keys of clients with a subscription (routers fetch them by themselves)',
+    'rot_owners_sent': 'Owners allowed to get their configuration receive the new files from the bot.',
+    'move_title': 'Move to another server', 'move_target': 'Server',
+    'move_hint': 'The client moves with the same keys, owner, limits, expiry and subscription and gets an address in the new server’s subnet. '
+                 'It needs a new configuration: a router with a subscription fetches it, the bot sends it to an owner allowed to get it.',
+    'move_button': 'Move', 'move_confirm': 'Move the client to another server? The current configuration stops working.',
+    'moved_notice': 'The client was moved to this server. The old configuration no longer works.',
 })

@@ -129,6 +129,26 @@ awg31_install_helper() {
 # mode drops replies that come back over another path), no ICMP redirects, no
 # source routing, SYN cookies. One file of ours; the admin may override it with a
 # later file in /etc/sysctl.d.
+# A free random 10.x.y.0/24 for the first server ("random subnet" in the wizard):
+# it must not overlap any IPv4 route of the host.
+awg31_random_subnet() {
+    python3 - "$(ip -j -4 route show table main 2>/dev/null || echo '[]')" <<'PY'
+import ipaddress, json, secrets, sys
+taken = []
+for route in json.loads(sys.argv[1] or '[]'):
+    dst = route.get('dst')
+    if dst and dst != 'default':
+        try: taken.append(ipaddress.ip_network(dst, strict=False))
+        except ValueError: pass
+for _ in range(256):
+    net = ipaddress.ip_network(f'10.{secrets.randbelow(254) + 1}.{secrets.randbelow(256)}.0/24')
+    if not any(net.overlaps(other) for other in taken):
+        print(net); break
+else:
+    print('10.77.10.0/24')
+PY
+}
+
 awg31_network_sysctl() {
     cat > /etc/sysctl.d/96-awg31-network.conf <<'CONF'
 # AmneziaWG 3.1 Console: kernel network settings for VPN routing (sudo awg31 uninstall removes this file)

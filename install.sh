@@ -11,7 +11,8 @@
 # Unattended installation (no questions): set AWG31_UNATTENDED=1 and, when the
 # defaults do not fit, AWG31_SUBNET, AWG31_PORT, AWG31_MTU, AWG31_ENDPOINT,
 # AWG31_DNS, AWG31_MODE, AWG31_UPLINK, AWG31_PANEL_PORT, AWG31_FIRST_CLIENT,
-# AWG31_PASSWORD_FILE, AWG31_OPEN_FIREWALL=no.
+# AWG31_PASSWORD_FILE, AWG31_OPEN_FIREWALL=no, AWG31_RANDOM_SUBNET=1 (a random
+# 10.x.y.0/24 unless AWG31_SUBNET is given).
 #
 # Run it as root. Release archives are verified against the SHA256 sum
 # published next to them; a mismatch aborts before anything is unpacked.
