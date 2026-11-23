@@ -225,8 +225,10 @@
   const allPeers = byId('select-all-peers');
   const bulkButton = byId('bulk-delete-button');
   const bulkCount = byId('bulk-selection-count');
+  const bulkBar = byId('bulk-toolbar');
   function updatePeerSelection() {
     const selected = peerCheckboxes.filter(x => x.checked).length;
+    if (bulkBar) bulkBar.hidden = selected === 0;
     if (bulkButton) bulkButton.disabled = selected === 0;
     for (const button of document.querySelectorAll('[data-needs-selection]')) button.disabled = selected === 0;
     if (bulkCount) bulkCount.textContent = (isRu ? 'Выбрано: ' : 'Selected: ') + selected;
@@ -243,11 +245,22 @@
     updatePeerSelection();
   });
   peerCheckboxes.forEach(x => x.addEventListener('change', updatePeerSelection));
+  byId('bulk-clear')?.addEventListener('click', () => {
+    peerCheckboxes.forEach(x => { x.checked = false; });
+    updatePeerSelection();
+    allPeers?.focus();
+  });
 
   const search = byId('client-search');
   const statusFilters = [...document.querySelectorAll('[data-client-status]')];
   const groupFilter = byId('client-group-filter');
   const stateFilter = byId('client-state-filter');
+  const chips = [...document.querySelectorAll('[data-client-chip]')];
+  const clientCount = byId('client-count');
+  let chip = 'all';
+  // The four chips are the everyday cut: everyone / online now / enabled but offline / switched off.
+  const chipMatch = (row) => chip === 'all' || (chip === 'disabled' ? row.dataset.enabled === '0'
+    : row.dataset.enabled === '1' && (row.dataset.presence === 'online') === (chip === 'online'));
   function applyFilter() {
     const text = (search?.value || '').toLowerCase().trim();
     const statuses = statusFilters.filter(input => input.checked).map(input => input.dataset.clientStatus);
@@ -257,15 +270,68 @@
       const matches = (!text || row.dataset.name?.includes(text) || row.dataset.ip?.includes(text) || row.dataset.text?.includes(text)) &&
         (!statusFilters.length || statuses.includes(row.dataset.enabled)) &&
         (group === '*' || (row.dataset.group || '') === group) &&
-        (!flag || (row.dataset.flags || '').split(' ').includes(flag));
+        (!flag || (row.dataset.flags || '').split(' ').includes(flag)) && chipMatch(row);
       row.classList.toggle('hidden-by-filter', !matches);
     }
+    if (clientCount) {
+      const total = Number(clientCount.dataset.total || 0);
+      const shown = document.querySelectorAll('tr.client-row:not(.hidden-by-filter)').length;
+      clientCount.textContent = shown === total ? `${total} ${isRu ? 'клиентов' : 'peers'}`
+        : (isRu ? `${shown} из ${total} клиентов` : `${shown} of ${total} peers`);
+    }
   }
+  chips.forEach(button => button.addEventListener('click', () => {
+    chip = button.dataset.clientChip;
+    chips.forEach(x => x.setAttribute('aria-pressed', String(x === button)));
+    applyFilter();
+  }));
   search?.addEventListener('input', applyFilter);
   statusFilters.forEach(input => input.addEventListener('change', applyFilter));
   groupFilter?.addEventListener('change', applyFilter);
   stateFilter?.addEventListener('change', applyFilter);
   applyFilter();
+
+  // Row menus: a fixed list, so the table's own scroll area never clips it; it flips up near the bottom edge.
+  const rowMenus = () => [...document.querySelectorAll('details.row-menu[open]')];
+  const closeRowMenus = (except) => rowMenus().forEach(menu => { if (menu !== except) menu.removeAttribute('open'); });
+  for (const menu of document.querySelectorAll('details.row-menu')) {
+    menu.addEventListener('toggle', () => {
+      if (!menu.open) return;
+      closeRowMenus(menu);
+      const list = menu.querySelector('.row-menu-list');
+      const anchor = menu.querySelector('summary').getBoundingClientRect();
+      const width = list.offsetWidth, height = list.offsetHeight;
+      const left = Math.min(window.innerWidth - width - 8, Math.max(8, anchor.right - width));
+      const below = anchor.bottom + 6;
+      list.style.left = left + 'px';
+      list.style.top = (below + height > window.innerHeight - 8 ? Math.max(8, anchor.top - height - 6) : below) + 'px';
+    });
+  }
+  document.addEventListener('click', event => {
+    for (const menu of rowMenus()) if (!menu.contains(event.target)) menu.removeAttribute('open');
+  });
+  document.addEventListener('keydown', event => {
+    if (event.key !== 'Escape') return;
+    for (const menu of rowMenus()) {
+      menu.removeAttribute('open');
+      menu.querySelector('summary')?.focus();
+    }
+  });
+  window.addEventListener('scroll', () => closeRowMenus(), true);
+  window.addEventListener('resize', () => closeRowMenus());
+
+  // "12 s ago" keeps counting while the page stays open.
+  const agoUnits = isRu ? ['с', 'мин', 'ч', 'д'] : ['s', 'min', 'h', 'd'];
+  function refreshAgo() {
+    const now = Math.floor(Date.now() / 1000);
+    for (const el of document.querySelectorAll('[data-since]')) {
+      const seconds = Math.max(0, now - Number(el.dataset.since));
+      const [value, unit] = seconds < 60 ? [seconds, 0] : seconds < 3600 ? [Math.floor(seconds / 60), 1]
+        : seconds < 86400 ? [Math.floor(seconds / 3600), 2] : [Math.floor(seconds / 86400), 3];
+      el.textContent = isRu ? `${value} ${agoUnits[unit]} назад` : `${value} ${agoUnits[unit]} ago`;
+    }
+  }
+  if (document.querySelector('[data-since]')) window.setInterval(refreshAgo, 15000);
   // I1–I5 helpers: a random value per field and ready-made templates for I1.
   for (const box of document.querySelectorAll('[data-cps]')) {
     const enable = box.querySelector('[data-cps-enabled]');
@@ -954,6 +1020,7 @@
   const value = {
     name: (row) => row.dataset.name || '',
     ip: (row) => ipValue(row.dataset.ip),
+    presence: (row) => Number(row.dataset.handshake || 0),
     // Enabled before disabled, then the most recent handshake first.
     status: (row) => Number(row.dataset.enabled || 0) * 1e12 + Number(row.dataset.handshake || 0),
     traffic: (row) => Number(row.dataset.traffic || 0),
@@ -985,7 +1052,7 @@
     button.addEventListener('click', () => {
       const cell = button.closest('th');
       const key = button.dataset.sortKey;
-      // Names and addresses start A→Z; status and traffic start with the busiest.
+      // Names and addresses start A→Z; presence, access and traffic start with the busiest.
       const first = key === 'name' || key === 'ip' ? 'asc' : 'desc';
       const direction = cell.classList.contains('is-sorted') ? (cell.classList.contains('is-desc') ? 'asc' : 'desc') : first;
       apply(key, direction, true);

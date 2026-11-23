@@ -178,10 +178,14 @@ tbody tr:hover {background:rgba(248,180,68,.055)}
 .expiry-calendar-days button[aria-pressed="true"] {background:var(--md-sys-color-primary);color:var(--md-sys-color-on-primary);}
 .expiry-calendar footer {border-top:1px solid var(--md-sys-color-outline-variant);padding-top:6px;}
 .expiry-calendar footer button {padding-inline:8px;}
-.clients-card .table-tools {flex-wrap:wrap;}
-.client-status-filters {display:flex;flex-wrap:wrap;gap:8px 16px;}
-.client-status-filters label {display:flex;align-items:center;gap:8px;min-height:44px;cursor:pointer;font-size:13px;}
-.client-status-filters input {width:18px;height:18px;margin:0;accent-color:var(--md-sys-color-primary);}
+.clients-card .table-tools {flex-wrap:wrap;gap:12px;align-items:center}
+.clients-card .table-search {flex:1 1 260px;max-width:420px;min-width:220px}
+.table-tools-more {display:flex;flex-wrap:wrap;align-items:center;gap:10px 12px;margin-left:auto}
+.table-count {color:var(--muted2);font-size:12px;white-space:nowrap}
+@media(max-width:670px) {
+  .clients-card > .section-title {flex-direction:column;align-items:stretch;gap:14px}
+  .table-tools-more {margin-left:0}
+}
 .cps-box {padding:16px;margin:14px 0 20px;background:var(--md-sys-color-surface-container);border:1px solid var(--md-sys-color-outline-variant);border-radius:var(--md-sys-shape-corner-large);}
 .cps-box summary {cursor:pointer;color:var(--md-sys-color-on-primary-container);font-weight:600;padding:8px 0;}
 .cps-box .fields-grid {margin-top:14px;}
@@ -1061,9 +1065,12 @@ body {background:var(--bg);font-size:14px;line-height:1.48;}
 .settings-card .advanced-box .obf-help {color:#a7b1bc;font-size:12px;line-height:1.55;margin:12px 0 20px}
 .server-state-actions {display:flex;align-items:center;gap:8px;flex-wrap:wrap}
 .server-state-actions form {margin:0}
-.bulk-toolbar {display:flex;align-items:center;gap:8px;flex-wrap:wrap;justify-content:flex-end;padding:3px 0 14px}
-.bulk-toolbar > span {margin-right:10px}
-.bulk-toolbar span {color:#abb6c3;font-size:12px}
+.bulk-toolbar {position:sticky;bottom:14px;z-index:6;display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:0 0 14px;padding:10px 14px;border:1px solid rgba(248,180,68,.4);border-radius:14px;background:#2a2113;box-shadow:0 10px 30px rgba(0,0,0,.35)}
+.bulk-toolbar[hidden] {display:none}
+.bulk-toolbar > span {margin-right:8px;padding:0 6px;color:var(--amber-bright);font-size:14px;font-weight:700}
+.bulk-clear {display:grid;place-items:center;width:44px;height:44px;margin-left:auto;border:0;border-radius:50%;background:transparent;color:var(--amber-bright);cursor:pointer}
+.bulk-clear:hover {background:rgba(248,180,68,.14)}
+.bulk-clear:focus-visible {outline:3px solid var(--amber);outline-offset:2px}
 .peer-select,#select-all-peers {width:17px;height:17px;accent-color:var(--amber);cursor:pointer}
 .clients-card th:first-child,.clients-card td:first-child {width:40px;text-align:center}
 .settings-success {display:flex;align-items:center;gap:16px;border:1px solid rgba(104,205,155,.35);background:#1a2924;color:#d9f7e7;border-radius:14px;padding:17px 20px;margin:0 0 20px}
@@ -1107,7 +1114,7 @@ body {background:var(--bg);font-size:14px;line-height:1.48;}
 /* Long hex packets wrap inside the field instead of running off in one line. */
 .cps-field textarea{white-space:pre-wrap;overflow-wrap:anywhere;word-break:break-all}
 .cps-preset .field input{width:100%}
-.config-stale{display:flex;align-items:center;gap:4px;margin-top:4px;color:#ffca75;font-size:11px}
+.config-stale{display:flex;align-items:center;gap:4px;margin-top:4px;color:var(--amber-bright);font-size:12px}
 .config-stale .icon{flex:none}
 
 /* Telegram block (Maintenance → Telegram): two tabs, label left and control right, event cards. */
@@ -1246,17 +1253,21 @@ th.is-sorted .sort-arrow {opacity:1}
 th.is-sorted:not(.is-desc) .sort-down,th.is-sorted.is-desc .sort-up {display:none}
 
 /* Client actions: one panel of icon buttons with dividers; the name appears as a tooltip. */
-.action-group {display:inline-flex;align-items:stretch;border:1px solid #3a414b;border-radius:11px;background:#1d2127}
+/* One main action per row (the .conf file) and the rest behind a menu. */
+.action-group {display:inline-flex;align-items:center;gap:8px}
 .action-group > form {display:flex;margin:0}
-.action-group > :not(:first-child) {border-left:1px solid #343a43}
-.action-icon {position:relative;display:inline-flex;align-items:center;justify-content:center;width:40px;height:38px;padding:0;border:0;background:none;color:#d7dde4;cursor:pointer;text-decoration:none}
-.action-group > :first-child,.action-group > :first-child .action-icon {border-radius:10px 0 0 10px}
-.action-group > :last-child,.action-group > :last-child .action-icon {border-radius:0 10px 10px 0}
-.action-icon:hover {background:#262b32;color:#fff}
-.action-icon:focus-visible {outline:2px solid var(--amber);outline-offset:-2px;z-index:1}
-.action-icon.is-danger {color:#ff8b80}
-.action-icon.is-danger:hover {background:rgba(255,120,110,.12);color:#ffb0a8}
-.action-icon[data-tip]:hover::after,.action-icon[data-tip]:focus-visible::after {content:attr(data-tip);position:absolute;bottom:calc(100% + 8px);left:50%;transform:translateX(-50%);z-index:5;white-space:nowrap;padding:4px 8px;border-radius:7px;border:1px solid #3a414b;background:#0d1013;color:#eef1f4;font:500 11.5px/1.3 var(--font-sans, inherit);pointer-events:none}
+.action-icon {position:relative;display:inline-flex;align-items:center;justify-content:center;width:44px;height:44px;padding:0;border:1px solid var(--md-sys-color-outline-variant);border-radius:50%;background:var(--md-sys-color-surface-container-high);color:var(--text);cursor:pointer;list-style:none}
+.action-icon::-webkit-details-marker {display:none}
+.action-icon:hover {border-color:var(--amber);color:var(--amber)}
+.action-icon:focus-visible {outline:3px solid var(--amber);outline-offset:2px}
+.row-menu {position:relative}
+.row-menu-list {position:fixed;z-index:30;display:grid;min-width:210px;padding:6px;border:1px solid var(--md-sys-color-outline-variant);border-radius:12px;background:var(--md-sys-color-surface-container-high);box-shadow:0 14px 40px rgba(0,0,0,.45);text-align:left}
+.row-menu-list form {margin:0}
+.row-menu-list a,.row-menu-list button {display:flex;align-items:center;gap:10px;width:100%;min-height:44px;padding:0 12px;border:0;border-radius:8px;background:transparent;color:var(--text);font-size:13px;font-weight:600;text-decoration:none;cursor:pointer;text-align:left}
+.row-menu-list a:hover,.row-menu-list button:hover {background:var(--md-sys-color-surface-container-highest)}
+.row-menu-list a:focus-visible,.row-menu-list button:focus-visible {outline:2px solid var(--amber);outline-offset:-2px}
+.row-menu-list .is-danger {color:var(--crit)}
+.row-menu-list .is-danger:hover {background:var(--crit-soft)}
 .actions-cell {white-space:nowrap;text-align:right;width:1%}
 th.actions-head {text-align:right}
 .client-icon {position:relative;display:inline-flex;vertical-align:middle;margin-right:8px}
@@ -1376,6 +1387,28 @@ tr:hover .extra-dot {box-shadow:0 0 0 2px #1e2228}
 
 /* 0.19: groups, list filters, blocking signal */
 .group-chip {display:inline-block;margin-left:8px;padding:1px 8px;border:1px solid rgba(110,170,240,.35);border-radius:999px;background:rgba(110,170,240,.08);color:#a9c8ef;font-size:11.5px;font-weight:500;vertical-align:middle;white-space:nowrap}
+.filter-chips {display:flex;flex-wrap:wrap;gap:8px}
+.filter-chip {display:inline-flex;align-items:center;gap:8px;min-height:44px;padding:0 16px;border:1px solid var(--md-sys-color-outline-variant);border-radius:999px;background:transparent;color:var(--muted);font-size:13px;font-weight:600;cursor:pointer}
+.filter-chip b {min-width:20px;padding:1px 7px;border-radius:999px;background:var(--md-sys-color-surface-container-high);color:var(--text);font-size:12px;text-align:center}
+.filter-chip:hover {color:var(--text)}
+.filter-chip[aria-pressed="true"] {border-color:rgba(248,180,68,.55);background:var(--md-sys-color-primary-container);color:var(--md-sys-color-on-primary-container)}
+.filter-chip[aria-pressed="true"] b {background:rgba(248,180,68,.22);color:var(--md-sys-color-on-primary-container)}
+.filter-chip:focus-visible {outline:3px solid var(--amber);outline-offset:2px}
+.presence-state {display:flex;align-items:center;gap:8px;font-weight:600;font-size:13px}
+.presence-state i {display:block;width:9px;height:9px;flex:none;border-radius:50%;box-sizing:border-box}
+.presence-state.is-online {color:var(--ok)}
+.presence-state.is-online i {background:var(--ok)}
+.presence-state.is-offline {color:var(--muted)}
+.presence-state.is-offline i {border:2px solid var(--muted2);background:transparent}
+.clients-card .handshake {display:block;margin-top:2px;color:var(--muted2);font-size:12px}
+.access-pill {display:inline-flex;align-items:center;padding:3px 10px;border-radius:999px;font-size:12px;font-weight:700;white-space:nowrap}
+.access-pill.is-on {background:var(--md-sys-color-surface-container-high);border:1px solid var(--md-sys-color-outline-variant);color:var(--text)}
+.access-pill.is-off {background:var(--crit-soft);border:1px solid rgba(255,180,171,.35);color:var(--crit)}
+.access-note {display:block;margin-top:4px;color:var(--muted2);font-size:12px}
+@media (prefers-reduced-motion:no-preference) {
+  @keyframes presence-ring {0% {box-shadow:0 0 0 0 rgba(113,217,173,.55)} 70% {box-shadow:0 0 0 7px rgba(113,217,173,0)} 100% {box-shadow:0 0 0 0 rgba(113,217,173,0)}}
+  .presence-state.is-online i {animation:presence-ring 2.4s ease-out infinite}
+}
 .table-filter select {height:36px;padding:0 30px 0 10px;font-size:13px;border-radius:10px}
 .access-state.is-warn {color:#f3c06b}
 .rotation-grid {grid-template-columns:repeat(auto-fit,minmax(min(380px,100%),1fr))}

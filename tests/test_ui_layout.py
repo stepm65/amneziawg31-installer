@@ -225,7 +225,7 @@ def test_release_check_asks_github_at_most_twice_a_day(ui, monkeypatch):
     assert len(started) == 2
 
 
-def test_client_table_sorts_by_every_column_and_acts_through_icons(ui):
+def test_client_table_sorts_by_every_column_and_has_one_main_action_with_a_menu(ui):
     module, client, _ = ui
     listing = module.ctl
     module.ctl = lambda op, data=None: ({**listing(op, data), 'clients': [
@@ -233,13 +233,23 @@ def test_client_table_sorts_by_every_column_and_acts_through_icons(ui):
         if op == 'list' else listing(op, data))
     html = client.get('/servers/awg0/clients').text
     module.ctl = listing
-    for key in ('name', 'ip', 'status', 'traffic'):
+    for key in ('name', 'ip', 'presence', 'status', 'traffic'):
         assert f'<th aria-sort="none" data-sort-column="{key}"><button type="button" class="sort-button" data-sort-key="{key}">' in html
     assert 'data-handshake="1795000000" data-traffic="15"' in html
     assert 'data-sortable-clients' in html
-    # Variant B: one group of icon buttons, each with an accessible name and a tooltip.
+    # Presence (is the tunnel up?) and access (is the client allowed?) are two columns, not one pill.
+    assert 'class="presence-state is-offline"' in html and 'class="access-pill is-on"' in html
+    assert 'data-since="1795000000"' in html and 'data-presence="offline"' in html
+    # One main action (the .conf file); details, on/off and delete sit behind a menu with accessible names.
     assert 'class="action-group"' in html
     assert re.search(r'href="/servers/awg0/clients/[^"/]+/download" download aria-label="Скачать \.conf: ', html)
-    assert 'data-tip="Конфигурация"' in html and 'class="action-icon is-danger"' in html
+    assert 'class="row-menu"' in html and re.search(r'<summary class="action-icon" aria-label="Другие действия: phone">', html)
+    assert re.search(r'<a href="/servers/awg0/clients/phone">.*?Конфигурация</a>', html, re.S)
+    assert 'action="/servers/awg0/clients/phone/disable"' in html and 'action="/servers/awg0/clients/phone/delete"' in html
+    assert 'class="is-danger" type="submit"' in html
+    # The bulk bar waits for a selection; the chips carry counts.
+    assert 'id="bulk-toolbar" role="region"' in html and ' hidden>' in html.split('id="bulk-toolbar"')[1].split('>')[0] + '>'
+    assert html.count('data-client-chip=') == 4 and 'id="client-count"' in html
     js = (ROOT / 'src/panel.js').read_text()
     assert "localStorage.setItem('awg31.clientSort'" in js and 'Intl.Collator' in js
+    assert "details.row-menu" in js and "chipMatch" in js and "presence: (row)" in js

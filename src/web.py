@@ -1928,37 +1928,52 @@ def server_content(request: Request, section: str = 'overview'):
     rows = ''
     for c in state['clients']:
         st = c.get('stats', {})
-        seen = (time.strftime('%Y-%m-%d %H:%M UTC', time.gmtime(st['handshake']))
-                if st.get('handshake') else t('never'))
         name = h(c['name'])
         encoded_name = quote(c['name'], safe='')
         active = bool(c['enabled'])
-        status_class = 'running' if active else 'stopped'
-        # One panel of icon buttons (variant B chosen by the author): configuration, download, on/off, delete.
         base = f'/servers/{quote(state["interface"], safe="")}/clients/{encoded_name}'
         toggle = 'disable' if active else 'enable'
-        def action_label(key):
-            return f'aria-label="{h(t(key))}: {name}" data-tip="{h(t(key))}"'
-        actions = (f'<div class="action-group" role="group" aria-label="{h(t("actions"))}: {name}">'
-                   f'<a class="action-icon" href="{base}" {action_label("client_details")}>{icon("file",18)}</a>'
-                   f'<a class="action-icon" href="{base}/download" download {action_label("download")}>{icon("download",18)}</a>'
-                   f'<form method="post" action="{base}/{toggle}" class="inline">{csrf(request)}'
-                   f'<button class="action-icon" type="submit" {action_label("disable" if active else "enable")}>'
-                   f'{icon("pause" if active else "play",18)}</button></form>'
-                   f'<form method="post" action="{base}/delete" class="inline" data-confirm="{h(t("confirm_delete"))}">{csrf(request)}'
-                   f'<button class="action-icon is-danger" type="submit" {action_label("delete")}>{icon("trash",18)}</button></form>'
-                   '</div>')
         traffic_total = int(st.get('received', 0) or 0) + int(st.get('sent', 0) or 0)
         group = c.get('group_name') or ''
-        flags = ' '.join(flag for flag, on in (
-            ('online', bool(st.get('handshake')) and now_ts - int(st.get('handshake') or 0) <= 180),
-            ('never', not st.get('handshake')), ('stale', bool(c.get('config_stale'))),
+        hs = int(st.get('handshake') or 0)
+        is_online = bool(hs) and now_ts - hs <= 180
+        flag_on = dict((
+            ('online', is_online),
+            ('never', not hs), ('stale', bool(c.get('config_stale'))),
             ('sub', bool(c.get('subscription'))), ('owner', bool(c.get('telegram_id'))),
             ('expired', c.get('disabled_reason') == 'expired'), ('quota', c.get('disabled_reason') == 'quota'),
-            ('expiring', bool(c.get('expires_at')) and active and c['expires_at'] <= soon)) if on)
+            ('expiring', bool(c.get('expires_at')) and active and c['expires_at'] <= soon)))
+        flags = ' '.join(flag for flag, on in flag_on.items() if on)
+        # Presence (is the tunnel up right now?) and access (is the client allowed?) are different questions.
+        if hs:
+            stamp = time.strftime('%Y-%m-%d %H:%M UTC', time.gmtime(hs))
+            last = (f'<small class="handshake" data-since="{hs}" title="{h(t("last_seen"))}: {h(stamp)}">'
+                    f'{h(ago_text(lang, now_ts - hs))}</small>')
+        else:
+            last = f'<small class="handshake">{h(t("never"))}</small>'
+        presence_cell = (f'<td><span class="presence-state {"is-online" if is_online else "is-offline"}"><i aria-hidden="true"></i>'
+                         f'{h(t("online_now" if is_online else "offline_now"))}</span>{last}</td>')
+        reason = ('filter_expired' if flag_on['expired'] else 'filter_quota' if flag_on['quota']
+                  else 'filter_expiring' if flag_on['expiring'] else '')
+        access_cell = (f'<td><span class="access-pill {"is-on" if active else "is-off"}">{h(t("access_on" if active else "access_off"))}</span>'
+                       + (f'<small class="access-note">{h(t(reason))}</small>' if reason else '')
+                       + (f'<small class="config-stale" title="{h(t("config_stale_hint"))}">{icon("info",12)}{h(t("config_stale"))}</small>'
+                          if c.get('config_stale') else '') + '</td>')
+        # One main action (the .conf file) and the rest behind a menu: the row stays calm.
+        actions = (f'<div class="action-group" role="group" aria-label="{h(t("actions"))}: {name}">'
+                   f'<a class="btn btn-secondary btn-small" href="{base}/download" download aria-label="{h(t("download"))}: {name}">'
+                   f'{icon("download",16)}{h(t("config_short"))}</a>'
+                   f'<details class="row-menu"><summary class="action-icon" aria-label="{h(t("more_actions"))}: {name}">{icon("more",18)}</summary>'
+                   f'<div class="row-menu-list">'
+                   f'<a href="{base}">{icon("file",16)}{h(t("client_details"))}</a>'
+                   f'<form method="post" action="{base}/{toggle}" class="inline">{csrf(request)}'
+                   f'<button type="submit">{icon("pause" if active else "play",16)}{h(t("disable" if active else "enable"))}</button></form>'
+                   f'<form method="post" action="{base}/delete" class="inline" data-confirm="{h(t("confirm_delete"))}">{csrf(request)}'
+                   f'<button class="is-danger" type="submit">{icon("trash",16)}{h(t("delete"))}</button></form>'
+                   '</div></details></div>')
         rows += (f'<tr class="client-row" data-name="{h(c["name"].lower())}" data-ip="{h(c["ip"])}" data-enabled="{int(active)}" '
                  f'data-group="{h(group)}" data-flags="{flags}" data-text="{h((group + " " + (c.get("comment") or "")).lower())}" '
-                 f'data-handshake="{int(st.get("handshake") or 0)}" data-traffic="{traffic_total}"><td><input class="peer-select" type="checkbox" form="bulk-delete-form" name="names" value="{name}" aria-label="{name}"></td><td class="client-name">'
+                 f'data-handshake="{hs}" data-traffic="{traffic_total}" data-presence="{"online" if is_online else "offline"}"><td><input class="peer-select" type="checkbox" form="bulk-delete-form" name="names" value="{name}" aria-label="{name}"></td><td class="client-name">'
                  # A dot on the client icon marks extra [Interface] lines (variant B chosen by the author).
                  + (f'<span class="client-icon has-extra" title="{h(t("extra_badge_hint"))}">{icon("server",16)}'
                     f'<span class="extra-dot" aria-hidden="true"></span><span class="sr-only">{h(t("extra_badge_hint"))}</span></span>'
@@ -1967,18 +1982,23 @@ def server_content(request: Request, section: str = 'overview'):
                  + (f'<span class="group-chip">{h(group)}</span>' if group else '') + '</td>'
                  f'<td><code class="ip-pill">{h(c["ip"])}</code>'
                  f'<small class="peer-routes-compact">{h(c.get("routed_subnets", ""))}</small></td>'
-                 f'<td><span class="pill pill-{status_class}"><span class="dot"></span>'
-                 f'{h(t("active" if active else "disabled"))}</span><small class="handshake">{h(seen)}</small>'
-                 + (f'<small class="config-stale" title="{h(t("config_stale_hint"))}">{icon("info",12)}{h(t("config_stale"))}</small>'
-                    if c.get('config_stale') else '') + '</td>'
+                 + presence_cell + access_cell +
                  f'<td><span class="traffic mono">↓ {h(human_size(st.get("received",0)))} <span class="traffic-divider"></span> '
                  f'↑ {h(human_size(st.get("sent",0)))}</span></td>'
                  f'<td class="actions-cell">{actions}</td></tr>')
 
     if not rows:
-        rows = (f'<tr><td colspan="6"><div class="empty-state">{icon("users",26)}'
+        rows = (f'<tr><td colspan="7"><div class="empty-state">{icon("users",26)}'
                 f'<strong>{h(t("no_clients"))}</strong><span>{h(t("no_clients_hint"))}</span>'
                 '</div></td></tr>')
+    def chip_matches(chip, c):
+        on = bool(c.get('enabled'))
+        online = bool(int(c.get('stats', {}).get('handshake') or 0)) and now_ts - int(c.get('stats', {}).get('handshake') or 0) <= 180
+        return {'all': True, 'online': on and online, 'offline': on and not online, 'disabled': not on}[chip]
+    chips = ''.join(
+        f'<button type="button" class="filter-chip" data-client-chip="{chip}" aria-pressed="{"true" if chip == "all" else "false"}">'
+        f'<span>{h(t("chip_" + chip))}</span><b>{sum(chip_matches(chip, c) for c in clients_all)}</b></button>'
+        for chip in ('all', 'online', 'offline', 'disabled'))
     clients = f'''<section class="card clients-card" id="clients">
         <div class="section-title"><div><span class="section-overline">PEERS / ACCESS</span>
         <h2>{icon('users',20)}{h(t('clients'))}</h2>
@@ -1988,32 +2008,30 @@ def server_content(request: Request, section: str = 'overview'):
         <button type="button" class="btn btn-primary" data-modal-open="add-client-modal">{icon('plus',16)}{h(t('add_client'))}</button>
         </div></div>
         <div class="table-tools"><label class="table-search">{icon('search',16)}<input id="client-search" type="search" placeholder="{h(t('search_clients'))}" aria-label="{h(t('search_clients'))}"></label>
-        <label class="table-filter"><span class="sr-only">{h(t('group'))}</span><select id="client-group-filter" aria-label="{h(t('group'))}">
+        <div class="filter-chips" role="group" aria-label="{h(t('status_filters'))}">{chips}</div>
+        <div class="table-tools-more"><label class="table-filter"><span class="sr-only">{h(t('group'))}</span><select id="client-group-filter" aria-label="{h(t('group'))}">
           <option value="*">{h(t('group_all'))}</option>{''.join(f'<option value="{h(g)}">{h(g)}</option>' for g in sorted(set(groups_all)) if g)}
           <option value="">{h(t('group_none'))}</option></select></label>
         <label class="table-filter"><span class="sr-only">{h(t('filter_state'))}</span><select id="client-state-filter" aria-label="{h(t('filter_state'))}">
           {''.join(f'<option value="{key}">{h(t("filter_" + (key or "all")))}</option>' for key in ('', 'online', 'never', 'stale', 'expiring', 'expired', 'quota', 'sub', 'owner'))}
           </select></label>
-        <div class="client-status-filters" role="group" aria-label="{h(t('status'))}">
-          <label><input type="checkbox" data-client-status="1" checked><span>{h(t('active_only'))}</span></label>
-          <label><input type="checkbox" data-client-status="0" checked><span>{'Отключённые' if lang=='ru' else 'Disabled'}</span></label>
-        </div>
-        <span class="table-count mono">{len(clients_all)} {h('клиентов' if lang=='ru' else 'peers')}</span>
-        <a class="btn btn-secondary btn-small" href="/servers/{h(state['interface'])}/export/clients.csv" download title="{h(t('export_csv_hint'))}">{icon('download',15)}{h(t('export_csv'))}</a></div>
+        <span class="table-count mono" id="client-count" data-total="{len(clients_all)}" aria-live="polite">{len(clients_all)} {h('клиентов' if lang=='ru' else 'peers')}</span>
+        <a class="btn btn-secondary btn-small" href="/servers/{h(state['interface'])}/export/clients.csv" download title="{h(t('export_csv_hint'))}">{icon('download',15)}{h(t('export_csv'))}</a></div></div>
         {bulk_notice(request, t)}
         <form id="bulk-enable-form" method="post" action="/servers/{h(state['interface'])}/clients/bulk-action" data-bulk-names hidden>{csrf(request)}<input type="hidden" name="action" value="enable"></form>
         <form id="bulk-disable-form" method="post" action="/servers/{h(state['interface'])}/clients/bulk-action" data-bulk-names hidden>{csrf(request)}<input type="hidden" name="action" value="disable"></form>
         <form id="bulk-delete-form" method="post" action="/servers/{h(state['interface'])}/clients/bulk-delete" data-confirm="{h(t('bulk_delete_confirm'))}">{csrf(request)}
-        <div class="bulk-toolbar"><span id="bulk-selection-count">{h(t('selected_count'))}: 0</span>
+        <div class="bulk-toolbar" id="bulk-toolbar" role="region" aria-label="{h(t('bulk_region'))}" hidden><span id="bulk-selection-count" aria-live="polite">{h(t('selected_count'))}: 0</span>
         <button type="submit" form="bulk-enable-form" class="btn btn-secondary btn-small" data-needs-selection disabled>{icon('play',15)}{h(t('bulk_enable'))}</button>
         <button type="submit" form="bulk-disable-form" class="btn btn-secondary btn-small" data-needs-selection disabled>{icon('pause',15)}{h(t('bulk_disable'))}</button>
         <button type="button" class="btn btn-secondary btn-small" data-modal-open="bulk-extend-modal" data-needs-selection disabled>{icon('calendar',15)}{h(t('bulk_extend'))}</button>
         <button type="button" class="btn btn-secondary btn-small" data-modal-open="bulk-limit-modal" data-needs-selection disabled>{icon('activity',15)}{h(t('bulk_limit'))}</button>
         <button type="button" class="btn btn-secondary btn-small" data-modal-open="bulk-group-modal" data-needs-selection disabled>{icon('tag',15)}{h(t('bulk_group'))}</button>
         <button id="bulk-extra-button" type="button" class="btn btn-secondary btn-small" data-modal-open="bulk-extra-modal" data-needs-selection disabled>{icon('file',16)}{h(t('extra_bulk'))}</button>
-        <button id="bulk-delete-button" type="submit" class="btn btn-danger btn-small" disabled>{icon('trash',16)}{h(t('bulk_delete'))}</button></div></form>
+        <button id="bulk-delete-button" type="submit" class="btn btn-danger btn-small" disabled>{icon('trash',16)}{h(t('bulk_delete'))}</button>
+        <button type="button" class="bulk-clear" id="bulk-clear" aria-label="{h(t('selected_clear'))}" title="{h(t('selected_clear'))}">{icon('x',18)}</button></div></form>
         <div class="table-scroll"><table><thead><tr>
-        <th><input type="checkbox" id="select-all-peers" aria-label="{h(t('select_all'))}"></th>{sort_head('name',t('name'))}{sort_head('ip',t('vpn_ip'))}{sort_head('status',t('status'))}
+        <th><input type="checkbox" id="select-all-peers" aria-label="{h(t('select_all'))}"></th>{sort_head('name',t('name'))}{sort_head('ip',t('vpn_ip'))}{sort_head('presence',t('presence'))}{sort_head('status',t('access'))}
         {sort_head('traffic',t('traffic'))}<th class="actions-head">{h(t('actions'))}</th></tr></thead><tbody data-sortable-clients>{rows}</tbody></table></div>
         </section>
 
@@ -4813,3 +4831,28 @@ TEXT['en'].update({
     'watch_what_now': 'What you can do',
     'tg_e_blocking': 'All clients gone at once (possible blocking)',
 })
+
+TEXT['ru'].update({
+    'presence': 'Присутствие', 'access': 'Доступ', 'online_now': 'Онлайн', 'offline_now': 'Не в сети',
+    'access_on': 'Доступ включён', 'access_off': 'Доступ отключён',
+    'chip_all': 'Все', 'chip_online': 'Онлайн', 'chip_offline': 'Не в сети', 'chip_disabled': 'Отключены',
+    'status_filters': 'Фильтр по состоянию', 'more_actions': 'Другие действия', 'config_short': 'Конфиг',
+    'selected_clear': 'Снять выбор', 'bulk_region': 'Действия с выбранными клиентами',
+    'ago': '{t} назад', 'unit_s': 'с', 'unit_m': 'мин', 'unit_h': 'ч', 'unit_d': 'д',
+})
+TEXT['en'].update({
+    'presence': 'Presence', 'access': 'Access', 'online_now': 'Online', 'offline_now': 'Offline',
+    'access_on': 'Access on', 'access_off': 'Access off',
+    'chip_all': 'All', 'chip_online': 'Online', 'chip_offline': 'Offline', 'chip_disabled': 'Disabled',
+    'status_filters': 'State filter', 'more_actions': 'More actions', 'config_short': 'Config',
+    'selected_clear': 'Clear selection', 'bulk_region': 'Actions for the selected clients',
+    'ago': '{t} ago', 'unit_s': 's', 'unit_m': 'min', 'unit_h': 'h', 'unit_d': 'd',
+})
+
+
+def ago_text(lang, seconds):
+    'A short "12 s ago" for the presence column; the exact time stays in the tooltip.'
+    seconds = max(0, int(seconds))
+    for limit, size, unit in ((60, 1, 'unit_s'), (3600, 60, 'unit_m'), (86400, 3600, 'unit_h'), (None, 86400, 'unit_d')):
+        if limit is None or seconds < limit:
+            return tr(lang, 'ago').format(t=f'{seconds // size} {tr(lang, unit)}')

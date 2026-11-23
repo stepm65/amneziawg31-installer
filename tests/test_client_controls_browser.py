@@ -91,30 +91,52 @@ def test_single_expiry_input_calendar_and_manual_entry(page, path, field_id):
     assert field.evaluate("field => new FormData(field.form).getAll('expires_at')") == [field.input_value()]
 
 
-def test_status_checkboxes_combine_with_search(page):
+def test_state_chips_combine_with_search_and_show_a_count(page):
     page.goto('http://panel.test/servers/awg0/clients')
-    active = page.get_by_role('checkbox', name='Активные', exact=True)
-    disabled = page.get_by_role('checkbox', name='Отключённые', exact=True)
+    chip = lambda name: page.locator(f'[data-client-chip="{name}"]')
     search = page.locator('#client-search')
     rows = page.locator('tr.client-row:visible')
-    assert active.is_checked() and disabled.is_checked()
+    count = page.locator('#client-count')
+    assert chip('all').get_attribute('aria-pressed') == 'true'
+    assert [chip(x).locator('b').inner_text() for x in ('all', 'online', 'offline', 'disabled')] == ['2', '0', '1', '1']
     assert rows.count() == 2
-    disabled.uncheck()
-    assert rows.count() == 1
-    assert rows.get_attribute('data-name') == 'alpha'
-    search.fill('offline')
+    chip('disabled').click()                       # switched off: only "offline" (its access is off)
+    assert rows.count() == 1 and rows.get_attribute('data-name') == 'offline'
+    assert chip('disabled').get_attribute('aria-pressed') == 'true' and chip('all').get_attribute('aria-pressed') == 'false'
+    assert count.inner_text() == '1 из 2 клиентов'
+    search.fill('alpha')                           # a chip and a search narrow together
     assert rows.count() == 0
-    disabled.check()
-    assert rows.get_attribute('data-name') == 'offline'
-    active.uncheck()
-    search.fill('10.77.10.3')
-    assert rows.count() == 1
-    disabled.uncheck()
+    chip('offline').click()                        # enabled but no tunnel right now: alpha
+    assert rows.count() == 1 and rows.get_attribute('data-name') == 'alpha'
+    chip('online').click()
     assert rows.count() == 0
-    active.check()
-    disabled.check()
+    chip('all').click()
     search.fill('')
-    assert rows.count() == 2
+    assert rows.count() == 2 and count.inner_text() == '2 клиентов'
+
+
+def test_bulk_bar_appears_with_a_selection_and_clears(page):
+    page.goto('http://panel.test/servers/awg0/clients')
+    bar = page.locator('#bulk-toolbar')
+    assert not bar.is_visible()
+    page.locator('.peer-select').first.check()
+    assert bar.is_visible() and 'Выбрано: 1' in page.locator('#bulk-selection-count').inner_text()
+    assert page.locator('#bulk-delete-button').is_enabled()
+    page.locator('#bulk-clear').click()
+    assert not bar.is_visible() and not page.locator('.peer-select').first.is_checked()
+
+
+def test_row_menu_opens_inside_the_viewport_and_closes_on_escape(page):
+    page.goto('http://panel.test/servers/awg0/clients')
+    menu = page.locator('details.row-menu').first
+    menu.locator('summary').click()
+    assert menu.get_attribute('open') is not None
+    box = menu.locator('.row-menu-list').bounding_box()
+    viewport = page.viewport_size
+    assert box['x'] >= 0 and box['y'] >= 0 and box['x'] + box['width'] <= viewport['width']
+    assert [x.inner_text().strip() for x in menu.locator('.row-menu-list > a, .row-menu-list button').all()][0] == 'Конфигурация'
+    page.keyboard.press('Escape')
+    assert menu.get_attribute('open') is None
 
 
 def test_api_session_expiry_opens_login_page(page):
