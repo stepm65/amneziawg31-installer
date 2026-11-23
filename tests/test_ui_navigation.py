@@ -17,7 +17,7 @@ def test_server_sidebar_is_a_direct_link_list(ui):
     assert home.count('class="instance-dashboard"') == 2
     assert 'class="fleet-stat"' not in home
     assert 'class="health-card"' not in home
-    assert '2 серверов' in home and '2/2' in home
+    assert '2 серверов' in home and '2 из 2' in home  # the strip says "2 из 2" (was "2/2" in the bottom line)
     assert "f'2" not in home
 
 

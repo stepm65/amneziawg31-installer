@@ -37,9 +37,15 @@ def test_overview_has_3xui_host_blocks_and_instance_charts(ui):
         assert f'action="/server/{key}/stop"' in html
         assert f'href="/servers/{key}/clients"' in html
         assert f'href="/servers/{key}/settings"' in html
-    assert html.count('data-period="5m"')==3
-    assert html.count('data-period="15m"')==3
-    assert html.count('data-period="1h"')==3
+    # One period switch in the summary strip drives every chart (it used to be repeated on each plot).
+    assert html.count('data-period="5m"')==1 and html.count('data-period="15m"')==1 and html.count('data-period="1h"')==1
+    assert html.count('data-period-switch')==1 and 'class="dash-periods"' not in html
+    assert 'class="fleet-status" data-state="ok"' in html and 'role="status"' in html
+    for fact in ('fleet-title','fleet-sub','fleet-servers','fleet-clients','fleet-load'):
+        assert f'id="{fact}"' in html
+    assert html.count('data-kpi-level')==4 and html.count('data-level=""')==4
+    for key in ('awg0','awg1'):
+        assert f'id="{key}-presence"' in html
     assert 'id="host-sockets-total"' in html
     assert 'id="wan-rx-rate"' in html and 'id="wan-tx-rate"' in html
     assert 'id="host-panel-ram"' in html
@@ -118,6 +124,10 @@ def test_js_and_css_keep_real_data_and_responsive_layout(ui):
     assert 'windowLength' in js
     assert 'Math.random(' not in js.split('// Infrastructure dashboard:')[-1]
     assert '.instance-dash-grid' in css and '.host-kpi-grid' in css
+    # Level colours and the presence marks are driven by panel.js; the status strip announces itself politely and once.
+    assert "levelOf" in js and "dataset.level" in js and 'drawPresence' in js and "periodButtons" in js
+    assert '.host-kpi[data-level="crit"]' in css and '.fleet-status[data-state="warn"]' in css
+    assert '@media (prefers-reduced-motion:no-preference)' in css
     assert 'grid-template-columns:repeat(2,minmax(0,1fr))' in css
     assert '@media(max-width:680px)' in css
 

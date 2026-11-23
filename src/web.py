@@ -2271,23 +2271,19 @@ def server_page(request: Request, interface: str, section: str):
     return server_content(request, section)
 
 
-def _dashboard_plot(name, title, subtitle='', height=144, ru=True):
+def _dashboard_plot(name, title, subtitle='', height=144, ru=True, toolbar=True):
     'Accessible inline SVG with real series populated by panel.js.'
     # name is either validated awgN or the fixed prefix 'wan'.
     assert name=='wan' or SERVER_RE.fullmatch(name)
     gid='dash-fill-'+name
+    heading=(f'<div class="dash-plot-toolbar"><div><strong>{h(title)}</strong><small>{h(subtitle)}</small></div></div>'
+             if toolbar else '')
     return f'''<div class="dash-plot" data-plot="{name}">
-      <div class="dash-plot-toolbar"><div><strong>{h(title)}</strong>
-      <small>{h(subtitle)}</small></div>
-      <div class="dash-periods" role="group" aria-label="{'Период' if ru else 'Period'}">
-        <button type="button" data-period="5m">{'5м' if ru else '5m'}</button>
-        <button type="button" data-period="15m" class="is-active" aria-pressed="true">{'15м' if ru else '15m'}</button>
-        <button type="button" data-period="1h">{'1ч' if ru else '1h'}</button>
-      </div></div>
+      {heading}
       <div class="dash-plot-area">
         <svg viewBox="0 0 680 {height}" preserveAspectRatio="none" role="img" aria-label="{h(title)}">
           <defs><linearGradient id="{gid}-rx" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#f8b444" stop-opacity=".30"/><stop offset="100%" stop-color="#f8b444" stop-opacity="0"/></linearGradient>
-          <linearGradient id="{gid}-tx" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#80a8dc" stop-opacity=".22"/><stop offset="100%" stop-color="#80a8dc" stop-opacity="0"/></linearGradient></defs>
+          <linearGradient id="{gid}-tx" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#8fb4ff" stop-opacity=".22"/><stop offset="100%" stop-color="#8fb4ff" stop-opacity="0"/></linearGradient></defs>
           <path class="dash-grid" d="M0 28H680 M0 67H680 M0 106H680"/>
           <path data-area="rx" fill="url(#{gid}-rx)"/>
           <path data-area="tx" fill="url(#{gid}-tx)"/>
@@ -2312,8 +2308,8 @@ def infrastructure_overview(request: Request):
     total_clients=sum(int(x.get('clients',0)) for x in servers)
     tx_label='Отправлено' if ru else 'Sent'
     rx_label='Получено' if ru else 'Received'
-    dash_metric=lambda key,title,value_title,detail: f'''<article class="host-kpi" data-kpi="{key}">
-      <div class="host-kpi-heading"><span>{h(title)}</span><span class="host-kpi-indicator"></span></div>
+    dash_metric=lambda key,title,value_title,detail: f'''<article class="host-kpi" data-kpi="{key}" data-level="">
+      <div class="host-kpi-heading"><span>{h(title)}</span><span class="kpi-level" data-kpi-level></span></div>
       <div class="host-kpi-value" id="host-{key}">—</div>
       <div class="host-kpi-detail" id="host-{key}-detail">{h(detail)}</div>
       <svg viewBox="0 0 280 100" preserveAspectRatio="none" class="host-kpi-chart" aria-hidden="true">
@@ -2324,9 +2320,38 @@ def infrastructure_overview(request: Request):
        ('swap','Подкачка' if ru else 'SWAP','Использование подкачки' if ru else 'Swap usage'),
        ('disk','Диск' if ru else 'DISK','Корневая файловая система' if ru else 'Root filesystem')])
     traffic=_dashboard_plot('wan','Трафик внешнего интерфейса' if ru else 'Uplink traffic',
-                            'WAN · RX / TX',174,ru=ru)
-    host=f'''<div class="infra-section-head"><h2>{'Система' if ru else 'System'}</h2>
-      <span class="infra-pulse"><i></i>{'Автообновление 5 с' if ru else 'Live · 5 s'}</span></div>
+                            'WAN · RX / TX',174,ru=ru,toolbar=False)
+    down=[x['interface'] for x in servers if not x.get('running')]
+    if not servers:
+        state,status_title,status_sub=('idle','Серверов пока нет' if ru else 'No servers yet',
+            'Создайте первый сервер на странице «Серверы».' if ru else 'Create the first server on the Servers page.')
+    elif down:
+        state,status_title,status_sub=('warn','Нужно внимание' if ru else 'Needs attention',
+            ('Остановлен: ' if ru else 'Stopped: ')+', '.join(down)+'.')
+    else:
+        state,status_title,status_sub=('ok','Всё работает' if ru else 'All good',
+            'Все серверы запущены.' if ru else 'All servers are running.')
+    def period_button(key,label):
+        on=key=='15m'
+        cls=' class="is-active"' if on else ''
+        pressed='true' if on else 'false'
+        return f'<button type="button" data-period="{key}"{cls} aria-pressed="{pressed}">{label}</button>'
+    periods=''.join(period_button(key,label) for key,label in
+                    (('5m','5м' if ru else '5m'),('15m','15м' if ru else '15m'),('1h','1ч' if ru else '1h')))
+    status=f'''<section class="fleet-status" data-state="{state}" data-servers-up="{online}" data-servers-total="{len(servers)}"
+        data-clients-total="{total_clients}" aria-label="{'Сводка состояния' if ru else 'Status summary'}">
+      <div class="fleet-status-main" role="status">
+        <span class="fleet-status-mark" aria-hidden="true"><i></i></span>
+        <div><h2 id="fleet-title">{h(status_title)}</h2><p id="fleet-sub">{h(status_sub)}</p></div></div>
+      <dl class="fleet-facts">
+        <div><dt>{'Серверы' if ru else 'Servers'}</dt><dd id="fleet-servers">{online} {'из' if ru else 'of'} {len(servers)}</dd></div>
+        <div><dt>{'Клиенты онлайн' if ru else 'Clients online'}</dt><dd id="fleet-clients">— {'из' if ru else 'of'} {total_clients}</dd></div>
+        <div><dt>{'Нагрузка' if ru else 'Load'}</dt><dd id="fleet-load">—</dd></div></dl>
+      <div class="fleet-controls">
+        <div class="period-switch" role="group" aria-label="{'Период графиков' if ru else 'Chart period'}" data-period-switch>{periods}</div>
+        <span class="infra-pulse"><i></i>{'Автообновление 5 с' if ru else 'Live · 5 s'}</span></div>
+    </section>'''
+    host=f'''{status}<div class="infra-section-head"><h2>{'Система' if ru else 'System'}</h2></div>
       <div class="host-kpi-grid">{cards}</div>
       <div class="host-chart-grid"><section class="host-traffic-panel">
         <div class="host-panel-head"><div><span class="host-panel-eyebrow">{'СЕТЬ / ВНЕШНИЙ ИНТЕРФЕЙС' if ru else 'NETWORK / WAN'}</span>
@@ -2348,11 +2373,9 @@ def infrastructure_overview(request: Request):
           <path d="M0 30H280 M0 67H280 M0 103H280" class="dash-grid"/>
           <path data-socket-area></path><path data-socket-line></path></svg>
         <div class="socket-panel-foot">{'TCP: установленные; UDP: сокеты' if ru else 'TCP: established; UDP: sockets'}</div>
-      </section></div>
-      <div class="host-summary-strip"><div><span>{'Время работы ОС' if ru else 'OS uptime'}</span><b id="host-uptime">—</b></div>
-        <div><span>{'Панель · RAM' if ru else 'Panel · RAM'}</span><b id="host-panel-ram">—</b></div>
-        <div><span>{'VPN активно' if ru else 'Active VPN servers'}</span><b>{online}/{len(servers)}</b></div>
-        <div><span>{'Всего клиентов' if ru else 'Total clients'}</span><b>{total_clients}</b></div></div>'''
+        <div class="host-network-totals"><div><small>{'Время работы ОС' if ru else 'OS uptime'}</small><strong id="host-uptime">—</strong></div>
+          <div><small>{'Панель · RAM' if ru else 'Panel · RAM'}</small><strong id="host-panel-ram">—</strong></div></div>
+      </section></div>'''
     instance_cards=[]
     for info in servers:
         iface=info['interface'];running=bool(info.get('running'))
@@ -2372,7 +2395,7 @@ def infrastructure_overview(request: Request):
           <div class="instance-speed-row">
             <div><small><i class="dash-dot rx"></i>{'Получение' if ru else 'Download'}</small><strong id="{iface}-rx-rate">—</strong></div>
             <div><small><i class="dash-dot tx"></i>{'Отправка' if ru else 'Upload'}</small><strong id="{iface}-tx-rate">—</strong></div>
-            <div><small>{'Онлайн / всего' if ru else 'Online / total'}</small><strong id="{iface}-connected">— / {count}</strong></div>
+            <div><small>{'Онлайн / всего' if ru else 'Online / total'}</small><div class="instance-online"><strong id="{iface}-connected">— / {count}</strong><span class="presence" id="{iface}-presence" role="img" hidden></span></div></div>
           </div>{graph}
           <div class="instance-bottom-metrics"><div><span>{rx_label}</span><strong id="{iface}-rx-total">—</strong></div>
             <div><span>{tx_label}</span><strong id="{iface}-tx-total">—</strong></div>

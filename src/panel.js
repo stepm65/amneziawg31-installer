@@ -489,6 +489,12 @@
   let previousAt = null;
   let updating = false;
   let historyUpdating = false;
+  const strip = document.querySelector('.fleet-status');
+  const periodButtons = [...document.querySelectorAll('[data-period-switch] [data-period]')];
+  let currentWindow = '15m';
+  const tilePct = {};
+  const running = new Map();
+  let failures = 0;
 
   const formatBytes = (value) => {
     if (value === null || !Number.isFinite(Number(value)) || Number(value) < 0) return '—';
@@ -545,7 +551,7 @@
     }
   }
 
-  function selectedWindow(plot) {return plot.querySelector('.dash-periods .is-active')?.dataset.period || '15m';}
+  function selectedWindow() {return currentWindow;}
   function historyPoints(name,win) {
     const all=name==='wan' ? (hostHistory.get(win)||[]) : (history.get(win)?.get(name)||[]);
     const size=windowLength[win];
@@ -614,14 +620,15 @@
       historyAt.set(win,Date.now());redraw();
     } catch(_) { /* Show recorded live values only; never manufacture a curve. */ }
   }
+  periodButtons.forEach(button=>button.addEventListener('click',()=>{
+    currentWindow=button.dataset.period;
+    periodButtons.forEach(x=>{
+      x.classList.toggle('is-active',x===button);x.setAttribute('aria-pressed',String(x===button));
+    });
+    refreshHistory(currentWindow);
+    redraw();
+  }));
   for(const plot of plots) {
-    plot.querySelectorAll('[data-period]').forEach(button=>button.addEventListener('click',()=>{
-      plot.querySelectorAll('[data-period]').forEach(x=>{
-        x.classList.toggle('is-active',x===button);x.setAttribute('aria-pressed',String(x===button));
-      });
-      refreshHistory(button.dataset.period);
-      drawPlot(plot);
-    }));
     const svg=plot.querySelector('svg'), tooltip=plot.querySelector('[data-chart-tip]');
     svg?.addEventListener('pointermove',event=>{
       if(!plot._values?.length || !tooltip)return;
@@ -641,12 +648,74 @@
     });
   }
 
+  // Load levels. 70 % and 90 % are the points where a person should start to care about a resource.
+  const levelOf = (pct) => pct >= 90 ? 'crit' : pct >= 70 ? 'warn' : 'ok';
+  const levelLabel = {ok: translate?'Normal':'Норма', warn: translate?'High':'Высокая', crit: translate?'Critical':'Критично'};
+  const rank = {ok:0, warn:1, crit:2};
+  function setLevel(key, pct) {
+    const tile = main.querySelector(`[data-kpi="${key}"]`);
+    if (!tile || !Number.isFinite(pct)) return;
+    const level = levelOf(pct);
+    tile.dataset.level = level;
+    const chip = tile.querySelector('[data-kpi-level]');
+    if (chip) chip.textContent = levelLabel[level];
+    tilePct[key] = pct;
+  }
+  function setStatus(state, title, sub) {
+    if (!strip) return;
+    strip.dataset.state = state;
+    // Only touch the text when it changed: the block is a live region and must not repeat itself every 5 s.
+    for (const [id, value] of [['fleet-title', title], ['fleet-sub', sub]]) {
+      const el = byId(id);
+      if (el && value !== null && el.textContent !== value) el.textContent = value;
+    }
+  }
+  function updateStatus() {
+    if (!strip || failures >= 3) return;
+    const total = Number(strip.dataset.serversTotal);
+    if (!total) return;
+    const down = [...running].filter(([, up]) => !up).map(([name]) => name);
+    let worst = null;
+    for (const [key, pct] of Object.entries(tilePct)) {
+      if (!worst || pct > worst.pct) worst = {key, pct, level: levelOf(pct),
+        name: main.querySelector(`[data-kpi="${key}"] .host-kpi-heading span`)?.textContent || key};
+    }
+    const load = byId('fleet-load');
+    if (load && worst) {
+      load.dataset.level = worst.level;
+      load.textContent = worst.level === 'ok' ? (translate?'Normal':'В норме') : `${worst.name} ${Math.round(worst.pct)}%`;
+    }
+    if (!worst && !down.length) return;
+    const parts = [];
+    if (down.length) parts.push((translate?'Stopped: ':'Остановлен: ') + down.join(', ') + '.');
+    if (worst && worst.level !== 'ok') parts.push(`${worst.name}: ${Math.round(worst.pct)}%.`);
+    const level = worst ? worst.level : 'ok';
+    if (level === 'crit') setStatus('crit', translate?'Critical load':'Критическая нагрузка', parts.join(' '));
+    else if (level === 'warn' || down.length) setStatus('warn', translate?'Needs attention':'Нужно внимание', parts.join(' '));
+    else setStatus('ok', translate?'All good':'Всё работает',
+      translate?'All servers are running, load is normal.':'Все серверы запущены, нагрузка в норме.');
+  }
+  function drawPresence(name, connected, total) {
+    const el = byId(name + '-presence');
+    if (!el) return;
+    if (!Number.isFinite(connected) || !Number.isFinite(total) || total <= 0) {el.hidden = true; return;}
+    const shown = Math.min(total, 16);
+    const on = total <= 16 ? connected : Math.round(connected / total * shown);
+    el.replaceChildren(...Array.from({length: shown}, (_, i) => {
+      const mark = document.createElement('i');
+      if (i < on) mark.className = 'on';
+      return mark;
+    }));
+    el.setAttribute('aria-label', translate ? `${connected} of ${total} clients online` : `Онлайн ${connected} из ${total} клиентов`);
+    el.hidden = false;
+  }
+
   function recordPct(key,used,total,detail) {
     if(!Number.isFinite(total) || total<=0)return;
     const percentage=100*Math.min(1,Math.max(0,used/total));
     text('host-'+key,percentage.toFixed(1)+'%');
     text('host-'+key+'-detail',detail || `${formatBytes(used)} / ${formatBytes(total)}`);
-    const buf={ram,swap,disk}[key];append(buf,percentage);drawSmall(key,buf);
+    const buf={ram,swap,disk}[key];append(buf,percentage);drawSmall(key,buf);setLevel(key,percentage);
   }
 
   async function poll() {
@@ -659,7 +728,7 @@
       if(Number.isFinite(data.mem_total)&&Number.isFinite(data.mem_available)&&data.mem_total>0)
         recordPct('ram',data.mem_total-data.mem_available,data.mem_total);
       if(Number.isFinite(data.swap_total)&&data.swap_total>=0&&Number.isFinite(data.swap_free)) {
-        if(data.swap_total===0){text('host-swap','0%');text('host-swap-detail',translate?'Not configured':'Не используется');append(swap,0);drawSmall('swap',swap);}
+        if(data.swap_total===0){text('host-swap','0%');text('host-swap-detail',translate?'Not configured':'Не используется');append(swap,0);drawSmall('swap',swap);setLevel('swap',0);}
         else recordPct('swap',data.swap_total-data.swap_free,data.swap_total);
       }
       if(Number.isFinite(data.disk_total)&&data.disk_total>0&&Number.isFinite(data.disk_free))
@@ -679,7 +748,7 @@
         const delta=data.cpu_total-previousHost.cpu_total,idle=data.cpu_idle-previousHost.cpu_idle;
         if(delta>0&&idle>=0){const pct=100*Math.min(1,Math.max(0,1-idle/delta));text('host-cpu',pct.toFixed(1)+'%');
           text('host-cpu-detail',(data.cpu_count||'—')+(translate?' logical CPUs':' логических CPU'));
-          append(cpu,pct);drawSmall('cpu',cpu);}
+          append(cpu,pct);drawSmall('cpu',cpu);setLevel('cpu',pct);}
       }
       if(previousHost && previousAt && data.uplink===previousHost.uplink &&
          Number.isFinite(data.wan_rx)&&Number.isFinite(data.wan_tx)) {
@@ -690,12 +759,16 @@
           append(live.get('wan'),{ts:now,rx,tx});
         }
       }
+      let online=0,known=0,upCount=0;
       for(const value of data.instances || []) {
         const name=value.interface;
         if(!live.has(name))continue;
+        running.set(name,Boolean(value.running));
+        if(value.running)upCount++;
+        if(Number.isFinite(value.connected)){online+=value.connected;known+=value.clients;}
         if(Number.isFinite(value.rx))text(name+'-rx-total',formatBytes(value.rx));
         if(Number.isFinite(value.tx))text(name+'-tx-total',formatBytes(value.tx));
-        if(Number.isFinite(value.connected))text(name+'-connected',`${value.connected} / ${value.clients}`);
+        if(Number.isFinite(value.connected)){text(name+'-connected',`${value.connected} / ${value.clients}`);drawPresence(name,value.connected,value.clients);}
         if(Number.isFinite(value.uptime))text(name+'-uptime',formatDuration(value.uptime));
         const old=previous.get(name);
         if(old && Number.isFinite(value.rx)&&Number.isFinite(value.tx) &&
@@ -707,14 +780,28 @@
         }
         previous.set(name,{rx:value.rx,tx:value.tx,ts:now});
       }
+      if(strip && running.size){
+        strip.dataset.serversUp=String(upCount);
+        text('fleet-servers',`${upCount} ${translate?'of':'из'} ${strip.dataset.serversTotal}`);
+        if(known)text('fleet-clients',`${online} ${translate?'of':'из'} ${known}`);
+      }
+      failures=0;updateStatus();
       previousHost=data;previousAt=now;
       redraw();
-    } catch(_) { /* Keep last known readings, don't substitute demo data. */ }
+    } catch(_) {
+      /* Keep last known readings, don't substitute demo data. After three misses say so instead of looking healthy. */
+      failures++;
+      if(failures>=3){
+        setStatus('unknown',translate?'No connection to the panel':'Нет связи с панелью',
+          translate?'Readings are not updating. Reload the page.':'Данные не обновляются. Обновите страницу.');
+        for(const tile of main.querySelectorAll('.host-kpi[data-level=""]'))tile.dataset.level='na';
+      }
+    }
     finally{updating=false;}
   }
   refreshHistory('15m');
   poll();window.setInterval(poll,5000);
-  window.setInterval(()=>{for(const win of new Set(plots.map(selectedWindow)))refreshHistory(win);},60000);
+  window.setInterval(()=>refreshHistory(currentWindow),60000);
 })();
 
 // Modal dialogs for adding clients (single and batch)
