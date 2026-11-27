@@ -774,6 +774,11 @@ def telegram_connect(data):
         if not re.fullmatch(r'[0-9]{5,14}:[A-Za-z0-9_-]{30,60}',token):
             raise ValueError('Invalid Telegram token format')
         lang,notify=_telegram_service(data)
+    # Administrator IDs typed in the form (as in 3x-ui): the bot is connected at once.
+    # Without them the bot looks for the private /start message and asks to confirm the sender.
+    direct=[] if confirming else _id_list(str(data.get('admins','') or ''),20)
+    if not direct and data.get('admins') not in (None,'') and not confirming:
+        raise ValueError('Telegram ID: digits only (a numeric user ID, not a @name)')
     config=bot_config_file()
     existing=bool(config.is_file())
     if config.is_symlink(): raise ValueError('Invalid Telegram configuration file')
@@ -797,7 +802,7 @@ def telegram_connect(data):
     if existing and not confirming:
         _systemctl('stop','awg31-bot.service')
     try:
-        if not confirming:
+        if not confirming and not direct:
             cp=subprocess.run([str(python),str(bot),'list-candidates'],input=token+'\n',text=True,capture_output=True,timeout=40,check=False)
             if cp.returncode:
                 raise ValueError('Could not check the private /start message; try again')
@@ -813,11 +818,14 @@ def telegram_connect(data):
                                     'notify':notify,'candidates':valid,'created':time.time()})
             return {'ok':True,'pending':True,'setup_id':setup_id,'expires':TELEGRAM_PENDING_TTL,
                     'username':username,'candidates':[{'id':int(key),'label':value} for key,value in valid.items()]}
-        admin=str(data.get('admin_id',''))
-        if admin not in valid:
-            raise ValueError('Select the administrator who sent /start in a private chat')
+        if direct:
+            admins=direct
+        else:
+            admin=str(data.get('admin_id',''))
+            if admin not in valid:
+                raise ValueError('Select the administrator who sent /start in a private chat')
+            admins=[int(admin)]
         group=_telegram_provision()
-        admins=[int(admin)]
         viewers=[]
         digest='off'
         if existing:
@@ -840,7 +848,7 @@ def telegram_connect(data):
         if confirming: _telegram_pending_file().unlink(missing_ok=True)
         _restore_bot(existing,config,previous,ownership)
         raise
-    audit({'event':'telegram_changed','target':f'connected @{username}, administrator confirmed'})
+    audit({'event':'telegram_changed','target':f'connected @{username}, '+('administrators entered' if direct else 'administrator confirmed')})
     return {'ok':True,'username':username}
 
 

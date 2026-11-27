@@ -4,7 +4,7 @@
 
 An installer and a web console for running **AmneziaWG 3.1** on your own server: a kernel module built with DKMS, an interactive setup wizard and a bilingual (EN/RU) panel for servers, clients, traffic and backups. No Docker, no control plane in the cloud, nothing loaded from a CDN.
 
-Version **0.19.3** · MIT licence · not affiliated with the AmneziaVPN developers.
+Version **0.19.4** · MIT licence · not affiliated with the AmneziaVPN developers.
 
 ![Infrastructure overview](docs/screenshots/en-dashboard.png)
 
@@ -257,6 +257,8 @@ sudo awg31 telegram status   # is it running, who may use it
 sudo awg31 telegram test     # send a test message
 sudo awg31 telegram off      # stop the bot and delete the token from the server
 ```
+
+In the panel: **Maintenance → Telegram bot**. Paste the token and, as in 3x-ui, the numeric Telegram IDs of the administrators separated by commas (@userinfobot shows yours): the bot connects at once. Leave the ID field empty and send `/start` to the new bot in a private chat instead: the panel finds the sender and asks you to confirm. Viewers, language, your own Bot API server and notifications can be changed once it is connected.
 
 | The bot can | Only in the panel or the console |
 |---|---|

@@ -1421,3 +1421,7 @@ tr:hover .extra-dot {box-shadow:0 0 0 2px #1e2228}
   #clients .actions-cell .btn-small {font-size:0;gap:0;padding:7px 9px}
   #clients .actions-cell .btn-small svg {width:16px;height:16px}
 }
+
+/* 0.19.4: room between a card's explanation and its buttons (Logs: handshake debugging, support report). */
+.logs-card > .info-line {margin:0 0 16px;line-height:1.55}
+.logs-card > .logs-warning + .info-line {margin-top:2px}

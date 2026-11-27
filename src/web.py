@@ -1639,7 +1639,8 @@ TEXT['ru'].update({
     'tg_e_password':'Смена пароля панели', 'tg_e_owner_export':'Владелец получил конфигурацию', 'tg_e_backup_created':'Копия создана',
     'tg_e_backup_failed':'Копия не создана', 'tg_e_upload_failed':'Не отправлена во внешнее хранилище',
     'tg_e_cpu':'Загрузка CPU выше', 'tg_e_memory':'Занятая память выше', 'tg_e_disk':'Заполнение диска выше',
-    'tg_connect':'Проверить токен и найти администратора', 'tg_connect_hint':'Создайте бота у @BotFather, вставьте токен и заранее отправьте новому боту /start в личном чате. Найденный отправитель потребует отдельного подтверждения.',
+    'tg_connect':'Подключить бота', 'tg_connect_hint':'Создайте бота у @BotFather и вставьте его токен.',
+    'tg_admins_connect_hint':'Числовые Telegram ID через запятую (свой ID покажет @userinfobot). Оставьте пустым — тогда отправьте новому боту /start в личном чате, панель найдёт вас и попросит подтвердить.',
     'tg_confirm_title':'Подтвердите администратора Telegram',
     'tg_confirm_hint':'Отправьте /start новому боту в личном чате и повторите проверку, если список пуст. Выберите свою учётную запись: только она станет первым администратором.',
     'tg_no_candidates':'Сообщение /start пока не найдено. Отправьте его в личном чате с новым ботом и попробуйте снова.',
@@ -1713,7 +1714,8 @@ TEXT['en'].update({
     'tg_e_password':'Panel password changed', 'tg_e_owner_export':'Owner fetched the configuration', 'tg_e_backup_created':'Backup created',
     'tg_e_backup_failed':'Backup not created', 'tg_e_upload_failed':'Not sent to the remote storage',
     'tg_e_cpu':'CPU load above', 'tg_e_memory':'Memory use above', 'tg_e_disk':'Disk use above',
-    'tg_connect':'Check token and find administrator', 'tg_connect_hint':'Create a bot with @BotFather, paste its token, then send /start to the new bot in a private chat. You will separately confirm the sender.',
+    'tg_connect':'Connect the bot', 'tg_connect_hint':'Create a bot with @BotFather and paste its token.',
+    'tg_admins_connect_hint':'Numeric Telegram IDs separated by commas (@userinfobot shows yours). Leave empty and send /start to the new bot in a private chat instead: the panel finds you and asks you to confirm.',
     'tg_confirm_title':'Confirm the Telegram administrator',
     'tg_confirm_hint':'Send /start to the new bot in a private chat and retry if the list is empty. Select your own account: it will become the first administrator.',
     'tg_no_candidates':'No /start message was found. Send it in a private chat with the new bot and try again.',
@@ -3965,6 +3967,9 @@ def maintenance(request: Request, tab: str = 'diagnostics'):
             if not configured:
                 rows=''.join((
                     tg_row(t('tg_token'),t('tg_connect_hint'),tg_token('123456789:AA…',True)+'</div>'),
+                    tg_row(t('tg_admins'),t('tg_admins_connect_hint'),
+                           '<input name="admins" placeholder="123456789, 987654321" spellcheck="false" autocomplete="off" '
+                           'pattern="[0-9 ,;]*" inputmode="numeric">'),
                     tg_row(t('tg_lang'),'',tg_lang_select(lang)),
                     tg_row(t('panel_password'),'','<input type="password" name="password" required autocomplete="current-password">'),
                 ))
@@ -4228,6 +4233,7 @@ async def telegram_connect(request: Request):
              'setup_id':str(form.get('setup_id','')).strip()}
     if not confirming:
         payload.update(token=str(form.get('token','')).strip(),lang=str(form.get('lang',lang)),
+                       admins=str(form.get('admins','')).strip(),
                        notify={group:form.get('notify_'+group)=='1' for group in NOTIFY_GROUPS},
                        password=str(form.get('password','')))
     try: result=ctl('telegram-connect',payload)

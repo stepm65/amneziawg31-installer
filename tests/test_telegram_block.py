@@ -250,3 +250,41 @@ def test_the_disconnect_request_reaches_the_controller_with_its_password():
                'totp-enable', 'totp-disable'):
         assert op not in no_payload, op
     assert 'telegram-test' in no_payload
+
+
+def test_connect_with_administrator_ids_skips_the_start_message(admin, monkeypatch):
+    """As in 3x-ui: token plus administrator IDs connect the bot at once, without /start discovery."""
+    module, tmp = admin
+    as_panel(monkeypatch)
+    calls = []
+
+    def probe(cmd, **kwargs):
+        calls.append(cmd[-1])
+        out = '[]' if cmd[-1] == 'list-candidates' else 'direct_bot\n'
+        return type('P', (), {'returncode': 0, 'stdout': out, 'stderr': ''})()
+    monkeypatch.setattr(module.subprocess, 'run', probe)
+    (tmp / 'probe.py').write_text('# stands in for the installed copy of awg31bot.py\n')
+    monkeypatch.setattr(module, 'TELEGRAM_PROBE', tmp / 'probe.py')
+    monkeypatch.setattr(module, '_telegram_provision', lambda: 0)
+    started = []
+    monkeypatch.setattr(module, '_systemctl', lambda *a: started.append(a) or ('active' if a[0] == 'is-active' else ''))
+    token = '987654321:' + 'D' * 35
+    with pytest.raises(ValueError, match='digits only'):
+        module.telegram_connect({'token': token, 'admins': '@someone', 'password': PASSWORD})
+    result = module.telegram_connect({'token': token, 'admins': '111222333, 444555666', 'lang': 'en', 'password': PASSWORD})
+    assert result == {'ok': True, 'username': 'direct_bot'} and 'pending' not in result
+    assert 'list-candidates' not in calls and 'check-token' in calls
+    saved = json.loads((tmp / 'bot' / 'telegram.json').read_text())
+    assert saved['admins'] == [111222333, 444555666] and saved['token'] == token and saved['lang'] == 'en'
+    assert ('restart', 'awg31-bot.service') in started
+    assert 'administrators entered' in (tmp / 'audit.jsonl').read_text()
+    # Without IDs the old way stays: discovery and a confirmation step.
+    pending = module.telegram_connect({'token': token, 'password': PASSWORD})
+    assert pending['pending'] is True and 'list-candidates' in calls
+
+
+def test_connect_form_has_the_administrator_field(admin):
+    source = (ROOT / 'src/web.py').read_text()
+    form = source[source.index("tg_row(t('tg_token'),t('tg_connect_hint')"):source.index("tabs=tabs.replace('@@STATE@@',f'<span class=\"tg-state\">")]
+    assert 'name="admins"' in form and "tg_admins_connect_hint" in form
+    assert "admins=str(form.get('admins','')).strip()" in source
