@@ -1280,34 +1280,39 @@ def cps_generate(request: Request, preset: str = 'random', host: str = ''):
 
 # Extra [Interface] lines: awg-quick on a router, a container or a Linux gateway.
 # The templates stay generic: the LAN interface is found when the tunnel comes up.
-EXTRA_TEMPLATES = (
-    # awg-quick runs every hook as (eval "$hook") under set -e -o pipefail: any
-    # failing step, even an expected one, tears the whole tunnel down again.
-    ('gateway', (
+# Blocks of the templates: each with its own comment, set apart by a blank line.
+# awg-quick runs every hook as (eval "$hook") under set -e -o pipefail: any
+# failing step, even an expected one, tears the whole tunnel down again.
+EXTRA_BLOCKS = {
+    'nat': (
         'PostUp = iptables -t nat -A POSTROUTING -o %i -j MASQUERADE',
         'PostDown = iptables -t nat -D POSTROUTING -o %i -j MASQUERADE || true',
+    ),
+    'mss': (
         'PostUp = iptables -A FORWARD -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu',
         'PostDown = iptables -D FORWARD -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu || true',
+    ),
+    'table': (
         'Table = 200',
+    ),
+    'rule': (
         'PostUp = dev=$(ip -o -4 route show default | awk \'{print $5; exit}\' || true); '
         '[ -n "$dev" ] || dev=$(ip -o link show | awk -F\': \' \'$2 != "lo" && $2 !~ /^%i/ {sub(/@.*/, "", $2); print $2; exit}\' || true); '
         'ip rule del priority 300 2>/dev/null || true; ip rule add priority 300 iif "$dev" lookup 200 || true',
         'PostDown = ip rule del priority 300 2>/dev/null || true',
-    )),
-    ('mss', (
-        'PostUp = iptables -A FORWARD -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu',
-        'PostDown = iptables -D FORWARD -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu || true',
-    )),
-    ('nat', (
-        'PostUp = iptables -t nat -A POSTROUTING -o %i -j MASQUERADE',
-        'PostDown = iptables -t nat -D POSTROUTING -o %i -j MASQUERADE || true',
-    )),
+    ),
+}
+EXTRA_TEMPLATES = (
+    ('gateway', ('nat', 'mss', 'table', 'rule')),
+    ('mss', ('mss',)),
+    ('nat', ('nat',)),
 )
 
 
 def extra_template_text(key, t):
-    lines = dict(EXTRA_TEMPLATES)[key]
-    return '\n'.join((f'# {t("extra_tpl_" + key + "_comment")}', *lines))
+    blocks = dict(EXTRA_TEMPLATES)[key]
+    return '\n\n'.join('\n'.join((*(f'# {line}' for line in t('extra_blk_' + block).split('\n')), *EXTRA_BLOCKS[block]))
+                       for block in blocks)
 
 
 def extra_lines_block(prefix, value, t):
@@ -1336,13 +1341,15 @@ TEXT['ru'].update({
                   'но не в ссылку vpn:// — приложения AmneziaVPN команды не выполняют. Команды выполняются на клиенте, не на сервере.',
     'extra_tpl_gateway': 'Шлюз для локальной сети',
     'extra_tpl_gateway_hint': 'NAT, clamp MSS и маршрут из LAN в туннель. Интерфейс LAN находится сам — подходит для MikroTik, OpenWrt, Docker, Linux.',
-    'extra_tpl_gateway_comment': 'Шлюз для локальной сети: трафик из LAN уходит в туннель',
+    'extra_blk_nat': 'NAT: трафик из LAN выходит в туннель с адреса этого клиента',
+    'extra_blk_mss': 'Clamp MSS: TCP-пакеты подгоняются под MTU туннеля, иначе сайты открываются не полностью',
+    'extra_blk_table': 'Маршруты туннеля — в отдельной таблице 200: свой маршрут по умолчанию у роутера не меняется',
+    'extra_blk_rule': 'Трафик, пришедший из LAN, идёт по таблице 200, то есть в туннель.\n'
+                      'Интерфейс берётся из маршрута по умолчанию, а если его нет — первый сетевой интерфейс, кроме lo и туннеля',
     'extra_tpl_mss': 'Только clamp MSS',
     'extra_tpl_mss_hint': 'Подгонка размера TCP-пакетов под MTU туннеля, если сайты открываются не полностью. Уже входит в «Шлюз».',
-    'extra_tpl_mss_comment': 'Clamp MSS: TCP-пакеты подгоняются под MTU туннеля',
     'extra_tpl_nat': 'Только NAT',
     'extra_tpl_nat_hint': 'Маскарадинг трафика, который уходит в туннель. Уже входит в «Шлюз».',
-    'extra_tpl_nat_comment': 'NAT: трафик за клиентом выходит с его адреса в туннеле',
     'extra_badge': 'доп. строки', 'extra_badge_hint': 'В конфигурации есть дополнительные строки [Interface]',
     'extra_bulk': 'Доп. строки', 'extra_bulk_title': 'Дополнительные строки для выбранных',
     'extra_bulk_hint': 'Одни и те же строки [Interface] для всех отмеченных клиентов. После сохранения им нужно заново скачать .conf.',
@@ -1358,13 +1365,15 @@ TEXT['en'].update({
                   'but not into the vpn:// link: AmneziaVPN apps do not run commands. Commands run on the client, never on the server.',
     'extra_tpl_gateway': 'Gateway for a local network',
     'extra_tpl_gateway_hint': 'NAT, MSS clamping and a route from the LAN into the tunnel. Finds the LAN interface itself: MikroTik, OpenWrt, Docker, Linux.',
-    'extra_tpl_gateway_comment': 'Gateway for a local network: LAN traffic goes into the tunnel',
+    'extra_blk_nat': 'NAT: LAN traffic leaves into the tunnel from this client\'s address',
+    'extra_blk_mss': 'MSS clamping: TCP packets fit the tunnel MTU, otherwise pages load only partly',
+    'extra_blk_table': 'Tunnel routes go into a separate table 200: the router keeps its own default route',
+    'extra_blk_rule': 'Traffic that came in from the LAN follows table 200, that is, the tunnel.\n'
+                      'The interface comes from the default route, or else the first interface other than lo and the tunnel',
     'extra_tpl_mss': 'MSS clamping only',
     'extra_tpl_mss_hint': 'Fits TCP packets to the tunnel MTU when pages load only partly. Already part of the gateway.',
-    'extra_tpl_mss_comment': 'MSS clamping: TCP packets fit the tunnel MTU',
     'extra_tpl_nat': 'NAT only',
     'extra_tpl_nat_hint': 'Masquerades the traffic that goes into the tunnel. Already part of the gateway.',
-    'extra_tpl_nat_comment': 'NAT: traffic behind the client leaves with its tunnel address',
     'extra_badge': 'extra lines', 'extra_badge_hint': 'The configuration has extra [Interface] lines',
     'extra_bulk': 'Extra lines', 'extra_bulk_title': 'Extra lines for the selected clients',
     'extra_bulk_hint': 'The same [Interface] lines for every selected client. They need to download the .conf again afterwards.',

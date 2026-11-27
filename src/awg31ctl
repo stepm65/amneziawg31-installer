@@ -502,6 +502,7 @@ def validate_extra_lines(raw):
     for number, line in enumerate(text.split('\n'), 1):
         line = line.strip()
         if not line:
+            lines.append('')          # one blank line between blocks is kept (collapsed below)
             continue
         if any(ord(ch) < 32 or ord(ch) == 127 for ch in line.replace('\t', ' ')):
             raise ValueError(f'Строка {number}: недопустимые управляющие символы')
@@ -539,24 +540,34 @@ def validate_extra_lines(raw):
                 raise ValueError(f'Строка {number}: Table — off, auto, номер или имя таблицы')
             table = True
         lines.append(normal)
-    # A comment whose whole block was a repeat goes with it.
+    # The comment above a block goes with the block when every command in it was a repeat.
+    # A block is the comment lines and the commands under them, up to a blank line or the next comment.
+    gone = set(dropped)
+    index = 0
+    while index < len(lines):
+        if not lines[index].startswith('#'):
+            index += 1
+            continue
+        start = index
+        while index < len(lines) and lines[index].startswith('#'):
+            index += 1
+        commands = []
+        for later in range(index, len(lines)):
+            if not lines[later] or lines[later].startswith('#'):
+                break
+            commands.append(later)
+        if commands and all(later in dropped for later in commands):
+            gone.update(range(start, index))
     keep = []
     for index, line in enumerate(lines):
-        if index in dropped:
+        if index in gone or (not line and (not keep or not keep[-1])):
             continue
-        if line.startswith('#'):
-            block = []
-            for later in range(index + 1, len(lines)):
-                if lines[later].startswith('#'):
-                    break
-                block.append(later)
-            if block and all(later in dropped for later in block):
-                continue
         keep.append(line)
-    lines = keep
-    if len(lines) > EXTRA_MAX_LINES:
+    while keep and not keep[-1]:
+        keep.pop()
+    if sum(1 for line in keep if line) > EXTRA_MAX_LINES:
         raise ValueError(f'Дополнительные строки: не больше {EXTRA_MAX_LINES}')
-    return '\n'.join(lines)
+    return '\n'.join(keep)
 
 
 def extra_lines(peer):

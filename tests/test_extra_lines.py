@@ -40,7 +40,11 @@ def test_every_template_passes_validation_and_is_valid_shell(tmp_path, monkeypat
                 assert check.returncode == 0, (key, check.stderr)
     gateway = texts['gateway']
     assert 'Table = 200' in gateway and 'veth' not in gateway and 'MikroTik' not in gateway
-    assert gateway.count('\n#') == 0 and gateway.startswith('# ')
+    # Every block has its own comment and a blank line before the next one.
+    blocks = gateway.split('\n\n')
+    assert len(blocks) == 4 and all(block.startswith('# ') for block in blocks)
+    assert [len([l for l in block.split('\n') if l.startswith('#')]) for block in blocks] == [1, 1, 1, 2]
+    assert texts['mss'] in gateway and texts['nat'] in gateway       # the small templates are the same blocks
 
 
 FAKE_IP = r"""#!/bin/bash
@@ -126,7 +130,9 @@ def test_unsafe_or_panel_managed_lines_are_refused(text, message):
 
 
 def test_limits_and_normalisation():
-    assert ctl.validate_extra_lines('  postup = echo up  \r\n\r\n# note\ntable=off') == 'PostUp = echo up\n# note\nTable = off'
+    assert ctl.validate_extra_lines('  postup = echo up  \r\n\r\n# note\ntable=off') == 'PostUp = echo up\n\n# note\nTable = off'
+    # One blank line between blocks stays; more collapse, and none at the start or the end.
+    assert ctl.validate_extra_lines('\n\nPostUp = echo a\n\n\n\n# b\nPostDown = echo b\n\n') == 'PostUp = echo a\n\n# b\nPostDown = echo b'
     assert ctl.validate_extra_lines('') == ''
     with pytest.raises(ValueError, match='40'):
         ctl.validate_extra_lines('\n'.join(f'PostUp = echo {n}' for n in range(41)))
@@ -294,7 +300,9 @@ def test_overlapping_templates_do_not_double_the_commands(tmp_path, monkeypatch)
     _, texts = template_texts()
     merged = ctl.validate_extra_lines('\n'.join((texts['gateway'], texts['mss'], texts['nat'], '# my own note')))
     assert merged == texts['gateway'] + '\n# my own note'
-    commands = [line for line in merged.split('\n') if not line.startswith('#')]
+    spaced = ctl.validate_extra_lines('\n\n'.join((texts['nat'], texts['gateway'], '# my own note')))
+    assert spaced == texts['gateway'] + '\n\n# my own note', 'the repeated NAT block goes with its comment'
+    commands = [line for line in merged.split('\n') if line and not line.startswith('#')]
     assert len(commands) == len(set(commands))
     assert ctl.validate_extra_lines('postup = echo a\nPostUp =   echo a\nPostUp = echo b') == 'PostUp = echo a\nPostUp = echo b'
     assert ctl.validate_extra_lines('Table = 200\nTable = 200') == 'Table = 200'

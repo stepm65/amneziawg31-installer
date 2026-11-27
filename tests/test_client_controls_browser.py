@@ -189,3 +189,21 @@ def test_client_detail_alignment_and_visible_network_settings(page, width):
     if width == 1600:
         # The policy fields stand in a grid: a wide screen fits them in a couple of rows.
         assert len({round(box['y']) for box in input_bounds}) <= 3
+
+
+def test_template_blocks_go_in_with_their_own_comments(page):
+    """A template adds only the blocks whose commands are missing, each with its comment, set apart by a blank line."""
+    import web
+    texts = {key: web.extra_template_text(key, lambda k: web.tr('ru', k)) for key, _ in web.EXTRA_TEMPLATES}
+    page.goto('http://panel.test/servers/awg0/clients/alpha')
+    block = page.locator('[data-extra-lines]').first
+    area = block.locator('textarea')
+    def insert(key):
+        index = [k for k, _ in web.EXTRA_TEMPLATES].index(key)
+        block.locator('.extra-menu-item').nth(index).evaluate('button => button.click()')
+        return area.input_value()
+    area.evaluate('(el, value) => { el.value = value; }', texts['nat'])
+    assert insert('gateway') == texts['gateway'], 'NAT is not repeated; the other blocks come with their comments'
+    assert insert('gateway') == texts['gateway'] and insert('mss') == texts['gateway'], 'nothing new: nothing added'
+    area.evaluate('el => { el.value = "PostUp = echo mine"; }')
+    assert insert('mss') == 'PostUp = echo mine\n\n' + texts['mss']

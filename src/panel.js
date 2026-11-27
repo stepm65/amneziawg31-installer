@@ -1083,11 +1083,16 @@
         return at < 0 ? line.trim() : line.slice(0, at).trim().toLowerCase() + '=' + line.slice(at + 1).trim();
       };
       const have = new Set(current.split('\n').filter(l => l.trim() && !l.trim().startsWith('#')).map(norm));
-      const lines = text.split('\n');
-      const fresh = lines.filter(l => !l.startsWith('#') && !have.has(norm(l)));
-      if (fresh.length) {
-        const block = [...lines.filter(l => l.startsWith('#')), ...fresh].join('\n');
-        area.value = current ? current + '\n' + block : block;
+      // A template is blocks set apart by blank lines, each with its own comment: a block goes in with
+      // its comment and only its new commands, and a block whose commands are all there is left out.
+      const blocks = text.split(/\n\s*\n/).map(block => {
+        const lines = block.split('\n');
+        const fresh = lines.filter(l => !l.startsWith('#') && !have.has(norm(l)));
+        return fresh.length ? [...lines.filter(l => l.startsWith('#')), ...fresh].join('\n') : '';
+      }).filter(Boolean);
+      if (blocks.length) {
+        const added = blocks.join('\n\n');
+        area.value = current ? current + '\n\n' + added : added;
       }
       area.rows = Math.min(14, Math.max(area.rows, area.value.split('\n').length + 1));
       item.closest('details')?.removeAttribute('open');
