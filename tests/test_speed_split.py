@@ -88,3 +88,21 @@ def test_bot_shows_both_directions(tmp_path):
     assert bot.speed_text({'speed_limit_mbit': 50, 'speed_up_mbit': 10}) == '\nSpeed: ↓ 50 · ↑ 10 (Mbit/s)'
     assert bot.speed_text({'speed_limit_mbit': 0, 'speed_up_mbit': 10}) == '\nSpeed: ↓ unlimited · ↑ 10 (Mbit/s)'
     assert bot.speed_text({}) == ''
+
+
+def test_history_reports_its_interval_and_the_page_has_a_scale(db, ui):
+    con, call, _ = db
+    import time
+    now = int(time.time())
+    con.executemany('INSERT INTO traffic_samples(measured_at,rx_delta,tx_delta) VALUES(?,?,?)',
+                    [(now - 600, 60_000, 120_000), (now - 60, 6_000, 12_000)])
+    con.commit()
+    result = ctl.traffic_history(con, {'window': '24h'})
+    assert result['bucket'] == 480 and sum(p['rx'] for p in result['points']) == 66_000
+    app, client, _ = ui
+    page = client.get('/servers/awg0/monitoring')
+    for needle in ('data-tick="max"', 'data-tick="mid"', 'id="history-from"', 'id="history-to"', 'id="history-tip"',
+                   'data-unit-m="Мбит/с"', 'От клиентов — загрузка (RX)', 'К клиентам — скачивание (TX)', 'data-ago="{n} с назад"'):
+        assert needle in page.text, needle
+    js = (ROOT_JS := __import__('pathlib').Path(__file__).resolve().parents[1] / 'src/panel.js').read_text()
+    assert 'niceMax' in js and 'data.bucket' in js and "awgChart.rate" in js

@@ -1928,12 +1928,14 @@ def server_content(request: Request, section: str = 'overview'):
         <section class="card graph-card" id="monitoring" aria-label="{h(t('live_traffic'))}">
         <div class="section-title compact-title"><div><span class="section-overline">AWG / MONITORING</span>
         <h2>{icon('activity',18)}{h(t('live_traffic'))}</h2></div><span class="tiny-live"><span class="live-beacon"></span>{h(t('traffic_live'))}</span></div>
-        <div class="graph-live-values"><div><small>RX</small><strong class="mono" id="rx-rate">—</strong></div><div><small>TX</small><strong class="mono" id="tx-rate">—</strong></div></div>
-        <div class="graph-area"><div class="graph-rules"><span></span><span></span><span></span></div>
+        <div class="graph-live-values"><div><small><i class="legend-rx"></i>{h(t('chart_rx'))}</small><strong class="mono" id="rx-rate">—</strong></div>
+        <div><small><i class="legend-tx"></i>{h(t('chart_tx'))}</small><strong class="mono" id="tx-rate">—</strong></div></div>
+        <div class="chart-frame" id="live-frame" data-unit-k="{h(t('unit_kbit'))}" data-unit-m="{h(t('unit_mbit'))}" data-unit-g="{h(t('unit_gbit'))}" data-unit-b="{h(t('unit_bit'))}">
+        <div class="graph-area"><div class="chart-axis-y" aria-hidden="true"><span class="tick-max" data-tick="max"></span><span class="tick-mid" data-tick="mid"></span><span class="tick-zero" data-tick="zero">0</span></div>
         <svg id="traffic-chart" viewBox="0 0 620 190" preserveAspectRatio="none" role="img" aria-label="{h(t('live_traffic'))}">
-        <path id="chart-rx" fill="none" stroke="#f3a51e" stroke-width="2.7" stroke-linecap="round" stroke-linejoin="round"/>
-        <path id="chart-tx" fill="none" stroke="#94a9c2" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
-        <div class="graph-legend"><span><i class="legend-rx"></i>{h(t('traffic_rx'))}</span><span><i class="legend-tx"></i>{h(t('traffic_tx'))}</span></div>
+        <path id="chart-rx" fill="none" stroke="#f3a51e" stroke-width="2.7" stroke-linecap="round" stroke-linejoin="round" vector-effect="non-scaling-stroke"/>
+        <path id="chart-tx" fill="none" stroke="#94a9c2" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" vector-effect="non-scaling-stroke"/></svg></div>
+        <div class="chart-axis-x" aria-hidden="true"><span id="live-from" data-ago="{h(t('chart_ago'))}"></span><span>{h(t('chart_now'))}</span></div></div>
         <p id="traffic-chart-message" class="muted micro">{h(t('traffic_wait'))}</p>
         <div class="graph-footnote">{h(t('refresh_time'))} · <span class="mono">0.0.0.0/0</span></div>
         </section></div>'''
@@ -1943,9 +1945,17 @@ def server_content(request: Request, section: str = 'overview'):
         <select id="history-window" aria-label="{h(t('history'))}">
           <option value="24h">24h</option><option value="7d">7d</option><option value="30d">30d</option>
         </select></div><p class="info-line">{h(t('history_note'))}</p>
+        <div class="chart-frame history-frame" id="history-frame" data-unit-k="{h(t('unit_kbit'))}" data-unit-m="{h(t('unit_mbit'))}" data-unit-g="{h(t('unit_gbit'))}" data-unit-b="{h(t('unit_bit'))}"
+             data-avg="{h(t('chart_avg'))}" data-total="{h(t('chart_total'))}" data-lang="{h(lang)}">
+        <div class="history-plot"><div class="chart-axis-y" aria-hidden="true"><span class="tick-max" data-tick="max"></span><span class="tick-mid" data-tick="mid"></span><span class="tick-zero" data-tick="zero">0</span></div>
         <svg id="history-chart" viewBox="0 0 620 190" preserveAspectRatio="none" role="img" aria-label="{h(t('history'))}">
-        <path id="history-rx" fill="none" stroke="#f3a51e" stroke-width="2.7"/>
-        <path id="history-tx" fill="none" stroke="#94a9c2" stroke-width="2.4"/></svg>
+        <path id="history-rx" fill="none" stroke="#f3a51e" stroke-width="2.7" vector-effect="non-scaling-stroke"/>
+        <path id="history-tx" fill="none" stroke="#94a9c2" stroke-width="2.4" vector-effect="non-scaling-stroke"/>
+        <line id="history-cursor" x1="0" x2="0" y1="8" y2="182" visibility="hidden"/></svg>
+        <div class="chart-tip" id="history-tip" hidden></div></div>
+        <div class="chart-axis-x" aria-hidden="true"><span id="history-from"></span><span id="history-mid"></span><span id="history-to"></span></div></div>
+        <div class="graph-legend"><span><i class="legend-rx"></i>{h(t('chart_rx'))}</span><span><i class="legend-tx"></i>{h(t('chart_tx'))}</span>
+        <span class="chart-note" id="history-note"></span></div>
         <p id="history-info" class="muted micro">{h(t('history_empty'))}</p>
         </section>'''
     def sort_head(key, label):
@@ -4887,3 +4897,17 @@ def ago_text(lang, seconds):
     for limit, size, unit in ((60, 1, 'unit_s'), (3600, 60, 'unit_m'), (86400, 3600, 'unit_h'), (None, 86400, 'unit_d')):
         if limit is None or seconds < limit:
             return tr(lang, 'ago').format(t=f'{seconds // size} {tr(lang, unit)}')
+
+
+TEXT['ru'].update({
+    'chart_rx': 'От клиентов — загрузка (RX)', 'chart_tx': 'К клиентам — скачивание (TX)',
+    'chart_now': 'сейчас', 'chart_ago': '{n} с назад',
+    'chart_avg': 'Средняя скорость за {n}', 'chart_total': 'за период: ↑ {rx} · ↓ {tx}',
+    'unit_bit': 'бит/с', 'unit_kbit': 'Кбит/с', 'unit_mbit': 'Мбит/с', 'unit_gbit': 'Гбит/с',
+})
+TEXT['en'].update({
+    'chart_rx': 'From clients — upload (RX)', 'chart_tx': 'To clients — download (TX)',
+    'chart_now': 'now', 'chart_ago': '{n} s ago',
+    'chart_avg': 'Average speed per {n}', 'chart_total': 'in the period: ↑ {rx} · ↓ {tx}',
+    'unit_bit': 'bit/s', 'unit_kbit': 'kbit/s', 'unit_mbit': 'Mbit/s', 'unit_gbit': 'Gbit/s',
+})

@@ -1425,3 +1425,28 @@ tr:hover .extra-dot {box-shadow:0 0 0 2px #1e2228}
 /* 0.19.4: room between a card's explanation and its buttons (Logs: handshake debugging, support report). */
 .logs-card > .info-line {margin:0 0 16px;line-height:1.55}
 .logs-card > .logs-warning + .info-line {margin-top:2px}
+
+/* 0.19.7: traffic charts with a scale, units and time axis */
+.chart-frame {display:grid;gap:6px}
+.chart-frame .graph-area, .history-plot {position:relative}
+.history-plot {height:175px;background:#111418;border:1px solid #34383f;border-radius:14px;margin-top:12px;overflow:hidden}
+.history-plot svg {display:block;width:100%;height:100%}
+.chart-frame .graph-area svg {position:relative;z-index:2}
+.chart-axis-y {position:absolute;inset:0;z-index:1;pointer-events:none}
+/* The line is each label's bottom border, at the height the chart draws that value. */
+.chart-axis-y span {position:absolute;left:0;right:0;height:16px;padding-left:8px;border-bottom:1px solid #272b30;
+  color:#7d8791;font:11px/16px var(--font-mono);text-shadow:0 0 4px #111418}
+.chart-axis-y .tick-max {top:calc(15.79% - 16px)}
+.chart-axis-y .tick-mid {top:calc(55.53% - 16px)}
+.chart-axis-y .tick-zero {top:calc(95.26% - 16px);border-bottom-color:#343a42}
+.chart-axis-x {display:flex;justify-content:space-between;color:#7d8791;font:11px/1.2 var(--font-mono);padding:0 2px}
+.chart-note {margin-left:auto;color:#8a939d}
+.graph-legend {flex-wrap:wrap}
+#history-cursor {stroke:#5b6470;stroke-width:1;vector-effect:non-scaling-stroke}
+.chart-tip {position:absolute;top:10px;z-index:3;display:grid;gap:3px;padding:8px 10px;border-radius:10px;border:1px solid #3a414a;background:#1b1f25;box-shadow:0 8px 24px rgba(0,0,0,.4);font:12px/1.35 var(--font-mono);color:#dfe4ea;white-space:nowrap;pointer-events:none}
+.chart-tip strong {font-weight:600;color:#fff}
+.chart-tip .tip-rx {color:#f3a51e}
+.chart-tip .tip-tx {color:#a9bcd3}
+.chart-tip[hidden] {display:none}
+.graph-live-values small {display:inline-flex;align-items:center;gap:7px}
+.graph-live-values small i {width:13px;height:3px;border-radius:3px;display:inline-block}

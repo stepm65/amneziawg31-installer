@@ -1080,7 +1080,8 @@ def traffic_history(con, request):
        SUM(rx_delta),SUM(tx_delta) FROM traffic_samples
        WHERE measured_at>=? GROUP BY time_bin ORDER BY time_bin''',
        (size,size,cutoff)).fetchall()
-    return {'window':window, 'points':[{'ts':int(r[0]),'rx':int(r[1]),'tx':int(r[2])} for r in rows]}
+    # bucket: seconds summed into each point, so the panel can show an average speed per point.
+    return {'window':window, 'bucket':size, 'points':[{'ts':int(r[0]),'rx':int(r[1]),'tx':int(r[2])} for r in rows]}
 
 
 def client_policy_update(con):

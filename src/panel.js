@@ -1,4 +1,43 @@
 /* Progressive enhancements. No external dependencies; no browser storage or secrets. */
+
+// Traffic charts: speeds in bits per second (as the speed limits), a "nice" top of the scale.
+const awgChart = {
+  units(frame) {
+    const d = frame?.dataset || {};
+    return [d.unitB || 'bit/s', d.unitK || 'kbit/s', d.unitM || 'Mbit/s', d.unitG || 'Gbit/s'];
+  },
+  rate(bytesPerSecond, frame) {
+    if (!Number.isFinite(bytesPerSecond) || bytesPerSecond < 0) return '—';
+    let value = bytesPerSecond * 8, index = 0;
+    const units = awgChart.units(frame);
+    while (value >= 1000 && index < units.length - 1) { value /= 1000; index++; }
+    const digits = value >= 100 || index === 0 ? 0 : value >= 10 ? 1 : 2;
+    const locale = document.documentElement.lang === 'en' ? 'en-GB' : 'ru-RU';
+    return `${value.toLocaleString(locale, {maximumFractionDigits: digits})} ${units[index]}`;
+  },
+  // The top of the scale in bytes/s: 1, 2, 2.5 or 5 times a power of ten, in bits.
+  niceMax(bytesPerSecond) {
+    const bits = Math.max(8000, bytesPerSecond * 8 * 1.1);
+    const power = Math.pow(10, Math.floor(Math.log10(bits)));
+    const step = [1, 2, 2.5, 5, 10].find(x => x * power >= bits);
+    return step * power / 8;
+  },
+  ticks(frame, max) {
+    for (const [key, value] of [['max', max], ['mid', max / 2]]) {
+      const tick = frame?.querySelector(`[data-tick="${key}"]`);
+      if (tick) tick.textContent = awgChart.rate(value, frame);
+    }
+  },
+  // y in a 190 high view box: the top of the scale at 30, zero at 181 (md3.css puts the axis labels there).
+  path(values, max, width = 620) {
+    return values.map((value, i) => {
+      const x = values.length < 2 ? 0 : (i / (values.length - 1)) * width;
+      const y = 181 - Math.min(value / max, 1) * 151;
+      return `${i === 0 ? 'M' : 'L'}${x.toFixed(1)},${y.toFixed(1)}`;
+    }).join(' ');
+  },
+};
+
 (() => {
   'use strict';
   const byId = (id) => document.getElementById(id);
@@ -395,27 +434,20 @@
   });
   if (!byId('traffic-chart')) return;
 
+  const frame = byId('live-frame');
   const rxSamples = [], txSamples = [];
   let previous = null;
   let priorAt = null;
   const MAX_SAMPLES = 36;
-  const formatRate = (n) => {
-    if (!Number.isFinite(n) || n < 0) return '—';
-    const units = ['B/s', 'KiB/s', 'MiB/s', 'GiB/s'];
-    let count = n;
-    let index = 0;
-    while (count >= 1024 && index < units.length - 1) { count /= 1024; index++; }
-    return `${count.toFixed(index ? 1 : 0)} ${units[index]}`;
-  };
-  const path = (values, max) => values.map((value, i) => {
-    const x = values.length < 2 ? 0 : (i / (values.length - 1)) * 620;
-    const y = 181 - Math.min(value / max, 1) * 167;
-    return `${i === 0 ? 'M' : 'L'}${x.toFixed(1)},${y.toFixed(1)}`;
-  }).join(' ');
+  const formatRate = (n) => awgChart.rate(n, frame);
+  const SAMPLE_SECONDS = 4;
   function draw() {
-    const max = Math.max(1024, ...rxSamples, ...txSamples) * 1.12;
-    byId('chart-rx').setAttribute('d', path(rxSamples, max));
-    byId('chart-tx').setAttribute('d', path(txSamples, max));
+    const max = awgChart.niceMax(Math.max(0, ...rxSamples, ...txSamples));
+    byId('chart-rx').setAttribute('d', awgChart.path(rxSamples, max));
+    byId('chart-tx').setAttribute('d', awgChart.path(txSamples, max));
+    awgChart.ticks(frame, max);
+    const from = byId('live-from');
+    if (from) from.textContent = (from.dataset.ago || '{n} s ago').replace('{n}', String((rxSamples.length - 1) * SAMPLE_SECONDS));
   }
   let busy = false;
   async function poll() {
@@ -508,17 +540,31 @@
 })();
 
 // Persistent history is collected server-side by the systemd sampler.
+// Each point is the traffic of one interval (data.bucket seconds), drawn as its average speed.
 (() => {
   'use strict';
   const selector=document.getElementById('history-window');
   if (!selector) return;
-  const rx=document.getElementById('history-rx');
-  const tx=document.getElementById('history-tx');
-  const info=document.getElementById('history-info');
-  const draw=(items,max)=>items.map((n,i)=>{
-    const x=items.length===1?0:i*620/(items.length-1);
-    return `${i?'L':'M'}${x.toFixed(1)},${(180-n/max*165).toFixed(1)}`;
-  }).join(' ');
+  const byId=(id)=>document.getElementById(id);
+  const frame=byId('history-frame'), svg=byId('history-chart'), tip=byId('history-tip'), cursor=byId('history-cursor');
+  const rx=byId('history-rx'), tx=byId('history-tx'), info=byId('history-info');
+  const lang=frame?.dataset.lang==='en' ? 'en-GB' : 'ru-RU';
+  let shown=[];
+  const when=(ts,win)=>{
+    const date=new Date(ts*1000);
+    return win==='24h' ? date.toLocaleTimeString(lang,{hour:'2-digit',minute:'2-digit'})
+      : date.toLocaleDateString(lang,{day:'2-digit',month:'2-digit'})+(win==='7d' ? ' '+date.toLocaleTimeString(lang,{hour:'2-digit',minute:'2-digit'}) : '');
+  };
+  const span=(seconds)=>{
+    const ru=lang==='ru-RU';
+    if (seconds<3600) return `${Math.round(seconds/60)} ${ru?'мин':'min'}`;
+    return `${Math.round(seconds/3600)} ${ru?'ч':'h'}`;
+  };
+  const bytes=(n)=>{
+    const units=lang==='ru-RU' ? ['Б','КиБ','МиБ','ГиБ','ТиБ'] : ['B','KiB','MiB','GiB','TiB'];
+    let i=0; while(n>=1024 && i<units.length-1){n/=1024;i++;}
+    return `${n.toLocaleString(lang,{maximumFractionDigits:i?1:0})} ${units[i]}`;
+  };
   async function load() {
     try {
       const response=await fetch(`${document.body.dataset.serverScope || ''}/api/history?window=`+encodeURIComponent(selector.value),
@@ -526,17 +572,49 @@
       if (!response.ok) throw Error('HTTP '+response.status);
       const data=await response.json();
       const points=data.points||[];
+      const bucket=Math.max(1, Number(data.bucket)||60);
       if (!points.length) {
-        rx.setAttribute('d','');tx.setAttribute('d','');
+        rx.setAttribute('d','');tx.setAttribute('d','');shown=[];
+        for (const id of ['history-from','history-mid','history-to','history-note']) byId(id).textContent='';
+        for (const tick of frame.querySelectorAll('[data-tick="max"],[data-tick="mid"]')) tick.textContent='';
         info.hidden=false;
         return;
       }
-      const peak=Math.max(1,...points.map(p=>p.rx),...points.map(p=>p.tx));
-      rx.setAttribute('d',draw(points.map(p=>p.rx),peak));
-      tx.setAttribute('d',draw(points.map(p=>p.tx),peak));
+      shown=points.map(p=>({ts:p.ts, rx:p.rx/bucket, tx:p.tx/bucket}));
+      const max=awgChart.niceMax(Math.max(0,...shown.map(p=>p.rx),...shown.map(p=>p.tx)));
+      rx.setAttribute('d',awgChart.path(shown.map(p=>p.rx),max));
+      tx.setAttribute('d',awgChart.path(shown.map(p=>p.tx),max));
+      awgChart.ticks(frame,max);
+      byId('history-from').textContent=when(shown[0].ts,selector.value);
+      byId('history-mid').textContent=shown.length>2 ? when(shown[Math.floor((shown.length-1)/2)].ts,selector.value) : '';
+      byId('history-to').textContent=when(shown[shown.length-1].ts,selector.value);
+      const total=points.reduce((sum,p)=>({rx:sum.rx+p.rx,tx:sum.tx+p.tx}),{rx:0,tx:0});
+      byId('history-note').textContent=(frame.dataset.avg||'').replace('{n}',span(bucket))+' · '
+        +(frame.dataset.total||'').replace('{rx}',bytes(total.rx)).replace('{tx}',bytes(total.tx));
       info.hidden=true;
     } catch (_) {info.hidden=false;}
   }
+  // Hover: the point under the pointer, its time and both speeds.
+  svg?.addEventListener('pointermove', event => {
+    if (!shown.length) return;
+    const box=svg.getBoundingClientRect();
+    const share=Math.min(1,Math.max(0,(event.clientX-box.left)/box.width));
+    const index=Math.round(share*(shown.length-1));
+    const point=shown[index];
+    const x=shown.length<2 ? 0 : index/(shown.length-1)*620;
+    cursor.setAttribute('x1',x); cursor.setAttribute('x2',x); cursor.setAttribute('visibility','visible');
+    const date=new Date(point.ts*1000);
+    tip.replaceChildren();
+    const head=document.createElement('strong');
+    head.textContent=date.toLocaleString(lang,{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'});
+    const up=document.createElement('span'); up.className='tip-rx'; up.textContent='↑ '+awgChart.rate(point.rx,frame);
+    const down=document.createElement('span'); down.className='tip-tx'; down.textContent='↓ '+awgChart.rate(point.tx,frame);
+    tip.append(head,up,down);
+    tip.hidden=false;
+    const left=Math.min(box.width-tip.offsetWidth-4,Math.max(4,event.clientX-box.left+12));
+    tip.style.left=left+'px';
+  });
+  svg?.addEventListener('pointerleave', () => {tip.hidden=true; cursor.setAttribute('visibility','hidden');});
   selector.addEventListener('change',load);
   load();
 })();
