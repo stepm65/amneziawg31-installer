@@ -2013,7 +2013,7 @@ def server_content(request: Request, section: str = 'overview'):
           <option value="*">{h(t('group_all'))}</option>{''.join(f'<option value="{h(g)}">{h(g)}</option>' for g in sorted(set(groups_all)) if g)}
           <option value="">{h(t('group_none'))}</option></select></label>
         <label class="table-filter"><span class="sr-only">{h(t('filter_state'))}</span><select id="client-state-filter" aria-label="{h(t('filter_state'))}">
-          {''.join(f'<option value="{key}">{h(t("filter_" + (key or "all")))}</option>' for key in ('', 'online', 'never', 'stale', 'expiring', 'expired', 'quota', 'sub', 'owner'))}
+          {''.join(f'<option value="{key}">{h(t("filter_" + (key or "all")))}</option>' for key in ('', 'expiring', 'stale', 'sub', 'owner'))}
           </select></label>
         <span class="table-count mono" id="client-count" data-total="{len(clients_all)}" aria-live="polite">{len(clients_all)} {h('клиентов' if lang=='ru' else 'peers')}</span>
         <a class="btn btn-secondary btn-small" href="/servers/{h(state['interface'])}/export/clients.csv" download title="{h(t('export_csv_hint'))}">{icon('download',15)}{h(t('export_csv'))}</a></div></div>
@@ -4797,8 +4797,8 @@ TEXT['en'].update({
 
 TEXT['ru'].update({
     'group': 'Группа', 'group_hint': 'Например «офис» или «семья»: по группе можно отфильтровать список и отметить клиентов разом.',
-    'group_all': 'Все группы', 'group_none': 'Без группы', 'filter_state': 'Состояние',
-    'filter_all': 'Любое состояние', 'filter_online': 'Подключены сейчас', 'filter_never': 'Ни разу не подключались',
+    'group_all': 'Все группы', 'group_none': 'Без группы', 'filter_state': 'Признак',
+    'filter_all': 'Любой признак', 'filter_online': 'Подключены сейчас', 'filter_never': 'Ни разу не подключались',
     'filter_stale': 'Нужна новая конфигурация', 'filter_expiring': 'Срок истекает за 3 дня', 'filter_expired': 'Отключены по сроку',
     'filter_quota': 'Отключены по лимиту', 'filter_sub': 'Роутеры с подпиской', 'filter_owner': 'С владельцем в Telegram',
     'bulk_group': 'Группа', 'bulk_group_title': 'Группа для отмеченных',
@@ -4815,8 +4815,8 @@ TEXT['ru'].update({
 })
 TEXT['en'].update({
     'group': 'Group', 'group_hint': 'For example “office” or “family”: filter the list by group and select its clients at once.',
-    'group_all': 'All groups', 'group_none': 'No group', 'filter_state': 'State',
-    'filter_all': 'Any state', 'filter_online': 'Connected now', 'filter_never': 'Never connected',
+    'group_all': 'All groups', 'group_none': 'No group', 'filter_state': 'Flag',
+    'filter_all': 'Any flag', 'filter_online': 'Connected now', 'filter_never': 'Never connected',
     'filter_stale': 'Need a new configuration', 'filter_expiring': 'Expire within 3 days', 'filter_expired': 'Off: term ended',
     'filter_quota': 'Off: quota used', 'filter_sub': 'Routers with a subscription', 'filter_owner': 'With a Telegram owner',
     'bulk_group': 'Group', 'bulk_group_title': 'Group for the selected clients',

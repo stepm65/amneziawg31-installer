@@ -4,7 +4,7 @@
 
 An installer and a web console for running **AmneziaWG 3.1** on your own server: a kernel module built with DKMS, an interactive setup wizard and a bilingual (EN/RU) panel for servers, clients, traffic and backups. No Docker, no control plane in the cloud, nothing loaded from a CDN.
 
-Version **0.19.2** · MIT licence · not affiliated with the AmneziaVPN developers.
+Version **0.19.3** · MIT licence · not affiliated with the AmneziaVPN developers.
 
 ![Infrastructure overview](docs/screenshots/en-dashboard.png)
 
@@ -168,7 +168,7 @@ Templates only set the shape of the first packets. Whether they help against a p
 
 ### Groups, filters, actions on the selected clients and CSV
 
-A client can have a **group** (“office”, “family”, …): set it in the creation form, on the client page, or for the selected clients with the **Group** button. The group is shown next to the name. Above the list there are filters by group (including “No group”) and by state: connected now, never connected, needs a new configuration, expires within 3 days, off because the term ended or the quota was used, routers with a subscription, with a Telegram owner. The search also looks at the group and the comment. “Select all” selects only the visible rows, so a group can be filtered and then extended, switched off or reconfigured at once.
+A client can have a **group** (“office”, “family”, …): set it in the creation form, on the client page, or for the selected clients with the **Group** button. The group is shown next to the name. Above the list there are the chips All, Online, Offline and Off, a group filter (including “No group”) and a flag filter: expires within 3 days, needs a new configuration, routers with a subscription, with a Telegram owner. The search also looks at the group and the comment. “Select all” selects only the visible rows, so a group can be filtered and then extended, switched off or reconfigured at once.
 
 Select clients in the list and the buttons **Enable**, **Disable**, **Extend**, **Quota**, **Group**, **Extra lines** and **Delete selected** appear above the table. Extending counts from the current expiry, or from today for expired clients; clients without expiry do not change. Clients disabled by expiry or quota come back on their own after an extension or a new quota. A report stays above the list: how many clients changed, who was skipped and why (already in that state, expired, quota used up, no expiry).
 

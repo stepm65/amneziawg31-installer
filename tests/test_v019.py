@@ -136,7 +136,9 @@ def test_list_has_group_chips_filters_and_bulk_group(ui):
     page = client.get('/servers/awg0/clients')
     assert '<span class="group-chip">office</span>' in page.text
     assert 'id="client-group-filter"' in page.text and '<option value="office">office</option>' in page.text
-    assert 'id="client-state-filter"' in page.text and '<option value="online">' in page.text
+    assert 'id="client-state-filter"' in page.text and '<option value="expiring">' in page.text
+    # Online / offline / switched off are the chips above the table; the list keeps only what they lack.
+    assert '<option value="online">' not in page.text and '<option value="expired">' not in page.text
     assert 'data-group="office" data-flags="online sub"' in page.text
     assert 'data-flags="never stale expired"' in page.text and 'data-text="office main pc"' in page.text
     assert 'data-modal-open="bulk-group-modal"' in page.text and 'name="action" value="group"' in page.text
