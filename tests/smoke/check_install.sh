@@ -174,7 +174,14 @@ tc filter show dev awg0 parent ffff: | grep -qi 'police' || fail 'no upload poli
 echo '{"interface":"awg0"}' | "$MGR" server-restart >/dev/null
 awg show awg0 >/dev/null || fail 'awg0 did not come back with a speed limit configured'
 tc class show dev awg0 | grep -qi 'rate 10Mbit' || fail 'the limit is lost after a restart'
-echo '{"interface":"awg0","name":"ci-client","speed_limit_mbit":0}' | "$MGR" client-policy >/dev/null
+# Download and upload apart: 20 Mbit/s to the client, upload not limited, then the other way round.
+echo '{"interface":"awg0","name":"ci-client","speed_limit_mbit":20,"speed_up_mbit":0}' | "$MGR" client-policy >/dev/null
+tc class show dev awg0 | grep -qi 'rate 20Mbit' || fail 'no HTB class for the download limit'
+if tc filter show dev awg0 parent ffff: | grep -qi 'police'; then fail 'an upload policer without an upload limit'; fi
+echo '{"interface":"awg0","name":"ci-client","speed_limit_mbit":0,"speed_up_mbit":5}' | "$MGR" client-policy >/dev/null
+tc filter show dev awg0 parent ffff: | grep -qi 'police' || fail 'no upload policer for the upload limit'
+if tc class show dev awg0 | grep -qi 'rate 20Mbit'; then fail 'the download class stays without a download limit'; fi
+echo '{"interface":"awg0","name":"ci-client","speed_limit_mbit":0,"speed_up_mbit":0}' | "$MGR" client-policy >/dev/null
 if tc qdisc show dev awg0 | grep -q htb; then fail 'shaping stays after the limit was removed'; fi
 
 step 'Several clients at once'

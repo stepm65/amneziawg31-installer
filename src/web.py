@@ -1586,6 +1586,9 @@ TEXT['ru'].update({
     'host_off':'Запрещён: с VPN-адресов до сервера проходят только ответы, ping и DNS',
     'host_hint':'«Запрещён» закрывает от клиентов всё, что слушает сам сервер. Панель по VPN-адресу тоже перестанет открываться.',
     'speed':'Ограничение скорости (Мбит/с; 0 = без ограничения)',
+    'speed_down':'Скачивание, Мбит/с (к клиенту)', 'speed_up':'Загрузка, Мбит/с (от клиента)',
+    'speed_down_hint':'0 — без ограничения. Ограничивается очередью, скорость ровная.',
+    'speed_up_hint':'0 — без ограничения. Лишнее отбрасывается, скорость может быть чуть ниже заданной.',
     'quota_monthly':'Сбрасывать счётчик трафика каждый месяц (UTC)',
     'batch_title':'Добавить несколько клиентов', 'batch_prefix':'Префикс имени', 'batch_count':'Сколько (1–50)',
     'batch_start':'Начать с номера', 'batch_create':'Добавить клиентов и скачать ZIP',
@@ -1661,6 +1664,9 @@ TEXT['en'].update({
     'host_off':'Denied: only replies, ping and DNS pass from VPN addresses to the server',
     'host_hint':'“Denied” closes everything the server itself listens on to clients. The panel stops opening on the VPN address too.',
     'speed':'Speed limit (Mbit/s; 0 = unlimited)',
+    'speed_down':'Download, Mbit/s (to the client)', 'speed_up':'Upload, Mbit/s (from the client)',
+    'speed_down_hint':'0 means no limit. Queued, so the speed stays smooth.',
+    'speed_up_hint':'0 means no limit. The excess is dropped, so it may come out slightly lower.',
     'quota_monthly':'Reset the traffic counter every month (UTC)',
     'batch_title':'Add several clients', 'batch_prefix':'Name prefix', 'batch_count':'How many (1–50)',
     'batch_start':'First number', 'batch_create':'Add clients and download ZIP',
@@ -1756,10 +1762,16 @@ def known_groups(request):
 
 
 def policy_extras(form):
-    try: speed = int(str(form.get('speed_limit_mbit', '0')).strip() or 0)
-    except ValueError: raise HTTPException(422, detail='Invalid speed limit') from None
-    if not 0 <= speed <= 10000: raise HTTPException(422, detail='Invalid speed limit')
-    return {'speed_limit_mbit': speed, 'quota_period': 'monthly' if form.get('quota_monthly') == '1' else '',
+    def mbit(key):
+        try: value = int(str(form.get(key, '0')).strip() or 0)
+        except ValueError: raise HTTPException(422, detail='Invalid speed limit') from None
+        if not 0 <= value <= 10000: raise HTTPException(422, detail='Invalid speed limit')
+        return value
+    # Download (to the client) and upload (from the client) apart; a form with the first field only caps both.
+    speed = mbit('speed_limit_mbit')
+    upload = mbit('speed_up_mbit') if 'speed_up_mbit' in form else speed
+    return {'speed_limit_mbit': speed, 'speed_up_mbit': upload,
+            'quota_period': 'monthly' if form.get('quota_monthly') == '1' else '',
             'group': ' '.join(str(form.get('group', '')).split())[:64]}
 
 
@@ -1771,8 +1783,12 @@ def group_field(value, prefix, lang, groups=()):
 
 
 def policy_extra_fields(obj, prefix):
-    return (group_field(obj.get('group_name', ''), prefix, obj['_lang'], obj.get('_groups', ()))
-            + form_field('speed_limit_mbit', str(int(obj.get('speed_limit_mbit') or 0)), tr(obj['_lang'], 'speed'), required=False, field_id=prefix + '-speed')
+    # Download and upload stand side by side; the group follows them.
+    return (form_field('speed_limit_mbit', str(int(obj.get('speed_limit_mbit') or 0)), tr(obj['_lang'], 'speed_down'),
+                         tr(obj['_lang'], 'speed_down_hint'), required=False, field_id=prefix + '-speed')
+            + form_field('speed_up_mbit', str(int(obj.get('speed_up_mbit') or 0)), tr(obj['_lang'], 'speed_up'),
+                         tr(obj['_lang'], 'speed_up_hint'), required=False, field_id=prefix + '-speed-up')
+            + group_field(obj.get('group_name', ''), prefix, obj['_lang'], obj.get('_groups', ()))
             + f'<label class="check-field"><input type="checkbox" name="quota_monthly" value="1"'
               f'{" checked" if obj.get("quota_period") == "monthly" else ""}><span>{h(tr(obj["_lang"], "quota_monthly"))}</span></label>')
 
@@ -1788,7 +1804,7 @@ def switch_field(field_id, name, text_prefix, state, lang, order=('on', 'off')):
 
 
 def form_field(name, val, label, help='', required=True, field_id=None):
-    extra = ' inputmode="numeric"' if name in ('port', 'mtu', 'telegram_id', 'speed_limit_mbit', 'count', 'start') else ''
+    extra = ' inputmode="numeric"' if name in ('port', 'mtu', 'telegram_id', 'speed_limit_mbit', 'speed_up_mbit', 'count', 'start') else ''
     field_id = field_id or name
     req = " required" if required else ""
     return (f'<label class="field" for="{field_id}"><span>{h(label)}</span>'
@@ -2945,7 +2961,7 @@ def clients_csv(request: Request, interface: str = ''):
     writer = csv.writer(out)
     writer.writerow(['name', 'ip', 'enabled', 'disabled_reason', 'comment', 'created_at', 'expires_at',
                      'traffic_limit_gib', 'quota_period', 'used_gib', 'received_bytes', 'sent_bytes',
-                     'last_handshake_utc', 'speed_limit_mbit', 'telegram_id', 'owner_export', 'routed_subnets', 'config_stale', 'group'])
+                     'last_handshake_utc', 'speed_down_mbit', 'speed_up_mbit', 'telegram_id', 'owner_export', 'routed_subnets', 'config_stale', 'group'])
     for c in state.get('clients', []):
         st = c.get('stats') or {}
         handshake = int(st.get('handshake') or c.get('last_handshake') or 0)
@@ -2955,7 +2971,7 @@ def clients_csv(request: Request, interface: str = ''):
             gib_format(c.get('traffic_limit_bytes', 0)), c.get('quota_period', ''), gib_format(c.get('used_bytes', 0)),
             int(st.get('received', 0) or 0), int(st.get('sent', 0) or 0),
             datetime.fromtimestamp(handshake, timezone.utc).strftime('%Y-%m-%d %H:%M:%S') if handshake else '',
-            int(c.get('speed_limit_mbit') or 0), c.get('telegram_id', ''), int(bool(c.get('owner_export'))),
+            int(c.get('speed_limit_mbit') or 0), int(c.get('speed_up_mbit') or 0), c.get('telegram_id', ''), int(bool(c.get('owner_export'))),
             c.get('routed_subnets', ''), int(bool(c.get('config_stale'))), c.get('group_name', ''))])
     audit_event('clients_exported', f'{selected_server(request)} ({len(state.get("clients", []))})')
     stamp = datetime.now(timezone.utc).strftime('%Y%m%d-%H%M')

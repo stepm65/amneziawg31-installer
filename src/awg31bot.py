@@ -159,7 +159,7 @@ TEXT = {
         'n_next_kernel_bad': '⚠️ Установлено новое ядро <b>{version}</b>, но модуль AmneziaWG для него не собран. После перезагрузки VPN не запустится. До перезагрузки выполните на сервере: <code>sudo awg31 update</code>',
         'n_next_kernel_ok': '🟢 Модуль AmneziaWG для нового ядра собран: перезагружать сервер можно.',
         'n_upload_failed': '⚠️ Резервная копия не отправлена во внешнее хранилище: {target}',
-        'speed': '\nСкорость: до {n} Мбит/с', 'monthly': ' в месяц', 'b_speed': '🚦 Скорость', 'b_nospeed': 'Без ограничения',
+        'speed': '\nСкорость: до {n} Мбит/с', 'speed_split': '\nСкорость: ↓ {down} · ↑ {up} (Мбит/с)', 'monthly': ' в месяц', 'b_speed': '🚦 Скорость', 'b_nospeed': 'Без ограничения',
         'b_mbit': '{n} Мбит/с', 'ask_speed': 'Ограничение скорости <b>{name}</b> (в обе стороны).',
         'b_renew': '🙏 Продлить {name}', 'renew_sent': 'Запрос на продление <b>{name}</b> отправлен администратору.',
         'renew_wait': 'Запрос по <b>{name}</b> уже отправлен. Повторить можно через сутки.',
@@ -286,7 +286,7 @@ TEXT = {
         'n_next_kernel_bad': '⚠️ A new kernel <b>{version}</b> is installed, but the AmneziaWG module is not built for it. After a reboot the VPN will not start. Before rebooting run on the server: <code>sudo awg31 update</code>',
         'n_next_kernel_ok': '🟢 The AmneziaWG module for the new kernel is built: the server can be rebooted.',
         'n_upload_failed': '⚠️ The backup was not sent to the remote storage: {target}',
-        'speed': '\nSpeed: up to {n} Mbit/s', 'monthly': ' per month', 'b_speed': '🚦 Speed', 'b_nospeed': 'Unlimited',
+        'speed': '\nSpeed: up to {n} Mbit/s', 'speed_split': '\nSpeed: ↓ {down} · ↑ {up} (Mbit/s)', 'monthly': ' per month', 'b_speed': '🚦 Speed', 'b_nospeed': 'Unlimited',
         'b_mbit': '{n} Mbit/s', 'ask_speed': 'Speed limit of <b>{name}</b> (both directions).',
         'b_renew': '🙏 Extend {name}', 'renew_sent': 'The request to extend <b>{name}</b> was sent to the administrator.',
         'renew_wait': 'A request for <b>{name}</b> was already sent. You can repeat it in a day.',
@@ -628,7 +628,7 @@ class Bot:
                       quota=(self.plain('of_quota', quota=human_size(limit))
                              + (self.plain('monthly') if c.get('quota_period') == 'monthly' else '')) if limit else '', seen=seen,
                       expiry=(c.get('expires_at') or '')[:10] or self.plain('no_expiry'),
-                      speed=self.plain('speed', n=int(c['speed_limit_mbit'])) if c.get('speed_limit_mbit') else '',
+                      speed=self.speed_text(c),
                       comment=self.plain('comment', text=c['comment']) if c.get('comment') else '',
                       owner=(self.plain('owner', id=c['telegram_id']) + (self.plain('owner_export') if c.get('owner_export') else ''))
                       if c.get('telegram_id') else '',
@@ -850,6 +850,15 @@ class Bot:
             self.api.call('sendMessage', chat_id=user, parse_mode='HTML', text=self.t('your_id', id=user))
         except BotError as exc:
             log(f'cannot answer /id: {exc}')
+
+    def speed_text(self, c):
+        down, up = int(c.get('speed_limit_mbit') or 0), int(c.get('speed_up_mbit') or 0)
+        if not down and not up:
+            return ''
+        if down == up:
+            return self.plain('speed', n=down)
+        unlimited = self.plain('b_nospeed').lower()
+        return self.plain('speed_split', down=down or unlimited, up=up or unlimited)
 
     def deliver_new_configs(self, iface, names=None):
         """After the server's parameters changed: owners allowed to export get the new .conf and QR code,
@@ -1156,7 +1165,7 @@ class Bot:
             self.set_policy(admin, iface, name, traffic_limit_bytes=int(value) * 1024 ** 3)
             self.show(chat, *self.screen_client(iface, name), message_id=message_id)
         elif kind == 'cs' and value in ('0', '5', '10', '20', '50', '100'):
-            self.set_policy(admin, iface, name, speed_limit_mbit=int(value))
+            self.set_policy(admin, iface, name, speed_limit_mbit=int(value), speed_up_mbit=int(value))   # both directions
             self.show(chat, *self.screen_client(iface, name), message_id=message_id)
         elif kind == 'iv' and value in tuple(str(n) for n in INVITE_DAYS):
             self.invite(chat, admin, iface, name, int(value), message_id)

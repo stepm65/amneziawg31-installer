@@ -4,7 +4,7 @@
 
 An installer and a web console for running **AmneziaWG 3.1** on your own server: a kernel module built with DKMS, an interactive setup wizard and a bilingual (EN/RU) panel for servers, clients, traffic and backups. No Docker, no control plane in the cloud, nothing loaded from a CDN.
 
-Version **0.19.5** · MIT licence · not affiliated with the AmneziaVPN developers.
+Version **0.19.6** · MIT licence · not affiliated with the AmneziaVPN developers.
 
 ![Infrastructure overview](docs/screenshots/en-dashboard.png)
 
@@ -351,7 +351,7 @@ sudo bash amneziawg31-installer/scripts/resume-panel.sh
 - `sudo awg31 backup-remote s3` (AWS S3, MinIO, Backblaze B2, Yandex Object Storage and other S3-compatible services) or `sudo awg31 backup-remote sftp` uploads every new backup, scheduled or manual, right after it is created. Only encrypted archives are uploaded, so encryption has to be on. The access keys stay on the server, readable by root only; for SFTP the server gets its own SSH key and remembers the host key at the first connection. A failed upload does not fail the backup: it is written to the audit log and reported by the bot. Old files in the storage are not deleted — use the lifecycle rules of the storage.
 - After a kernel update the console checks, several times a day, that the AmneziaWG module is built for the new kernel, and tries to build it. If that fails, the panel (Maintenance → System) and the bot warn before the reboot that would leave the VPN down.
 - Two-factor sign-in is set up in **Maintenance → Security**. When it is switched on, the panel shows 10 recovery codes once: each replaces an app code for one sign-in, together with the password. Only their hashes are stored; the same place shows how many are left and creates new ones (the previous ones stop working). The bot tells the administrators about a sign-in with a recovery code. Without both the phone and the codes the second factor is reset from the console with `sudo awg31 totp-off`.
-- A speed limit applies to both directions of a client and is enforced with `tc` on the VPN interface. A monthly quota resets on the first day of the month, UTC.
+- Speed is limited apart for download (to the client) and upload (from the client); 0 means no limit in that direction. It works with `tc` on the VPN interface and covers the networks behind the client. Download goes through the client’s own queue and stays smooth; upload above the limit is dropped, so it may come out slightly lower. The bot sets one number for both directions. After the update to 0.19.6 the former single limit keeps applying both ways. A monthly quota resets on the first day of the month, UTC.
 - Do not expose the panel without HTTPS. The generated Nginx site sends HSTS, limits sign-in attempts per address and can restrict access to the addresses you list (`sudo awg31 nginx`).
 - The Telegram bot sends client configurations (private keys) into your chat with it; they stay in the Telegram cloud. Whoever controls an administrator's Telegram account can create and delete clients and stop servers, so protect that account with two-step verification. The bot token is removed by `sudo awg31 telegram off` and by uninstalling.
 - Signing out ends every session of the panel, including a copied cookie.

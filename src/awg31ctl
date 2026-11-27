@@ -165,10 +165,15 @@ def get_conn(create=False):
                        'sub_last_addr': "TEXT NOT NULL DEFAULT ''",
                        'sub_fetches': 'INTEGER NOT NULL DEFAULT 0',
                        # A free-form group ("office", "family") to filter and act on clients together.
-                       'group_name': "TEXT NOT NULL DEFAULT ''"}
+                       'group_name': "TEXT NOT NULL DEFAULT ''",
+                       # speed_limit_mbit caps the download (to the client), this one the upload.
+                       'speed_up_mbit': 'INTEGER NOT NULL DEFAULT 0'}
         for name, definition in new_columns.items():
             if name not in columns:
                 con.execute(f'ALTER TABLE clients ADD COLUMN {name} {definition}')
+                if name == 'speed_up_mbit':
+                    # Before 0.19.6 one number capped both directions: keep each client as it was.
+                    con.execute('UPDATE clients SET speed_up_mbit=speed_limit_mbit')
         con.execute('''CREATE TABLE IF NOT EXISTS traffic_samples (
            measured_at INTEGER NOT NULL, rx_delta INTEGER NOT NULL, tx_delta INTEGER NOT NULL)''')
         con.execute('CREATE INDEX IF NOT EXISTS idx_traffic_time ON traffic_samples(measured_at)')
@@ -687,21 +692,28 @@ def shaping_commands(cfg, peers):
     limit matches no filter and is not touched.
     """
     net = parse_network(cfg['subnet'])
-    limited = [p for p in peers if p['enabled'] and int(p.get('speed_limit_mbit') or 0) > 0]
+    def down(p): return int(p.get('speed_limit_mbit') or 0)
+    def up(p): return int(p.get('speed_up_mbit') or 0)
+    limited = [p for p in peers if p['enabled'] and (down(p) > 0 or up(p) > 0)]
     if not limited: return []
     commands = [f'tc qdisc add dev {IFACE} root handle 1: htb default 0',
                 f'tc qdisc add dev {IFACE} handle ffff: ingress']
     for p in limited:
-        mbit = int(p['speed_limit_mbit'])
         number = int(ipaddress.ip_address(p['ip'])) - int(net.network_address)
         if not 1 <= number <= 0xfffe: continue
-        burst = max(64000, mbit * 25000)          # bytes: about 0.2 s at the configured rate
-        commands.append(f'tc class add dev {IFACE} parent 1: classid 1:{number:x} htb rate {mbit}mbit ceil {mbit}mbit')
-        commands.append(f'tc qdisc add dev {IFACE} parent 1:{number:x} fq_codel')
-        for address in [p['ip'] + '/32', *string_routes(p.get('routed_subnets'))]:
-            commands.append(f'tc filter add dev {IFACE} parent 1: protocol ip prio 1 u32 match ip dst {address} flowid 1:{number:x}')
-            commands.append(f'tc filter add dev {IFACE} parent ffff: protocol ip prio 1 u32 match ip src {address} '
-                            f'police rate {mbit}mbit burst {burst}b drop flowid :1')
+        addresses = [p['ip'] + '/32', *string_routes(p.get('routed_subnets'))]
+        if down(p) > 0:                           # to the client: a queue of its own, nothing dropped
+            mbit = down(p)
+            commands.append(f'tc class add dev {IFACE} parent 1: classid 1:{number:x} htb rate {mbit}mbit ceil {mbit}mbit')
+            commands.append(f'tc qdisc add dev {IFACE} parent 1:{number:x} fq_codel')
+            for address in addresses:
+                commands.append(f'tc filter add dev {IFACE} parent 1: protocol ip prio 1 u32 match ip dst {address} flowid 1:{number:x}')
+        if up(p) > 0:                             # from the client: policed, the excess is dropped
+            mbit = up(p)
+            burst = max(64000, mbit * 25000)      # bytes: about 0.2 s at the configured rate
+            for address in addresses:
+                commands.append(f'tc filter add dev {IFACE} parent ffff: protocol ip prio 1 u32 match ip src {address} '
+                                f'police rate {mbit}mbit burst {burst}b drop flowid :1')
     return commands
 
 
@@ -919,14 +931,19 @@ def validate_policy(data, old=None):
     else:
         export = bool(old.get('owner_export')) and telegram == str(old.get('telegram_id') or '')
     if not telegram: export = False
-    try: speed = int(data.get('speed_limit_mbit', old.get('speed_limit_mbit', 0)) or 0)
-    except (TypeError,ValueError): raise ValueError('Ограничение скорости: целое число Мбит/с') from None
-    if not 0 <= speed <= 10000: raise ValueError('Ограничение скорости: от 0 до 10000 Мбит/с (0 = без ограничения)')
+    def mbit(key, default):
+        try: value = int(data.get(key, default) or 0)
+        except (TypeError,ValueError): raise ValueError('Ограничение скорости: целое число Мбит/с') from None
+        if not 0 <= value <= 10000: raise ValueError('Ограничение скорости: от 0 до 10000 Мбит/с (0 = без ограничения)')
+        return value
+    speed = mbit('speed_limit_mbit', old.get('speed_limit_mbit', 0))
+    # One number without the second one (the bot, an older panel) caps both directions, as before.
+    upload = mbit('speed_up_mbit', speed if 'speed_limit_mbit' in data else old.get('speed_up_mbit', 0))
     period = str(data.get('quota_period', old.get('quota_period', '')) or '').strip()
     if period not in ('', 'monthly'): raise ValueError('Период лимита: пусто или monthly')
     group = valid_group(data.get('group', old.get('group_name', '')))
     return {'comment':comment,'expires_at':expiry,'traffic_limit_bytes':limit,'telegram_id':telegram,
-            'owner_export':int(export),'speed_limit_mbit':speed,'quota_period':period,'group_name':group}
+            'owner_export':int(export),'speed_limit_mbit':speed,'speed_up_mbit':upload,'quota_period':period,'group_name':group}
 
 
 def valid_group(raw):
@@ -1074,11 +1091,11 @@ def client_policy_update(con):
     if not row: raise ValueError('Клиент не найден')
     policy = validate_policy(data,dict(row))
     con.execute('''UPDATE clients SET comment=?,expires_at=?,traffic_limit_bytes=?,telegram_id=?,owner_export=?,
-                   speed_limit_mbit=?,quota_period=?,quota_month=?,group_name=? WHERE name=?''',
+                   speed_limit_mbit=?,speed_up_mbit=?,quota_period=?,quota_month=?,group_name=? WHERE name=?''',
                 (policy['comment'],policy['expires_at'],policy['traffic_limit_bytes'],policy['telegram_id'],
-                 policy['owner_export'],policy['speed_limit_mbit'],policy['quota_period'],
+                 policy['owner_export'],policy['speed_limit_mbit'],policy['speed_up_mbit'],policy['quota_period'],
                  datetime.now(timezone.utc).strftime('%Y-%m') if policy['quota_period'] else '',policy['group_name'],name))
-    if policy['speed_limit_mbit'] != int(row['speed_limit_mbit'] or 0):
+    if (policy['speed_limit_mbit'], policy['speed_up_mbit']) != (int(row['speed_limit_mbit'] or 0), int(row['speed_up_mbit'] or 0)):
         apply(get_settings(con), con)        # rewrites the tc rules, sessions are not reset
     con.commit()
     return {'ok':True,'name':name,**policy}
@@ -1095,12 +1112,12 @@ def insert_client(con, cfg, name, data, routes=''):
     con.execute('''INSERT INTO clients
         (name, ip, private_key, public_key, psk, enabled, created_at,
          routed_subnets, i_enabled, i1, i2, i3, i4, i5, comment, expires_at, traffic_limit_bytes, telegram_id, owner_export,
-         speed_limit_mbit, quota_period, quota_month, group_name)
-         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
+         speed_limit_mbit, speed_up_mbit, quota_period, quota_month, group_name)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
         (name,address,private,public,psk,1,datetime.now(timezone.utc).isoformat(),
          routes,cps['i_enabled'], *(cps[k] for k in I_KEYS),
          policy['comment'],policy['expires_at'],policy['traffic_limit_bytes'],policy['telegram_id'],policy['owner_export'],
-         policy['speed_limit_mbit'],policy['quota_period'],
+         policy['speed_limit_mbit'],policy['speed_up_mbit'],policy['quota_period'],
          datetime.now(timezone.utc).strftime('%Y-%m') if policy['quota_period'] else '', policy['group_name']))
     return {'name':name,'private_key':private,'ip':address,'psk':psk,**cps}
 
@@ -1133,7 +1150,7 @@ def clients_add_batch(con):
     clash = sorted(set(names) & existing)
     if clash: raise ValueError('Уже существует: ' + ', '.join(clash[:5]))
     cfg = get_settings(con)
-    shared = {k: v for k, v in data.items() if k in ('comment','expires_at','traffic_limit_bytes','speed_limit_mbit',
+    shared = {k: v for k, v in data.items() if k in ('comment','expires_at','traffic_limit_bytes','speed_limit_mbit','speed_up_mbit',
                                                      'quota_period','i_enabled','i1','i2','i3','i4','i5')}
     peers = [insert_client(con, cfg, name, shared) for name in names]
     apply(cfg, con)
@@ -1182,7 +1199,7 @@ def clients_action(con, which):
                 'invite_export':bool(row['invite_export']),
                 'subscription':{'active':bool(row['sub_hash']),'created':row['sub_created'],'last_fetch':row['sub_last_fetch'],
                                 'last_addr':row['sub_last_addr'],'fetches':row['sub_fetches']},
-                'speed_limit_mbit':row['speed_limit_mbit'], 'quota_period':row['quota_period'],
+                'speed_limit_mbit':row['speed_limit_mbit'], 'speed_up_mbit':row['speed_up_mbit'], 'quota_period':row['quota_period'],
                 'group_name':row['group_name'],
                 **{key:row[key] for key in I_KEYS}}
     if which == 'enable':
@@ -1713,7 +1730,7 @@ def probe_port(cfg, data):
 
 MOVE_KEEP = ('name', 'private_key', 'public_key', 'psk', 'enabled', 'created_at', 'routed_subnets', 'i_enabled',
              *I_KEYS, 'extra_lines', 'comment', 'expires_at', 'traffic_limit_bytes', 'used_bytes', 'disabled_reason',
-             'telegram_id', 'owner_export', 'speed_limit_mbit', 'quota_period', 'quota_month',
+             'telegram_id', 'owner_export', 'speed_limit_mbit', 'speed_up_mbit', 'quota_period', 'quota_month',
              'invite_hash', 'invite_expires', 'invite_export', 'group_name', 'sub_hash', 'sub_created', 'sub_last_fetch', 'sub_last_addr', 'sub_fetches')
 
 
@@ -1931,7 +1948,7 @@ def get_status(con, with_clients=False):
         stats = live_stats()
         peers = peer_rows(con)
         result['clients'] = [
-            {k:p[k] for k in ('name','ip','public_key','enabled','created_at','routed_subnets','i_enabled','comment','expires_at','traffic_limit_bytes','used_bytes','disabled_reason','last_handshake','telegram_id','owner_export','speed_limit_mbit','quota_period','group_name')}
+            {k:p[k] for k in ('name','ip','public_key','enabled','created_at','routed_subnets','i_enabled','comment','expires_at','traffic_limit_bytes','used_bytes','disabled_reason','last_handshake','telegram_id','owner_export','speed_limit_mbit','speed_up_mbit','quota_period','group_name')}
             | {'extra_lines': bool(p.get('extra_lines')), 'subscription': bool(p.get('sub_hash')),
                'sub_last_fetch': p.get('sub_last_fetch', ''),
                'stats': (stats.get(p['public_key']) or {'handshake':p['last_handshake'],'received':p['last_rx'],'sent':p['last_tx']}),
