@@ -1412,3 +1412,12 @@ tr:hover .extra-dot {box-shadow:0 0 0 2px #1e2228}
 .table-filter select {height:36px;padding:0 30px 0 10px;font-size:13px;border-radius:10px}
 .access-state.is-warn {color:#f3c06b}
 .rotation-grid {grid-template-columns:repeat(auto-fit,minmax(min(380px,100%),1fr))}
+
+/* 0.19.2: on 1280-1500 px screens the client table no longer pushes the row menu
+   out of view: traffic goes on two lines and the .conf button keeps only its icon. */
+#clients .traffic {display:inline-grid;gap:3px;white-space:nowrap}
+#clients .traffic-divider {display:block;width:0;height:0;margin:0}  /* keeps the two values apart as grid rows */
+@media (max-width:1500px) {
+  #clients .actions-cell .btn-small {font-size:0;gap:0;padding:7px 9px}
+  #clients .actions-cell .btn-small svg {width:16px;height:16px}
+}

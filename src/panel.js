@@ -294,17 +294,22 @@
   // Row menus: a fixed list, so the table's own scroll area never clips it; it flips up near the bottom edge.
   const rowMenus = () => [...document.querySelectorAll('details.row-menu[open]')];
   const closeRowMenus = (except) => rowMenus().forEach(menu => { if (menu !== except) menu.removeAttribute('open'); });
+  const placeRowMenu = (menu) => {
+    const list = menu.querySelector('.row-menu-list');
+    const anchor = menu.querySelector('summary').getBoundingClientRect();
+    // The button scrolled out of sight: the menu goes with it.
+    if (anchor.bottom < 0 || anchor.top > window.innerHeight) { menu.removeAttribute('open'); return; }
+    const width = list.offsetWidth, height = list.offsetHeight;
+    const left = Math.min(window.innerWidth - width - 8, Math.max(8, anchor.right - width));
+    const below = anchor.bottom + 6;
+    list.style.left = left + 'px';
+    list.style.top = (below + height > window.innerHeight - 8 ? Math.max(8, anchor.top - height - 6) : below) + 'px';
+  };
   for (const menu of document.querySelectorAll('details.row-menu')) {
     menu.addEventListener('toggle', () => {
       if (!menu.open) return;
       closeRowMenus(menu);
-      const list = menu.querySelector('.row-menu-list');
-      const anchor = menu.querySelector('summary').getBoundingClientRect();
-      const width = list.offsetWidth, height = list.offsetHeight;
-      const left = Math.min(window.innerWidth - width - 8, Math.max(8, anchor.right - width));
-      const below = anchor.bottom + 6;
-      list.style.left = left + 'px';
-      list.style.top = (below + height > window.innerHeight - 8 ? Math.max(8, anchor.top - height - 6) : below) + 'px';
+      placeRowMenu(menu);
     });
   }
   document.addEventListener('click', event => {
@@ -317,7 +322,9 @@
       menu.querySelector('summary')?.focus();
     }
   });
-  window.addEventListener('scroll', () => closeRowMenus(), true);
+  // Scrolling (the page, or the table sideways) moves an open menu along instead of closing it:
+  // opening a menu near the bottom edge scrolls the page a little, and that must not shut it again.
+  window.addEventListener('scroll', () => rowMenus().forEach(placeRowMenu), true);
   window.addEventListener('resize', () => closeRowMenus());
 
   // "12 s ago" keeps counting while the page stays open.

@@ -219,11 +219,14 @@ fi
 step 'Router subscription, masking profile, rotation, packet check, MSS and sysctl'
 grep -q '^net.ipv4.tcp_syncookies = 1' /etc/sysctl.d/96-awg31-network.conf || fail 'the network sysctl file is missing'
 [[ "$(sysctl -n net.ipv4.conf.all.rp_filter)" == 2 ]] || fail 'rp_filter is not loose'
-if [[ -n "${AWG31_SMOKE_FROM:-}" ]]; then
-    # A server from an older release keeps what it had: MSS clamping stays off until switched on.
-    if iptables -w -t mangle -S FORWARD | grep -q TCPMSS; then fail 'the update switched MSS clamping on by itself'; fi
-else
-    iptables -w -t mangle -S FORWARD | grep -q -- '-o awg0 .*TCPMSS --clamp-mss-to-pmtu' || fail 'no MSS clamping for a new server'
+# New servers start with MSS clamping on; a server made by an older release keeps
+# what it had (off before 0.17), so the rules must match the stored switch.
+mss="$("$MGR" status <<<'{"interface":"awg0"}' | python3 -c 'import json,sys; print(json.load(sys.stdin).get("mss_clamp","off"))')"
+[[ -n "${AWG31_SMOKE_FROM:-}" || "$mss" == on ]] || fail 'a new server should start with MSS clamping on'
+if [[ "$mss" == on ]]; then
+    iptables -w -t mangle -S FORWARD | grep -q -- '-o awg0 .*TCPMSS --clamp-mss-to-pmtu' || fail 'MSS clamping is on but has no rule'
+elif iptables -w -t mangle -S FORWARD | grep -q TCPMSS; then
+    fail 'MSS clamping is off but a rule is there'
 fi
 SUB="$(echo '{"interface":"awg0","name":"team-03"}' | panel_mgr sub-token | python3 -c 'import json,sys; print(json.load(sys.stdin)["token"])')"
 if grep -rqF "$SUB" /var/lib/awg31-panel; then fail 'the subscription token is stored in clear'; fi

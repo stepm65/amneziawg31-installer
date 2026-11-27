@@ -139,6 +139,28 @@ def test_row_menu_opens_inside_the_viewport_and_closes_on_escape(page):
     assert menu.get_attribute('open') is None
 
 
+@pytest.mark.parametrize('width', [1280, 1366])
+def test_row_menu_is_reachable_on_laptop_screens_and_survives_a_scroll(page, width):
+    """On 1280-1366 px the table used to push the menu column out of view, and the page scroll
+    that opening a menu near the bottom edge causes used to close it again."""
+    page.set_viewport_size({'width': width, 'height': 700})
+    page.goto('http://panel.test/servers/awg0/clients')
+    wrap = page.locator('#clients .table-scroll').bounding_box()
+    summary = page.locator('details.row-menu summary').last
+    box = summary.bounding_box()
+    assert box['x'] + box['width'] <= wrap['x'] + wrap['width'] + 0.5
+    assert page.evaluate("() => { const w = document.querySelector('#clients .table-scroll'); return w.scrollWidth <= w.clientWidth; }")
+    summary.click()
+    menu = page.locator('details.row-menu').last
+    assert menu.get_attribute('open') is not None
+    page.mouse.wheel(0, 60)
+    page.wait_for_timeout(200)
+    assert menu.get_attribute('open') is not None
+    anchor = summary.bounding_box()
+    listed = menu.locator('.row-menu-list').bounding_box()
+    assert abs(listed['y'] - (anchor['y'] + anchor['height'] + 6)) < 2 or abs(listed['y'] + listed['height'] + 6 - anchor['y']) < 2
+
+
 def test_api_session_expiry_opens_login_page(page):
     page.route('**/servers/awg0/api/traffic',
                lambda route: route.fulfill(status=401, json={'detail':'Требуется вход'}))
