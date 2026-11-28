@@ -25,6 +25,7 @@ import qrcode
 from amnezialink import build_vpn_uri
 import quicinitial
 import awg31import
+import awg31webauthn as webauthn
 from fastapi import FastAPI, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from fastapi.exception_handlers import http_exception_handler
@@ -951,7 +952,7 @@ def acct_payload(request):
 # A viewer sees the panel but changes nothing and gets no keys.
 VIEWER_GET_DENY = re.compile(r'(?:^/client/[^/]+|^/servers/[^/]+/clients/[^/]+)/(?:download|qr|vpn-link)$|^/maintenance/backup/|'
                              r'^/maintenance/logs/download$|/settings/profile$|^/maintenance/profile$|/export/clients\.csv$')
-VIEWER_POST_OK = re.compile(r'^/maintenance/(?:password|totp/(?:enable|disable|regenerate)|totp-recovery|sessions/(?:end|others))$')
+VIEWER_POST_OK = re.compile(r'^/maintenance/(?:password|totp/(?:enable|disable|regenerate)|totp-recovery|sessions/(?:end|others)|passkeys(?:/options|/delete)?)$')
 VIEWER_TABS = ('diagnostics', 'security', 'audit')
 
 
@@ -1632,6 +1633,12 @@ def login_form(request, error='', next_path='/'):
         second = any(account_record(auth, n).get('totp_secret') for n in names)
     except (OSError, ValueError):
         names, second = [], False
+    try: has_keys = any(account_record(auth, n).get('passkeys') for n in names)
+    except (NameError, ValueError): has_keys = False
+    passkey_login = (f'<div class="passkey-login" data-passkey-login="/login/passkey" data-next="{h(safe_next(next_path))}" hidden>'
+                     f'<span class="passkey-or">{h(tr(lang,"passkey_or"))}</span>'
+                     f'<button class="btn btn-secondary full-width" type="button" data-passkey-signin>{icon("key",18)}{h(tr(lang,"passkey_signin"))}</button>'
+                     f'<p class="error-message" role="alert" data-passkey-status hidden></p></div>') if has_keys and rp_of(request) else ''
     user_field = (f'<label class="field" for="username"><span>{h(tr(lang,"account_name"))}</span>'
                   '<input id="username" name="username" required autocomplete="username" autocapitalize="none" spellcheck="false" maxlength="32" autofocus></label>'
                   ) if len(names) > 1 else ''
@@ -1645,11 +1652,11 @@ def login_form(request, error='', next_path='/'):
         <p class="login-card-hint">{h(tr(lang,'login_card_hint'))}</p>
         {msg}<form method="post" action="/login">
         <input type="hidden" name="next" value="{h(safe_next(next_path))}">
-        {user_field}<label class="field" for="password"><span>{h(tr(lang,'password'))}</span>
+        {user_field}<label class="field" for="password"><span>{h(tr(lang,'account_your_password' if user_field else 'password'))}</span>
         <input id="password" type="password" name="password" required autocomplete="current-password"{'' if user_field else ' autofocus'}></label>
         {totp_field}
         <button class="btn btn-primary full-width" type="submit">{h(tr(lang,'login'))}{icon('arrow',18)}</button>
-        </form></section>''', request)
+        </form>{passkey_login}</section>''', request)
 
 
 @app.get('/health')
@@ -1710,9 +1717,14 @@ def login_post(request: Request, password: str = Form(...), next: str = Form('/'
         attempts.append(now)
         audit_event('login_failed',address)
         return login_form(request, tr(lang,'login_error'), target)
+    begin_session(request, name, auth, address)
+    return RedirectResponse(target, status_code=303)
+
+
+def begin_session(request, name, auth, address, how=''):
     login_attempts.pop(address,None)
     ACTOR.set(name)
-    audit_event('login_success',address)
+    audit_event('login_success',address+how)
     sid=secrets.token_urlsafe(32)
     now=int(time.time())
     PANEL_SESSIONS[sid_hash(sid)]={'hash':sid_hash(sid),'account':name,'addr':client_address(request)[:64],
@@ -1726,7 +1738,6 @@ def login_post(request: Request, password: str = Form(...), next: str = Form('/'
     request.session['auth_version']=auth.get('auth_version','')
     request.session['sid']=sid
     request.session['csrf']=secrets.token_urlsafe(32)
-    return RedirectResponse(target, status_code=303)
 
 
 @app.get('/logout')
@@ -4185,7 +4196,7 @@ def maintenance(request: Request, tab: str = 'diagnostics'):
                 <label class="field"><span>{h(t('totp_code'))}</span>
                 <input name="code" inputmode="numeric" maxlength="7" required autocomplete="one-time-code"></label></div>
                 <button class="btn btn-primary" type="submit">{icon('shield',18)}{h(t('totp_enable'))}</button></form></section>'''
-            body+=panel_sessions_section(request,t,lang)
+            body+=passkeys_section(request,t,lang)+panel_sessions_section(request,t,lang)
         elif tab=='accounts':
             body+=accounts_tab(request,t,lang)
         elif tab=='telegram':
@@ -6196,4 +6207,193 @@ TEXT['en'].update({
     'psess_title': 'Active sessions', 'psess_hint': 'Where the panel is signed in right now. A session ends after an hour without activity; an ended session stops working at once.',
     'psess_device': 'Browser', 'psess_since': 'Signed in (UTC)', 'psess_seen': 'Activity', 'psess_this': 'This session', 'psess_end': 'End',
     'psess_others': 'End my other sessions', 'psess_all': 'Sign out everywhere', 'psess_all_confirm': 'End every session of every account, this one included?',
+})
+
+
+# ------------------------------------------------------------------ 0.25: passkeys (WebAuthn)
+PASSKEY_TTL = 300
+
+
+def rp_of(request):
+    """The site a passkey belongs to: the host name the browser used. WebAuthn needs a name, not an IP address,
+    and HTTPS (plain HTTP only for localhost, e.g. through an SSH tunnel)."""
+    host = request.headers.get('host', '').strip().lower()
+    name = host[:-len(host.rsplit(':', 1)[1]) - 1] if re.fullmatch(r'.+:[0-9]{1,5}', host) else host
+    if not re.fullmatch(r'(?=.{1,253}$)[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*', name):
+        return None
+    if re.fullmatch(r'[0-9.]+', name): return None
+    return name
+
+
+def passkey_origin(request, rp_id):
+    origin = request.headers.get('origin', '')
+    parts = urlsplit(origin)
+    scheme_ok = parts.scheme == 'https' or (parts.scheme == 'http' and rp_id == 'localhost')
+    if not scheme_ok or parts.hostname != rp_id or parts.path or parts.query: raise webauthn.WebAuthnError('Wrong origin')
+    return origin
+
+
+def passkey_challenge(request, kind):
+    challenge = secrets.token_bytes(32)
+    request.session['wa'] = {'c': webauthn.b64u(challenge), 'k': kind, 't': int(time.time())}
+    return challenge
+
+
+def take_challenge(request, kind):
+    item = request.session.pop('wa', None)
+    if not isinstance(item, dict) or item.get('k') != kind or time.time() - int(item.get('t', 0)) > PASSKEY_TTL:
+        raise webauthn.WebAuthnError('Wrong or expired challenge')
+    return webauthn.unb64u(item['c'])
+
+
+def passkey_user_id(name):
+    return webauthn.b64u(hashlib.sha256(('awg31-account:' + name).encode()).digest()[:16])
+
+
+async def json_body(request, limit=16384):
+    raw = await request.body()
+    if len(raw) > limit: raise HTTPException(413)
+    try: data = json.loads(raw)
+    except ValueError: raise HTTPException(422) from None
+    if not isinstance(data, dict): raise HTTPException(422)
+    return data
+
+
+@app.post('/login/passkey/options')
+async def passkey_login_options(request: Request):
+    rp_id = rp_of(request)
+    if not rp_id: return JSONResponse({'error': tr(lang_of(request), 'passkey_need_name')}, status_code=400)
+    challenge = passkey_challenge(request, 'get')
+    return JSONResponse({'challenge': webauthn.b64u(challenge), 'rpId': rp_id, 'timeout': 60000,
+                         'userVerification': 'required', 'allowCredentials': []}, headers={'Cache-Control': 'no-store'})
+
+
+@app.post('/login/passkey')
+async def passkey_login(request: Request):
+    lang = lang_of(request)
+    data = await json_body(request)
+    address = str(request.client.host if request.client else 'unknown')[:80]
+    now = time.monotonic()
+    attempts = [t for t in login_attempts.get(address, []) if now - t < 300]
+    login_attempts[address] = attempts
+    if len(attempts) >= 5: return JSONResponse({'error': tr(lang, 'login_limited')}, status_code=429)
+    try:
+        rp_id = rp_of(request)
+        if not rp_id: raise webauthn.WebAuthnError('No site name')
+        challenge = take_challenge(request, 'get')
+        origin = passkey_origin(request, rp_id)
+        credential = str(data.get('id', ''))
+        auth = read_auth()
+        found = None
+        for name in accounts_of(auth):
+            for key in account_record(auth, name).get('passkeys') or []:
+                if isinstance(key, dict) and hmac.compare_digest(str(key.get('id', '')), credential): found = (name, key)
+        if not found: raise webauthn.WebAuthnError('Unknown passkey')
+        name, key = found
+        count = webauthn.verify_assertion(key, webauthn.unb64u(data.get('authenticatorData')), webauthn.unb64u(data.get('clientDataJSON')),
+                                          webauthn.unb64u(data.get('signature')), challenge, origin, rp_id)
+        record = account_record(auth, name)
+        ctl('passkey-used', {'id': credential, 'count': count, **({} if record is auth else {'account': name})})
+    except (webauthn.WebAuthnError, RuntimeError, ValueError, KeyError, TypeError, OSError) as exc:
+        attempts.append(now)
+        audit_event('login_failed', address)
+        print(f'awg31 panel: passkey sign-in refused: {exc}', file=sys.stderr, flush=True)
+        return JSONResponse({'error': tr(lang, 'passkey_failed')}, status_code=400)
+    begin_session(request, name, auth, address, ' (passkey)')
+    return JSONResponse({'ok': True, 'next': safe_next(str(data.get('next', '/')))})
+
+
+@app.post('/maintenance/passkeys/options')
+async def passkey_register_options(request: Request):
+    data = await json_body(request)
+    require_csrf(request, data.get('csrf', ''))
+    lang = lang_of(request)
+    rp_id = rp_of(request)
+    if not rp_id: return JSONResponse({'error': tr(lang, 'passkey_need_name')}, status_code=400)
+    me = current(request)
+    challenge = passkey_challenge(request, 'create')
+    known = [{'type': 'public-key', 'id': k['id']} for k in my_record(request).get('passkeys') or [] if isinstance(k, dict) and k.get('id')]
+    return JSONResponse({'challenge': webauthn.b64u(challenge), 'rp': {'id': rp_id, 'name': 'AWG31 Console'},
+                         'user': {'id': passkey_user_id(me['name']), 'name': me['name'], 'displayName': me['name']},
+                         'pubKeyCredParams': [{'type': 'public-key', 'alg': webauthn.ES256}, {'type': 'public-key', 'alg': webauthn.RS256}],
+                         'authenticatorSelection': {'residentKey': 'required', 'requireResidentKey': True, 'userVerification': 'required'},
+                         'attestation': 'none', 'timeout': 120000, 'excludeCredentials': known}, headers={'Cache-Control': 'no-store'})
+
+
+@app.post('/maintenance/passkeys')
+async def passkey_register(request: Request):
+    data = await json_body(request)
+    require_csrf(request, data.get('csrf', ''))
+    lang = lang_of(request)
+    try:
+        rp_id = rp_of(request)
+        if not rp_id: raise webauthn.WebAuthnError(tr(lang, 'passkey_need_name'))
+        challenge = take_challenge(request, 'create')
+        made = webauthn.verify_registration(webauthn.unb64u(data.get('attestationObject')), webauthn.unb64u(data.get('clientDataJSON')),
+                                            challenge, passkey_origin(request, rp_id), rp_id)
+        name = re.sub(r'[\x00-\x1f\x7f]', '', str(data.get('name', ''))).strip()[:40] or ua_short(request.headers.get('user-agent', ''))[:40]
+        ctl('passkey-add', {'password': str(data.get('password', '')), 'credential': {**made, 'name': name}, **acct_payload(request)})
+    except (webauthn.WebAuthnError, RuntimeError) as exc:
+        return JSONResponse({'error': controller_message(lang, str(exc))}, status_code=400)
+    return JSONResponse({'ok': True, 'next': '/maintenance?tab=security&passkey=added#passkeys'})
+
+
+@app.post('/maintenance/passkeys/delete')
+async def passkey_remove(request: Request):
+    form = await request.form(); require_csrf(request, form.get('csrf', ''))
+    try: ctl('passkey-delete', {'id': str(form.get('id', '')), **acct_payload(request)})
+    except RuntimeError as exc: return error_page(request, tr(lang_of(request), 'maintenance_error'), exc)
+    return RedirectResponse('/maintenance?tab=security&passkey=deleted#passkeys', status_code=303)
+
+
+def passkeys_section(request, t, lang):
+    keys = [k for k in my_record(request).get('passkeys') or [] if isinstance(k, dict)]
+    rows = ''.join(
+        f'<tr><td><strong>{h(k.get("name", ""))}</strong></td><td>{h(str(k.get("created", ""))[:16].replace("T", " "))}</td>'
+        f'<td>{h(str(k.get("used") or "")[:16].replace("T", " ") or t("passkey_never"))}</td>'
+        f'<td><form method="post" action="/maintenance/passkeys/delete" class="inline viewer-ok" data-confirm="{h(t("passkey_delete_confirm"))}">'
+        f'{csrf(request)}<input type="hidden" name="id" value="{h(k.get("id", ""))}">'
+        f'<button class="btn btn-secondary btn-small" type="submit">{icon("trash",14)}{h(t("passkey_delete"))}</button></form></td></tr>'
+        for k in keys)
+    table = (f'<div class="table-scroll"><table><thead><tr><th>{h(t("passkey_name"))}</th><th>{h(t("passkey_added"))}</th>'
+             f'<th>{h(t("passkey_used"))}</th><th></th></tr></thead><tbody>{rows}</tbody></table></div>') if rows else \
+        f'<p class="info-line">{h(t("passkey_none"))}</p>'
+    done = request.query_params.get('passkey')
+    notice = (f'<p class="bulk-notice" role="status">{icon("check",16)}<span>{h(t("passkey_done_" + done))}</span></p>'
+              if done in ('added', 'deleted') else '')
+    if not rp_of(request):
+        add = f'<p class="info-line">{icon("info",14)}<span>{h(t("passkey_need_name"))}</span></p>'
+    else:
+        add = (f'<div class="passkey-add" data-passkey-register="/maintenance/passkeys" data-csrf="{h(request.session.get("csrf", ""))}">'
+               f'<p class="info-line passkey-unsupported" hidden>{icon("info",14)}<span>{h(t("passkey_unsupported"))}</span></p>'
+               f'<div class="fields-grid"><label class="field"><span>{h(t("passkey_name"))}</span>'
+               f'<input name="passkey_name" maxlength="40" placeholder="{h(t("passkey_name_hint"))}" autocomplete="off"></label>'
+               f'<label class="field"><span>{h(t("account_your_password"))}</span><input type="password" name="passkey_password" autocomplete="current-password"></label></div>'
+               f'<button class="btn btn-primary" type="button" data-passkey-create>{icon("key",16)}{h(t("passkey_add"))}</button>'
+               f'<p class="error-message" role="alert" data-passkey-status hidden></p></div>')
+    return (f'<section class="maint-form-panel passkeys" id="passkeys"><h3>{icon("key",19)}{h(t("passkey_title"))}</h3>{notice}'
+            f'<p class="info-line">{h(t("passkey_hint"))}</p>{table}{add}</section>')
+
+
+TEXT['ru'].update({
+    'passkey_title': 'Ключи доступа (passkeys)', 'passkey_or': 'или',
+    'passkey_hint': 'Вход без пароля и кода: отпечаток пальца, лицо или PIN-код телефона, компьютера или ключа безопасности. Ключ привязан к адресу панели и не сработает на поддельном сайте. Пароль и двухфакторный вход продолжают работать.',
+    'passkey_signin': 'Войти с ключом доступа', 'passkey_failed': 'Не удалось войти с ключом доступа.',
+    'passkey_need_name': 'Ключи доступа работают, только когда панель открыта по доменному имени через HTTPS (sudo awg31 nginx) или по адресу localhost.',
+    'passkey_unsupported': 'Этот браузер не поддерживает ключи доступа или страница открыта не по HTTPS.',
+    'passkey_name': 'Название', 'passkey_name_hint': 'например, «Ноутбук» или «iPhone»', 'passkey_add': 'Добавить ключ доступа',
+    'passkey_added': 'Добавлен (UTC)', 'passkey_used': 'Последний вход', 'passkey_never': 'ещё не использовался',
+    'passkey_delete': 'Удалить', 'passkey_delete_confirm': 'Удалить этот ключ доступа?', 'passkey_none': 'Ключей доступа нет.',
+    'passkey_done_added': 'Ключ доступа добавлен.', 'passkey_done_deleted': 'Ключ доступа удалён.',
+})
+TEXT['en'].update({
+    'passkey_title': 'Passkeys', 'passkey_or': 'or',
+    'passkey_hint': 'Sign in without a password or code: the fingerprint, face or PIN of a phone, computer or security key. A passkey is bound to the panel’s address and does not work on a fake site. The password and two-factor sign-in keep working.',
+    'passkey_signin': 'Sign in with a passkey', 'passkey_failed': 'The passkey sign-in failed.',
+    'passkey_need_name': 'Passkeys work only when the panel is opened by a domain name over HTTPS (sudo awg31 nginx) or at localhost.',
+    'passkey_unsupported': 'This browser does not support passkeys, or the page is not on HTTPS.',
+    'passkey_name': 'Name', 'passkey_name_hint': 'e.g. “Laptop” or “iPhone”', 'passkey_add': 'Add a passkey',
+    'passkey_added': 'Added (UTC)', 'passkey_used': 'Last sign-in', 'passkey_never': 'not used yet',
+    'passkey_delete': 'Delete', 'passkey_delete_confirm': 'Delete this passkey?', 'passkey_none': 'No passkeys.',
+    'passkey_done_added': 'The passkey was added.', 'passkey_done_deleted': 'The passkey was deleted.',
 })

@@ -461,6 +461,15 @@ panel_call session-save '{"sessions": [{"hash": "'"$(printf 'a%.0s' {1..64})"'",
 [[ "$(stat -c '%U:%G %a' /etc/awg31-panel/sessions.json)" == 'root:awgpanel 640' ]] || fail 'the session list has wrong owner or mode'
 reply="$(PW="$panel_password" python3 -c 'import json,os; print(json.dumps({"name": "smoke-viewer", "actor": "admin", "password": os.environ["PW"]}))')"
 panel_call account-delete "$reply" | grep -q '^0 ' || fail 'the panel cannot delete an account'
+# 0.25: a passkey (the panel verifies the WebAuthn data; the helper stores it after the password).
+passkey_id="$(python3 -c 'import base64,os; print(base64.urlsafe_b64encode(os.urandom(32)).rstrip(b"=").decode())')"
+reply="$(PW="$panel_password" ID="$passkey_id" python3 -c 'import json,os; print(json.dumps({"password": os.environ["PW"], "credential": {"id": os.environ["ID"], "key": "A"*77, "alg": -7, "count": 0, "name": "smoke"}}))')"
+panel_call passkey-add "$reply" | grep -q '^0 ' || fail 'the panel cannot store a passkey'
+panel_call passkey-add '{"password": "wrong-password-0", "credential": {"id": "'"$passkey_id"'x", "key": "'"$(printf 'A%.0s' {1..77})"'", "alg": -7, "count": 0}}' \
+  | grep -q 'Incorrect password' || fail 'a passkey was stored without the password'
+panel_call passkey-used '{"id": "'"$passkey_id"'", "count": 3}' | grep -q '^0 ' || fail 'the passkey counter was not stored'
+panel_call passkey-delete '{"id": "'"$passkey_id"'"}' | grep -q '^0 ' || fail 'the panel cannot delete a passkey'
+[[ -f /opt/awg31-panel/awg31webauthn.py ]] || fail 'the passkey module is not installed'
 
 step 'Backups are uploaded over SFTP'
 if systemctl is-active --quiet ssh || systemctl is-active --quiet sshd; then

@@ -1308,3 +1308,67 @@ const awgChart = {
     select.addEventListener('change', sync);
   }
 })();
+
+// Passkeys (WebAuthn): sign-in on the login page, registration under Maintenance -> Security.
+(() => {
+  const toB64 = (buffer) => btoa(String.fromCharCode(...new Uint8Array(buffer))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  const fromB64 = (text) => Uint8Array.from(atob(text.replace(/-/g, '+').replace(/_/g, '/') + '==='.slice((text.length + 3) % 4)), (c) => c.charCodeAt(0));
+  const supported = window.isSecureContext && !!window.PublicKeyCredential && !!navigator.credentials;
+  const say = (box, text) => { const out = box.querySelector('[data-passkey-status]'); if (out) { out.textContent = text || ''; out.hidden = !text; } };
+  const post = async (url, body) => {
+    const reply = await fetch(url, {method: 'POST', credentials: 'same-origin', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)});
+    let data = {};
+    try { data = await reply.json(); } catch (_) { /* not JSON */ }
+    if (!reply.ok) throw new Error(data.error || `HTTP ${reply.status}`);
+    return data;
+  };
+  const failed = (error) => error && error.name === 'NotAllowedError' ? '' : (error && error.message) || String(error);
+
+  const login = document.querySelector('[data-passkey-login]');
+  if (login && supported) {
+    login.hidden = false;
+    login.querySelector('[data-passkey-signin]').addEventListener('click', async () => {
+      say(login, '');
+      try {
+        const options = await post(login.dataset.passkeyLogin + '/options', {});
+        const credential = await navigator.credentials.get({publicKey: {
+          challenge: fromB64(options.challenge), rpId: options.rpId, timeout: options.timeout,
+          userVerification: options.userVerification, allowCredentials: []}});
+        const response = credential.response;
+        const done = await post(login.dataset.passkeyLogin, {
+          id: credential.id, authenticatorData: toB64(response.authenticatorData), clientDataJSON: toB64(response.clientDataJSON),
+          signature: toB64(response.signature), next: login.dataset.next || '/'});
+        window.location.assign(done.next || '/');
+      } catch (error) { say(login, failed(error)); }
+    });
+  }
+
+  const register = document.querySelector('[data-passkey-register]');
+  if (register) {
+    const button = register.querySelector('[data-passkey-create]');
+    if (!supported) {
+      register.querySelector('.passkey-unsupported').hidden = false;
+      if (button) button.disabled = true;
+      return;
+    }
+    button.addEventListener('click', async () => {
+      say(register, '');
+      const password = register.querySelector('[name=passkey_password]');
+      if (!password.value) { password.focus(); return; }
+      const csrf = register.dataset.csrf;
+      button.disabled = true;
+      try {
+        const o = await post(register.dataset.passkeyRegister + '/options', {csrf});
+        const credential = await navigator.credentials.create({publicKey: {
+          challenge: fromB64(o.challenge), rp: o.rp, user: {...o.user, id: fromB64(o.user.id)}, pubKeyCredParams: o.pubKeyCredParams,
+          authenticatorSelection: o.authenticatorSelection, attestation: o.attestation, timeout: o.timeout,
+          excludeCredentials: o.excludeCredentials.map((c) => ({type: c.type, id: fromB64(c.id)}))}});
+        const done = await post(register.dataset.passkeyRegister, {
+          csrf, name: register.querySelector('[name=passkey_name]').value, password: password.value,
+          attestationObject: toB64(credential.response.attestationObject), clientDataJSON: toB64(credential.response.clientDataJSON)});
+        window.location.assign(done.next);
+      } catch (error) { say(register, failed(error)); }
+      button.disabled = false;
+    });
+  }
+})();

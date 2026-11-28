@@ -1532,3 +1532,9 @@ tr:hover .extra-dot {box-shadow:0 0 0 2px #1e2228}
 .audit-actor {display:inline-flex;align-items:center;gap:4px;color:#a9c8ef;font-size:12.5px}
 @media (min-width:641px){.audit-entry{grid-template-columns:minmax(150px,190px) minmax(150px,1fr) minmax(140px,1.4fr) minmax(0,auto)}}
 .panel-sessions .tg-actions {margin-top:14px;display:flex;flex-wrap:wrap;gap:10px}
+/* 0.25: passkeys */
+.passkey-login {display:flex;flex-direction:column;gap:12px;margin-top:16px}
+.passkey-or {align-self:center;color:var(--muted);font-size:12.5px;text-transform:uppercase;letter-spacing:.08em}
+.passkey-add {margin-top:16px;display:flex;flex-direction:column;gap:12px;align-items:flex-start}
+.passkey-add .fields-grid {width:100%}
+.passkey-unsupported[hidden], .passkey-login[hidden], [data-passkey-status][hidden] {display:none !important}

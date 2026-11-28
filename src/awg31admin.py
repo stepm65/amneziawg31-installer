@@ -33,7 +33,8 @@ VALID_AUDIT = {'login_success', 'login_failed', 'password_changed', 'client_adde
                'mask_profile_applied', 'subscription_created', 'subscription_revoked', 'once_link_created', 'once_link_revoked', 'once_link_used', 'packet_probe',
                'client_moved', 'server_silent', 'server_back',
                'owner_created', 'owner_changed', 'owner_deleted', 'owner_blocked', 'owner_unblocked', 'clients_imported',
-               'snapshot_deleted', 'account_created', 'account_changed', 'account_deleted', 'session_ended'}
+               'snapshot_deleted', 'account_created', 'account_changed', 'account_deleted', 'session_ended',
+               'passkey_added', 'passkey_deleted'}
 ACCOUNT_RE=re.compile(r'^[a-z][a-z0-9_.-]{1,31}$')
 ROLES=('admin','viewer')
 MAX_ACCOUNTS=20
@@ -455,6 +456,71 @@ def account_delete(data):
     _save_auth(auth,file,rotate=False)
     audit({'event':'account_deleted','target':name})
     return {'ok':True,'name':name}
+
+
+PASSKEY_ID=re.compile(r'^[A-Za-z0-9_-]{22,1366}$')
+PASSKEY_KEY=re.compile(r'^[A-Za-z0-9_-]{40,2048}$')
+MAX_PASSKEYS=10
+
+
+def passkey_add(data):
+    """Store a passkey the panel has verified. Adding a way in needs the account's password."""
+    file=auth_file(); root=json.loads(file.read_text())
+    account=str(data.get('account','') or '')
+    record=account_record(root,account)
+    if not _password_ok(record,data.get('password','')): raise ValueError('Incorrect password')
+    item=data.get('credential')
+    if not isinstance(item,dict): raise ValueError('Invalid passkey')
+    name=str(item.get('name','')).strip()[:40] or 'passkey'
+    if any(ord(x)<32 for x in name): raise ValueError('Invalid passkey name')
+    entry={'id':str(item.get('id','')),'key':str(item.get('key','')),'alg':item.get('alg'),'count':item.get('count',0),
+           'name':name,'created':datetime.now(timezone.utc).isoformat(timespec='seconds'),'used':''}
+    if not PASSKEY_ID.fullmatch(entry['id']) or not PASSKEY_KEY.fullmatch(entry['key']) or entry['alg'] not in (-7,-257) \
+            or not isinstance(entry['count'],int) or not 0<=entry['count']<2**32:
+        raise ValueError('Invalid passkey')
+    keys=record.setdefault('passkeys',[])
+    if not isinstance(keys,list): raise ValueError('auth.json is damaged')
+    for other in accounts_records(root):
+        if any(k.get('id')==entry['id'] for k in other.get('passkeys') or []): raise ValueError('This passkey is already registered')
+    if len(keys)>=MAX_PASSKEYS: raise ValueError('At most 10 passkeys per account')
+    keys.append(entry)
+    _save_auth(root,file,rotate=False)
+    audit({'event':'passkey_added','target':f'{account or primary_name(root)}: {name}'})
+    return {'ok':True}
+
+
+def accounts_records(root):
+    users=root.get('users') if isinstance(root.get('users'),dict) else {}
+    return [root]+[r for r in users.values() if isinstance(r,dict)]
+
+
+def passkey_delete(data):
+    file=auth_file(); root=json.loads(file.read_text())
+    account=str(data.get('account','') or '')
+    record=account_record(root,account)
+    keys=record.get('passkeys') or []
+    left=[k for k in keys if k.get('id')!=str(data.get('id',''))]
+    if len(left)==len(keys): raise ValueError('No such passkey')
+    gone=next(k for k in keys if k.get('id')==str(data.get('id','')))
+    record['passkeys']=left
+    _save_auth(root,file,rotate=False)
+    audit({'event':'passkey_deleted','target':f'{account or primary_name(root)}: {gone.get("name","")}'})
+    return {'ok':True}
+
+
+def passkey_used(data):
+    """After a sign-in: the new signature counter (a copied authenticator shows up as a counter going back)."""
+    file=auth_file(); root=json.loads(file.read_text())
+    record=account_record(root,str(data.get('account','') or ''))
+    count=data.get('count')
+    if not isinstance(count,int) or not 0<=count<2**32: raise ValueError('Invalid counter')
+    for key in record.get('passkeys') or []:
+        if key.get('id')==str(data.get('id','')):
+            if count and count<=int(key.get('count') or 0): raise ValueError('The signature counter went back')
+            key['count']=count; key['used']=datetime.now(timezone.utc).isoformat(timespec='seconds')
+            _save_auth(root,file,rotate=False)
+            return {'ok':True}
+    raise ValueError('No such passkey')
 
 
 SESSION_ID=re.compile(r'^[0-9a-f]{16}$')

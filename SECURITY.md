@@ -34,6 +34,12 @@ A valid panel session is not enough for changes that outlive it. The panel passw
 - Handshake debug writes to `/sys/kernel/debug/dynamic_debug/control` and schedules a systemd timer that switches it off after 15 minutes, so it cannot be left on by accident.
 - The support report removes keys (`[key]`), Telegram tokens (`[token]`), `PrivateKey`/`PresharedKey`/`PublicKey`/`HeaderProtectionKey`/`Endpoint` lines and public addresses (always fully masked). It is generated on request and not stored on the server.
 
+## Passkeys (0.25)
+
+- WebAuthn with user verification required (`uv`), resident keys, `none` attestation, ES256 and RS256. The panel checks the challenge (random 32 bytes, one use, 5 minutes, kept in the signed session cookie), the ceremony type, the origin (must equal the browser's `Origin`, HTTPS or `http://localhost`), the rpId hash (the host name the panel was opened with; IP addresses are refused), the user-presence and user-verification flags, the signature, and that the signature counter grows when the authenticator keeps one.
+- Verification uses only the Python standard library (`src/awg31webauthn.py`: a small CBOR reader, P-256 ECDSA and RSA PKCS#1 v1.5 over public data); no new dependency.
+- Public keys live in `auth.json` next to the account's password hash. Adding one needs the account's password, checked by the root helper; at most 10 per account; a credential ID belongs to one account only. Deleting needs the signed-in session. A passkey sign-in replaces the password and the TOTP code (it is already two factors: the device and its PIN or biometrics), is rate limited like the password sign-in and is audited as `login_success` with `(passkey)`.
+
 ## Accounts and sessions (0.24)
 
 - Accounts live in `auth.json` (root:awgpanel 640): the main account at the top, the others under `users`, each with its own scrypt hash, TOTP key and recovery codes. Only the root helper writes the file; creating, changing or deleting an account needs an administrator account and that account's password, checked by the helper. The main account cannot be demoted or deleted, nobody can demote or delete themselves.
