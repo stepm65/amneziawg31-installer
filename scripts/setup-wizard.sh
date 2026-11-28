@@ -3,11 +3,21 @@
 # Started by install.sh after the kernel module and tools are ready.
 set -Eeuo pipefail
 umask 077
-trap 'echo "[ERROR] installation failed at line $LINENO; see output above" >&2' ERR
 DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+UI=text                      # whiptail when there is a terminal and whiptail (see below)
+on_error() {
+    if [[ "$UI" == whiptail ]] && declare -F ui_failed >/dev/null && [[ -n "${WIZ_GAUGE_PID:-}" ]]; then ui_failed; fi
+    echo "[ERROR] installation failed at line $1; see output above" >&2
+}
+trap 'on_error $LINENO' ERR
 
 say() { printf '\n[%s] %s\n' 'AWG31' "$*"; }
-die() { echo "[ERROR] $*" >&2; exit 1; }
+die() {
+    if [[ "$UI" == whiptail && -n "${WIZ_GAUGE_PID:-}" ]]; then ui_failed; fi
+    echo "[ERROR] $*" >&2; exit 1
+}
+# step PERCENT KEY TEXT: a progress bar step with whiptail, a heading otherwise.
+step() { if [[ "$UI" == whiptail ]]; then ui_progress "$1" "$2"; else say "$3"; fi; }
 UNATTENDED="${AWG31_UNATTENDED:-0}"
 # Interactive: ask, Enter accepts the default. Unattended: AWG31_<NAME> or the default.
 ask() {
@@ -24,6 +34,8 @@ ask() {
 confirm() {
     local reply
     if [[ "$UNATTENDED" == 1 ]]; then return 0; fi
+    # With screens every question is asked before the installation starts.
+    if [[ "$UI" == whiptail ]]; then return 0; fi
     read -r -p "$1 " reply
     if [[ -z "$reply" && "${2:-}" == yes_default ]]; then return 0; fi
     [[ "${reply,,}" == y || "${reply,,}" == yes || "$reply" == 'д' || "$reply" == 'да' ]]
@@ -49,12 +61,29 @@ if [[ -z "$DEFAULT_IP" ]]; then
     DEFAULT_IP="$(ip -4 -o addr show dev "${DEFAULT_UPLINK:-lo}" scope global | awk 'NR==1 {split($4,a,"/"); print a[1]}')"
     say 'Публичный IPv4 не определён. Для локального теста будет предложен адрес интерфейса; для доступа из интернета укажите внешний IP/DNS и настройте проброс UDP.'
 fi
+# Screens (whiptail) when someone is at a terminal; plain questions with AWG31_UI=text or without whiptail.
+if [[ "$UNATTENDED" != 1 && "${AWG31_UI:-auto}" != text && -t 0 && -t 1 && "${TERM:-dumb}" != dumb ]]; then
+    if ! command -v whiptail >/dev/null 2>&1 && [[ "$AWG31_OS_FAMILY" == rpm ]]; then
+        dnf -q -y install newt >/dev/null 2>&1 || :          # whiptail lives in newt on Rocky
+    fi
+    if command -v whiptail >/dev/null 2>&1; then
+        UI=whiptail
+        source "$DIR/scripts/wizard-ui.sh"
+    fi
+fi
 # Random subnet: every installation gets its own 10.x.y.0/24 instead of the same 10.77.10.0/24.
 RANDOM_SUBNET="${AWG31_RANDOM_SUBNET:-0}"
-if [[ "$UNATTENDED" != 1 ]]; then
+if [[ "$UI" == whiptail ]]; then
+    SUBNET='10.77.10.0/24' PORT=51820 MTU=1280 ENDPOINT="$DEFAULT_IP" DNS=1.1.1.1 MODE=full UPLINK="${DEFAULT_UPLINK:-eth0}"
+    PANEL_PORT=8080 FIRST_CLIENT=test-client NGINX_MODE=none NGINX_HOST='' NGINX_HTTPS_PORT=443 NGINX_CERT='' NGINX_KEY=''
+    WIZ_PASSWORD='' WIZ_FIREWALL='' AWG31_OPEN_FIREWALL="${AWG31_OPEN_FIREWALL:-yes}"
+    if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q '^Status: active'; then WIZ_FIREWALL=ufw
+    elif command -v firewall-cmd >/dev/null 2>&1 && systemctl is-active --quiet firewalld 2>/dev/null; then WIZ_FIREWALL=firewalld; fi
+elif [[ "$UNATTENDED" != 1 ]]; then
     read -r -p 'Случайная VPN-подсеть 10.x.y.0/24 вместо 10.77.10.0/24? [y/N]: ' reply
     case "${reply,,}" in y|yes|д|да) RANDOM_SUBNET=1 ;; *) RANDOM_SUBNET=0 ;; esac
 fi
+if [[ "$UI" != whiptail ]]; then
 SUBNET_DEFAULT='10.77.10.0/24'
 [[ "$RANDOM_SUBNET" == 1 ]] && SUBNET_DEFAULT="$(awg31_random_subnet)"
 ask SUBNET 'VPN-подсеть (CIDR, /24…/29)' "$SUBNET_DEFAULT"
@@ -67,12 +96,14 @@ ask UPLINK 'Внешний интерфейс для выхода клиенто
 ask PANEL_PORT 'TCP-порт localhost для веб-панели' '8080'
 ask FIRST_CLIENT 'Имя первого клиента (skip = не создавать)' 'test-client'
 [[ "$FIRST_CLIENT" == 'skip' ]] && FIRST_CLIENT='' || true
+fi
 # Plain ASCII digits only. Python's int() also accepts '8_080', '+8080' and
 # full-width digits, which would pass validation and then break systemd/curl
 # after the VPN has already been created.
 need_number() {  # name value min max
     [[ "$2" =~ ^[0-9]{1,5}$ ]] && ((10#$2 >= $3 && 10#$2 <= $4)) || die "$1: нужно целое число $3…$4 (только цифры), получено '$2'"
 }
+if [[ "$UI" != whiptail ]]; then
 need_number 'UDP-порт AmneziaWG' "$PORT" 1 65535
 need_number 'MTU туннеля' "$MTU" 576 1420
 need_number 'TCP-порт веб-панели' "$PANEL_PORT" 1 65535
@@ -90,31 +121,9 @@ case "$NGINX_CHOICE" in
     *) die 'Нужно выбрать 0, 1 или 2' ;;
 esac
 NGINX_HOST='' NGINX_HTTPS_PORT=443 NGINX_CERT='' NGINX_KEY=''
-if [[ "$NGINX_MODE" != none ]]; then
-    ask NGINX_HOST 'Домен или IPv4 для HTTPS Nginx (без схемы и порта)' "$ENDPOINT"
-    ask NGINX_HTTPS_PORT 'Публичный HTTPS TCP-порт' '443'
-    if [[ "$NGINX_MODE" == existing ]]; then
-        ask NGINX_CERT 'Абсолютный путь к PEM сертификату (fullchain)' '/etc/letsencrypt/live/vpn.example.net/fullchain.pem'
-        ask NGINX_KEY 'Абсолютный путь к PEM приватному ключу' '/etc/letsencrypt/live/vpn.example.net/privkey.pem'
-    fi
-    # Pre-check input before the first package installation. A second check is
-    # done by setup-nginx.sh immediately before Nginx is changed.
-    source "$DIR/scripts/setup-nginx.sh"
-    proxy_validate_host "$NGINX_HOST"
-    proxy_validate_port "$NGINX_HTTPS_PORT"
-    [[ "$NGINX_HTTPS_PORT" != "$PANEL_PORT" ]] || die 'Порт Nginx совпадает с портом панели'
-    if [[ "$NGINX_MODE" == existing ]]; then
-        [[ -r "$NGINX_CERT" && -r "$NGINX_KEY" ]] || die 'Сертификат или ключ отсутствуют / недоступны'
-    fi
-    if [[ "$(getenforce 2>/dev/null || :)" == Enforcing ]] && [[ "$AWG31_OS_FAMILY" == rpm ]]; then
-        [[ "$NGINX_HTTPS_PORT" == 443 ]] || die 'Для Rocky с SELinux Enforcing пока поддерживается HTTPS-порт 443'
-        echo 'Rocky SELinux: Nginx потребуется право httpd_can_network_connect для reverse proxy.'
-        confirm 'Разрешить установщику включить SELinux boolean (без отключения SELinux)? [y/N]:' || die 'Выбор отменён: без разрешения SELinux Nginx proxy не заработает'
-        NGINX_SELINUX_ACK=yes
-    fi
 fi
-
 # Pure validation; aborts before apt installation or writing any system files.
+validate_values() {
 export AWG31_SUBNET="$SUBNET" AWG31_PORT="$PORT" AWG31_MTU="$MTU" AWG31_ENDPOINT="$ENDPOINT" AWG31_DNS="$DNS" AWG31_MODE="$MODE" AWG31_UPLINK="$UPLINK" AWG31_PANEL_PORT="$PANEL_PORT" AWG31_FIRST_CLIENT="$FIRST_CLIENT"
 python3 - "$DIR/src" <<'PY'
 import importlib.util,ipaddress,json,os,pathlib,subprocess,sys
@@ -142,6 +151,69 @@ if setting['mode']=='full':
     subprocess.run(['ip','link','show',setting['uplink']],check=True,capture_output=True)
 print('Параметры проверены: ',json.dumps(setting,ensure_ascii=False))
 PY
+}
+# Checks of everything chosen, before any package or file changes. The screens run them
+# in a subshell when Install is pressed and show what is wrong; plain questions stop here.
+check_nginx() {
+    source "$DIR/scripts/setup-nginx.sh"
+    proxy_validate_host "$NGINX_HOST"
+    proxy_validate_port "$NGINX_HTTPS_PORT"
+    [[ "$NGINX_HTTPS_PORT" != "$PANEL_PORT" ]] || die 'Порт Nginx совпадает с портом панели'
+    if [[ "$NGINX_MODE" == existing ]]; then
+        [[ -r "$NGINX_CERT" && -r "$NGINX_KEY" ]] || die 'Сертификат или ключ отсутствуют / недоступны'
+    fi
+    if [[ "$(getenforce 2>/dev/null || :)" == Enforcing && "$AWG31_OS_FAMILY" == rpm ]]; then
+        [[ "$NGINX_HTTPS_PORT" == 443 ]] || die 'Для Rocky с SELinux Enforcing пока поддерживается HTTPS-порт 443'
+    fi
+}
+wizard_check() {
+    need_number 'UDP-порт AmneziaWG' "$PORT" 1 65535
+    need_number 'MTU туннеля' "$MTU" 576 1420
+    need_number 'TCP-порт веб-панели' "$PANEL_PORT" 1 65535
+    [[ -z "$FIRST_CLIENT" || "$FIRST_CLIENT" =~ ^[A-Za-z0-9][A-Za-z0-9_-]{0,31}$ ]] || die 'Имя первого клиента: латиница, цифры, - и _, до 32 символов'
+    [[ "$NGINX_MODE" == none ]] || check_nginx
+    validate_values
+    if ss -H -ltn "sport = :$((10#$PANEL_PORT))" | grep -q .; then die 'TCP-порт панели уже занят'; fi
+    if ss -H -lun "sport = :$((10#$PORT))" | grep -q .; then die 'UDP-порт VPN уже занят'; fi
+}
+if [[ "$UI" == whiptail ]]; then
+    ui_language
+    ui_welcome
+    ui_configure
+    PORT=$((10#$PORT)); MTU=$((10#$MTU)); PANEL_PORT=$((10#$PANEL_PORT)); NGINX_HTTPS_PORT=$((10#$NGINX_HTTPS_PORT))
+    if [[ "$NGINX_MODE" != none && "$(getenforce 2>/dev/null || :)" == Enforcing && "$AWG31_OS_FAMILY" == rpm ]]; then
+        ui_yesno 'SELinux' "$(ui_t selinux_text)" || die 'Выбор отменён: без разрешения SELinux Nginx proxy не заработает'
+        NGINX_SELINUX_ACK=yes
+    fi
+    if [[ "$AWG31_OS_FAMILY" == rpm && "$MODE" == full ]] && systemctl is-active --quiet firewalld 2>/dev/null; then
+        ui_yesno 'firewalld' "$(ui_t firewalld_text)" || die 'Отменено. Правила firewalld не изменены.'
+    fi
+    export AWG31_OPEN_FIREWALL
+elif [[ "$NGINX_MODE" != none ]]; then
+    ask NGINX_HOST 'Домен или IPv4 для HTTPS Nginx (без схемы и порта)' "$ENDPOINT"
+    ask NGINX_HTTPS_PORT 'Публичный HTTPS TCP-порт' '443'
+    if [[ "$NGINX_MODE" == existing ]]; then
+        ask NGINX_CERT 'Абсолютный путь к PEM сертификату (fullchain)' '/etc/letsencrypt/live/vpn.example.net/fullchain.pem'
+        ask NGINX_KEY 'Абсолютный путь к PEM приватному ключу' '/etc/letsencrypt/live/vpn.example.net/privkey.pem'
+    fi
+    # Pre-check input before the first package installation. A second check is
+    # done by setup-nginx.sh immediately before Nginx is changed.
+    source "$DIR/scripts/setup-nginx.sh"
+    proxy_validate_host "$NGINX_HOST"
+    proxy_validate_port "$NGINX_HTTPS_PORT"
+    [[ "$NGINX_HTTPS_PORT" != "$PANEL_PORT" ]] || die 'Порт Nginx совпадает с портом панели'
+    if [[ "$NGINX_MODE" == existing ]]; then
+        [[ -r "$NGINX_CERT" && -r "$NGINX_KEY" ]] || die 'Сертификат или ключ отсутствуют / недоступны'
+    fi
+    if [[ "$(getenforce 2>/dev/null || :)" == Enforcing ]] && [[ "$AWG31_OS_FAMILY" == rpm ]]; then
+        [[ "$NGINX_HTTPS_PORT" == 443 ]] || die 'Для Rocky с SELinux Enforcing пока поддерживается HTTPS-порт 443'
+        echo 'Rocky SELinux: Nginx потребуется право httpd_can_network_connect для reverse proxy.'
+        confirm 'Разрешить установщику включить SELinux boolean (без отключения SELinux)? [y/N]:' || die 'Выбор отменён: без разрешения SELinux Nginx proxy не заработает'
+        NGINX_SELINUX_ACK=yes
+    fi
+fi
+
+validate_values
 
 if [[ "$AWG31_OS_FAMILY" == rpm ]] && systemctl is-active --quiet firewalld 2>/dev/null; then
     say 'ВНИМАНИЕ: Rocky Linux использует firewalld. Для Full Tunnel может понадобиться отдельная настройка policy/masquerading; наши правила iptables не гарантируют обход политики firewalld.'
@@ -154,9 +226,10 @@ if ss -H -lun "sport = :$PORT" | grep -q .; then die 'UDP-порт VPN уже з
 say 'Проверка завершена. AWG 3.1 устанавливается Quick Start отдельно (prepare-awg31.sh). PPA и Docker не требуются.'
 confirm 'Подтверждаете установку? [y/N]:' || die 'Установка отменена'
 
-say 'Проверяем зависимости для выбранной системы'
+if [[ "$UI" == whiptail ]]; then ui_progress_start; fi
+step 5 deps 'Проверяем зависимости для выбранной системы'
 awg31_install_packages
-say 'Проверяем заранее установленный модуль и инструменты AmneziaWG 3.1'
+step 25 module 'Проверяем заранее установленный модуль и инструменты AmneziaWG 3.1'
 command -v dkms >/dev/null || die 'Отсутствует DKMS'
 command -v awg >/dev/null || die 'Отсутствует awg (требуется amneziawg-tools 3.1)'
 command -v awg-quick >/dev/null || die 'Отсутствует awg-quick (требуется amneziawg-tools 3.1)'
@@ -173,7 +246,7 @@ if ! systemctl list-unit-files 'awg-quick@.service' --no-legend | grep -q 'awg-q
     die 'Отсутствует systemd unit awg-quick@.service'
 fi
 
-say 'Настройка файлов и контроллера'
+step 32 files 'Настройка файлов и контроллера'
 install -d -o root -g root -m 700 /etc/awg31-panel /var/lib/awg31-panel /etc/amnezia/amneziawg
 install -d -o root -g root -m 755 /opt/awg31-panel
 install -o root -g root -m 755 "$DIR/src/awg31ctl" /usr/local/sbin/awg31ctl
@@ -198,7 +271,7 @@ install -o root -g root -m 644 "$DIR"/src/fonts/* /opt/awg31-panel/fonts/
 install -o root -g root -m 644 "$DIR/src/requirements.txt" /opt/awg31-panel/requirements.txt
 install -o root -g root -m 644 "$DIR/VERSION" /opt/awg31-panel/VERSION
 
-say 'Настройка Python-окружения'
+step 38 venv 'Настройка Python-окружения'
 python3 -m venv /opt/awg31-panel/.venv
 /opt/awg31-panel/.venv/bin/pip install --disable-pip-version-check -r /opt/awg31-panel/requirements.txt
 
@@ -211,10 +284,10 @@ if [[ "$MODE" == 'full' ]]; then
     [[ "$(sysctl -n net.ipv4.ip_forward)" == '1' ]] || die 'IPv4 forwarding не включился'
 fi
 
-say 'Сетевые настройки ядра для VPN: rp_filter, redirects, SYN cookies'
+step 62 net 'Сетевые настройки ядра для VPN: rp_filter, redirects, SYN cookies'
 awg31_network_sysctl
 
-say 'Инициализация профиля AWG 3.1 и запуск awg0'
+step 66 vpn 'Инициализация профиля AWG 3.1 и запуск awg0'
 # Fresh random S/H/Jc values for the primary server, exactly like servers
 # created later from the panel. Never ship the static WireGuard-like defaults.
 python3 - <<'PY' | AWG31_GENERATE_PARAMS=1 /usr/local/sbin/awg31ctl init
@@ -229,7 +302,7 @@ if [[ -n "$FIRST_CLIENT" ]]; then
     say "Создан первый клиент: $FIRST_CLIENT (конфигурация доступна в панели)"
 fi
 
-say 'Создание системного пользователя и администратора панели'
+step 74 user 'Создание системного пользователя и администратора панели'
 if ! id awgpanel >/dev/null 2>&1; then
     useradd --system --no-create-home --home /nonexistent --shell /usr/sbin/nologin awgpanel
 fi
@@ -247,7 +320,11 @@ generate_password() {
     (umask 077; printf '%s\n' "$PANEL_PASSWORD" > "$PASSWORD_FILE")
     chmod 600 "$PASSWORD_FILE"
 }
-if [[ "$UNATTENDED" == 1 ]]; then
+if [[ "$UI" == whiptail ]]; then
+    # Chosen on the settings screen: empty means a generated one.
+    if [[ -n "$WIZ_PASSWORD" ]]; then PANEL_PASSWORD="$WIZ_PASSWORD"; else generate_password; fi
+    unset WIZ_PASSWORD
+elif [[ "$UNATTENDED" == 1 ]]; then
     if [[ -n "${AWG31_PASSWORD_FILE:-}" ]]; then
         [[ -r "$AWG31_PASSWORD_FILE" ]] || die "AWG31_PASSWORD_FILE не читается: $AWG31_PASSWORD_FILE"
         IFS= read -r PANEL_PASSWORD < "$AWG31_PASSWORD_FILE" || :
@@ -317,9 +394,10 @@ systemctl daemon-reload
 systemctl enable awg31-panel.service
 # restart, not start: a panel left running by an earlier attempt must pick up this unit.
 systemctl restart awg31-panel.service
-say 'Ждём запуска веб-панели'
+step 82 panel 'Ждём запуска веб-панели'
 awg31_wait_panel "$PANEL_PORT" || die 'Панель не ответила на /health. VPN awg0 создан и работает; повторный запуск команды установки завершит настройку.'
 
+step 88 timers 'Службы, расписания и меню'
 # Keep optional Nginx wizard installed even if user skips it initially.
 install -d -o root -g root -m 755 /usr/local/libexec/awg31/scripts
 install -o root -g root -m 755 "$DIR/scripts/setup-nginx.sh" /usr/local/libexec/awg31/scripts/setup-nginx.sh
@@ -349,7 +427,7 @@ systemctl enable --now awg31-sampler.timer awg31-kernel-check.timer
 # separately using `sudo awg31 nginx`.
 NGINX_RESULT=skipped
 if [[ "$NGINX_MODE" != none ]]; then
-    say 'Устанавливаем/настраиваем Nginx с HTTPS для веб-панели'
+    step 92 nginx 'Устанавливаем/настраиваем Nginx с HTTPS для веб-панели'
     if AWG31_PROXY_MODE="$NGINX_MODE" \
        AWG31_PROXY_HOST="$NGINX_HOST" \
        AWG31_PROXY_HTTPS_PORT="$NGINX_HTTPS_PORT" \
@@ -358,7 +436,7 @@ if [[ "$NGINX_MODE" != none ]]; then
        AWG31_PROXY_KEY="$NGINX_KEY" \
        AWG31_PROXY_SELINUX_ACK="${NGINX_SELINUX_ACK:-no}" \
        AWG31_PROXY_ALLOW="${AWG31_NGINX_ALLOW:-}" \
-       AWG31_PROXY_SKIP_FIREWALL_PROMPT="$([[ "$UNATTENDED" == 1 ]] && echo yes || echo no)" \
+       AWG31_PROXY_SKIP_FIREWALL_PROMPT="$([[ "$UNATTENDED" == 1 || "$UI" == whiptail ]] && echo yes || echo no)" \
        bash "$DIR/scripts/setup-nginx.sh"; then
         NGINX_RESULT=ready
     else
@@ -371,7 +449,7 @@ fi
 # everybody else runs `sudo awg31 telegram` whenever they want it.
 TELEGRAM_RESULT=skipped
 if [[ -n "${AWG31_TELEGRAM_TOKEN:-}" && -n "${AWG31_TELEGRAM_ADMINS:-}" ]]; then
-    say 'Подключаем Telegram-бота'
+    step 95 telegram 'Подключаем Telegram-бота'
     if bash /usr/local/libexec/awg31/scripts/setup-telegram.sh; then
         TELEGRAM_RESULT=ready
     else
@@ -395,12 +473,17 @@ open_vpn_port() {
     fi && FIREWALL_NOTE="UDP $PORT открыт в $tool. Проверьте также firewall провайдера." ||
         FIREWALL_NOTE="ВНИМАНИЕ: не удалось открыть UDP $PORT в $tool — откройте порт вручную."
 }
+step 97 firewall 'Файрвол'
 if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q '^Status: active'; then
     open_vpn_port ufw
 elif command -v firewall-cmd >/dev/null 2>&1 && systemctl is-active --quiet firewalld 2>/dev/null; then
     open_vpn_port firewalld
 fi
 
+if [[ "$UI" == whiptail ]]; then
+    ui_progress 100 done
+    ui_progress_stop
+fi
 say 'Установка завершена'
 LINE='────────────────────────────────────────────────────────────'
 echo "$LINE"

@@ -4,7 +4,7 @@
 
 An installer and a web console for running **AmneziaWG 3.1** on your own server: a kernel module built with DKMS, an interactive setup wizard and a bilingual (EN/RU) panel for servers, clients, traffic and backups. No Docker, no control plane in the cloud, nothing loaded from a CDN.
 
-Version **0.21.0** · MIT licence · not affiliated with the AmneziaVPN developers.
+Version **0.22.0** · MIT licence · not affiliated with the AmneziaVPN developers.
 
 ![Infrastructure overview](docs/screenshots/en-dashboard.png)
 
@@ -64,7 +64,9 @@ bash <(curl -Ls https://raw.githubusercontent.com/stepm65/amneziawg31-installer/
 
 Without a root shell the same installer runs as `curl -Ls https://raw.githubusercontent.com/stepm65/amneziawg31-installer/main/install.sh | sudo bash` (add `-s -- v0.9.6` for a version).
 
-The installer builds the kernel module and tools, then starts a short wizard. Every question has a default, so Enter is enough:
+The installer builds the kernel module and tools, then starts the wizard. In a terminal it shows screens (whiptail): a language choice (Russian or English), a welcome with the detected system, interface and address, then **one screen with all the settings** — arrows pick an item, Enter opens it, and the defaults suit most servers. The subnet (standard, random or your own), DNS (Cloudflare, Google, Quad9, AdGuard or your own), traffic mode, uplink interface and HTTPS option are chosen from lists. Nothing changes until you press **Install**: the wizard then checks every value (ports, subnet overlaps with routes, certificates) and shows what is wrong without leaving the screen. A progress bar follows, with the full output in `/var/log/awg31-install.log`; on an error the wizard shows its last lines.
+
+Without whiptail (on Rocky Linux it is installed from the `newt` package by itself), without a terminal or with `AWG31_UI=text`, the wizard asks the same questions as plain text; every question has a default, so Enter is enough:
 
 1. VPN subnet (`/24`…`/29`, default `10.77.10.0/24`), UDP port, MTU.
 2. Public IPv4 or DNS name of the server, DNS for clients.
