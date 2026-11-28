@@ -67,6 +67,51 @@ proxy_subscription_location() {
     }
 EOF
 }
+# Client lists from other panels (x-ui.db, wg-easy.db) are bigger than the 1 MiB the
+# rest of the panel needs; only this one address takes up to 64 MiB, behind the same allow list.
+proxy_import_location() {
+    cat <<EOF
+    location = /maintenance/import {
+        client_max_body_size 64m;
+        proxy_pass http://127.0.0.1:${1};
+        proxy_http_version 1.1;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_read_timeout 120s;
+    }
+EOF
+}
+# An older site gets the import location before the subscription one (with a backup, if nginx -t accepts it).
+proxy_add_import() {
+    local conf="${AWG31_NGINX_SITE:-/etc/nginx/conf.d/awg31-panel.conf}" port backup
+    [[ -f "$conf" ]] || return 0
+    grep -q '^# AWG31 managed virtual host' "$conf" || return 0
+    grep -q 'location = /maintenance/import' "$conf" && return 0
+    port="$(sed -nE 's#^[[:space:]]*proxy_pass http://127\.0\.0\.1:([0-9]+);.*#\1#p' "$conf" | head -n1)"
+    [[ "$port" =~ ^[0-9]+$ ]] || { proxy_log 'Cannot find the panel port in the Nginx site; import location not added'; return 0; }
+    backup="$conf.awg31-before-import"
+    cp -p -- "$conf" "$backup"
+    if python3 - "$conf" "$(proxy_import_location "$port")" <<'PY' && { [[ -n "${AWG31_NGINX_SITE:-}" ]] || nginx -t >/dev/null 2>&1; }
+import sys
+path, block = sys.argv[1], sys.argv[2]
+text = open(path).read()
+marker = '    location /sub/ {' if '    location /sub/ {' in text else '    location / {'
+if marker not in text:
+    sys.exit(1)
+text = text.replace(marker, block + '\n\n' + marker, 1)
+open(path, 'w').write(text)
+PY
+    then
+        [[ -n "${AWG31_NGINX_SITE:-}" ]] || systemctl reload nginx 2>/dev/null || :
+        rm -f -- "$backup"
+        proxy_log 'Nginx: added the import location for client lists from other panels'
+    else
+        cp -p -- "$backup" "$conf"; rm -f -- "$backup"
+        proxy_log 'Nginx: could not add the import location; the site is unchanged'
+    fi
+}
 # An Nginx site made by an older version gets the subscription location added
 # (once, with a backup, and only if nginx -t accepts the result).
 proxy_add_subscription() {
@@ -137,6 +182,8 @@ ${access}
         proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto https;
     }
+
+$(proxy_import_location "$panel_port")
 
 $(proxy_subscription_location "$panel_port")
 
@@ -215,7 +262,7 @@ proxy_interactive() {
 proxy_main() {
     local mode host https_port panel_port cert key cert_dir conf occupied site_created=0 generated=0 changed_ipv6_vendor=0
     local selinux_changed=0
-    if [[ "${1:-}" == --add-subscription ]]; then proxy_add_subscription; return 0; fi
+    if [[ "${1:-}" == --add-subscription ]]; then proxy_add_subscription; proxy_add_import; return 0; fi
     if [[ "${1:-}" == --interactive ]]; then proxy_interactive; elif [[ $# -ne 0 ]]; then proxy_die 'Usage: sudo bash scripts/setup-nginx.sh [--interactive]'; fi
     mode="${AWG31_PROXY_MODE:-none}"
     case "$mode" in none|self-signed|existing) ;; *) proxy_die 'Invalid Nginx mode';; esac

@@ -913,7 +913,8 @@ def apply(cfg, con, initial=False, restart=False):
 
 
 def read_json():
-    raw = sys.stdin.read(32768)
+    # An import carries up to 500 client records; everything else fits in 32 KiB.
+    raw = sys.stdin.read(1 << 20 if sys.argv[1:2] == ['import-batch'] else 32768)
     if not raw.strip(): raise ValueError('Пустой JSON запрос')
     data = json.loads(raw)
     if not isinstance(data, dict): raise ValueError('Нужен JSON объект')
@@ -1903,6 +1904,89 @@ def client_import_row(con):
     return {'ok': True, 'name': name, 'ip': address, 'interface': IFACE}
 
 
+KEY_RE = re.compile(r'^[A-Za-z0-9+/]{43}=$')
+IMPORT_MAX = 500
+
+
+def import_key(value):
+    text = str(value or '').strip()
+    if not KEY_RE.fullmatch(text): return ''
+    try: raw = base64.b64decode(text, validate=True)
+    except ValueError: return ''
+    return text if len(raw) == 32 and any(raw) else ''
+
+
+def import_batch(con):
+    """Clients brought from another panel: one transaction, one peer sync. Not in any sudo list:
+    awg31mgr clients-import calls it after owners are settled. Each record is checked again here."""
+    data = read_json()
+    items = data.get('clients')
+    if not isinstance(items, list) or not 1 <= len(items) <= IMPORT_MAX:
+        raise ValueError(f'Импорт: от 1 до {IMPORT_MAX} клиентов')
+    keep_keys = data.get('keep_keys') is not False
+    keep_addresses = data.get('keep_addresses') is not False
+    cfg = get_settings(con)
+    net = parse_network(cfg['subnet'])
+    rows = peer_rows(con)
+    names = {r['name'].lower() for r in rows}
+    keys = {r['public_key'] for r in rows}
+    used = {r['ip'] for r in rows} | {cfg['server_ip']}
+    free = [str(h) for h in list(net.hosts())[1:]]
+    created, skipped = [], {}
+    now = datetime.now(timezone.utc)
+    for item in items:
+        if not isinstance(item, dict): raise ValueError('Импорт: неверная запись')
+        wanted = str(item.get('name', ''))
+        if not NAME_RE.fullmatch(wanted): raise ValueError(f'Импорт: неверное имя {wanted[:40]!r}')
+        name, n = wanted, 2
+        while name.lower() in names:
+            suffix = f'-{n}'; name = wanted[:32 - len(suffix)] + suffix; n += 1
+        private = import_key(item.get('private_key')) if keep_keys else ''
+        if private:
+            public = pubkey(private)
+            given = import_key(item.get('public_key'))
+            if given and given != public:
+                skipped[wanted] = 'key_mismatch'; continue
+            psk = import_key(item.get('psk')) or pskgen()
+        else:
+            private = keygen(); public = pubkey(private); psk = pskgen()
+        if public in keys:
+            skipped[wanted] = 'key_exists'; continue
+        address = ''
+        if keep_addresses and item.get('address'):
+            try:
+                wanted_ip = ipaddress.ip_address(str(item['address']))
+                if wanted_ip in net and str(wanted_ip) not in used and str(wanted_ip) in free: address = str(wanted_ip)
+            except ValueError:
+                pass
+        address = address or next((h for h in free if h not in used), '')
+        if not address:
+            skipped[wanted] = 'no_address'; continue
+        try:
+            policy = validate_policy({k: item.get(k, '') for k in ('comment', 'expires_at', 'telegram_id', 'owner_id', 'quota_period', 'group')}
+                                     | {'traffic_limit_bytes': item.get('traffic_limit_bytes', 0) or 0,
+                                        'owner_export': False})
+        except ValueError:
+            skipped[wanted] = 'invalid'; continue
+        enabled, reason = (1, '') if item.get('enabled', True) is not False else (0, 'manual')
+        if enabled and policy['expires_at'] and datetime.fromisoformat(policy['expires_at']) <= now:
+            enabled, reason = 0, 'expired'
+        con.execute('''INSERT INTO clients
+            (name, ip, private_key, public_key, psk, enabled, disabled_reason, created_at, routed_subnets, comment, expires_at,
+             traffic_limit_bytes, telegram_id, owner_export, quota_period, quota_month, group_name, owner_id)
+             VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
+            (name, address, private, public, psk, enabled, reason, now.isoformat(), '', policy['comment'], policy['expires_at'],
+             policy['traffic_limit_bytes'], policy['telegram_id'], 0, policy['quota_period'],
+             now.strftime('%Y-%m') if policy['quota_period'] else '', policy['group_name'], policy['owner_id']))
+        names.add(name.lower()); keys.add(public); used.add(address)
+        created.append({'name': name, 'source': wanted, 'ip': address, 'kept_key': bool(keep_keys and import_key(item.get('private_key'))),
+                        'enabled': bool(enabled)})
+    owner_enforce(con, data.get('owners_blocked'))
+    if created: apply(cfg, con)
+    con.commit()
+    return {'ok': True, 'created': created, 'skipped': skipped, 'interface': IFACE}
+
+
 def client_network_update(con):
     data = read_json()
     name = str(data.get('name', ''))
@@ -2102,7 +2186,7 @@ def main():
     if len(sys.argv) != 2 or sys.argv[1] not in ('init','status','list','add','download','enable','disable','delete','delete-batch','client-network','client-extra','client-policy','settings','sample','history','add-batch','sessions',
                                                     'client-rekey','client-batch','client-invite','invite-redeem',
                                                     'sub-token','sub-fetch','rotate','rotate-schedule','mask-apply','probe',
-                                                    'client-export','client-import','watch-set','owner-sync'):
+                                                    'client-export','client-import','watch-set','owner-sync','import-batch'):
         raise ValueError('Неподдерживаемая команда')
     LOCK.parent.mkdir(parents=True, exist_ok=True)
     if sys.argv[1] == 'probe':
@@ -2146,6 +2230,7 @@ def main():
                     blocked = request.get('owners_blocked')
                     result = sample_usage(con, owners_blocked=blocked if isinstance(blocked, dict) else None)
                 elif op == 'owner-sync': result = owner_sync(con)
+                elif op == 'import-batch': result = import_batch(con)
                 elif op == 'history': result = traffic_history(con,read_json())
                 elif op == 'sessions': result = client_sessions(con)
                 elif op == 'settings': result = settings_update(con)

@@ -40,7 +40,7 @@ MGR = os.environ.get('AWG31_MGR_PATH', '/usr/local/sbin/awg31mgr')
 CTL = os.environ.get('AWG31_CTL_PATH', '/usr/local/sbin/awg31ctl')
 SUDOERS = [Path(p) for p in os.environ.get('AWG31_HELPER_SUDOERS',
                                            '/etc/sudoers.d/awg31-panel:/etc/sudoers.d/awg31-bot').split(':') if p]
-MAX_REQUEST = 64 * 1024            # awg31mgr itself reads at most 32 KiB of stdin
+MAX_REQUEST = 1536 * 1024          # awg31mgr reads 32 KiB of stdin, 1 MiB for an import of clients
 REQUEST_SECONDS = 150              # hard limit for one request, whatever it does
 CTL_SECONDS = 75                   # the same limit awg31mgr gives awg31ctl
 RULE = re.compile(r'([a-z_][a-z0-9_-]{0,31}) ALL=\(root\) NOPASSWD: (.+)')

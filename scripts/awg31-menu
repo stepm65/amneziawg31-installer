@@ -257,6 +257,53 @@ print(json.dumps({"type": "sftp", "host": e["H"], "port": e["O"], "user": e["U"]
       *) echo 'Usage: awg31 backup-remote [status|s3|sftp|test|off]' >&2; exit 2 ;;
     esac
     ;;
+  import)
+    # Clients from wg-easy, 3x-ui, AmneziaVPN or a WireGuard .conf, as in the panel (Maintenance -> Import).
+    shift
+    server=awg0; keys=true; yes=false; files=()
+    while [[ $# -gt 0 ]]; do
+      case "$1" in
+        --server) server="${2:-}"; shift 2 ;;
+        --new-keys) keys=false; shift ;;
+        --yes) yes=true; shift ;;
+        -*) echo "Unknown option $1" >&2; exit 2 ;;
+        *) files+=("$1"); shift ;;
+      esac
+    done
+    [[ ${#files[@]} -gt 0 && "$server" =~ ^awg[0-9]{1,2}$ ]] || {
+      echo 'Usage: awg31 import [--server awgN] [--new-keys] [--yes] FILE...' >&2; exit 2; }
+    payload="$(python3 -I - "$server" "$keys" "${files[@]}" <<'PY'
+import json, sys
+sys.path.insert(0, '/opt/awg31-panel')
+import awg31import
+server, keys, names = sys.argv[1], sys.argv[2] == 'true', sys.argv[3:]
+files = []
+for name in names:
+    with open(name, 'rb') as stream:
+        files.append((name, stream.read(awg31import.MAX_FILE + 1)))
+try:
+    found = awg31import.parse(files)
+except ValueError as exc:
+    sys.exit(f'Cannot import: {exc}')
+print(f"{awg31import.SOURCES[found['source']]}: {len(found['clients'])} clients, {len(found['owners'])} owners", file=sys.stderr)
+for c in found['clients']:
+    print(f"  {c['name']:<32} {c['address'] or '-':<15} {'own key' if c['private_key'] and keys else 'new key'}"
+          f"{'' if c['enabled'] else ', off'}{', owner ' + c['owner'] if c['owner'] else ''}", file=sys.stderr)
+for w in found['warnings']:
+    print(f'  note: {w}', file=sys.stderr)
+print(json.dumps({'interface': server, 'source': found['source'], 'clients': found['clients'], 'owners': found['owners'],
+                  'keep_keys': keys}))
+PY
+)" || exit 1
+    if [[ "$yes" != true ]]; then
+      read -r -p "Import into $server? Type yes: " answer
+      [[ "$answer" == yes ]] || { echo 'Cancelled'; exit 1; }
+    fi
+    printf '%s' "$payload" | /usr/local/sbin/awg31mgr clients-import | python3 -c 'import json,sys
+r = json.load(sys.stdin)
+print("Imported %d clients, owners created: %d" % (len(r["created"]), r.get("owners_created", 0)))
+for name, why in (r.get("skipped") or {}).items(): print("  skipped %s: %s" % (name, why))'
+    ;;
   doctor) bash /usr/local/libexec/awg31/scripts/kernel-check.sh; /usr/local/sbin/awg31mgr diagnostics ;;
 
   *)
@@ -270,6 +317,7 @@ AmneziaWG 3.1 local management
   sudo awg31 backup-delete NAME  Delete an archive after confirmation
   sudo awg31 restore-check NAME  Verify checksums and SQLite of a backup
   sudo awg31 restore NAME    Restore after confirmation (VPN downtime)
+  sudo awg31 import [--server awgN] [--new-keys] FILE...  Bring clients over from wg-easy, 3x-ui, AmneziaVPN or a .conf
   sudo awg31 doctor          Check kernel/DKMS and interface
   sudo awg31 update [VER]    Update panel and controller (latest release, vX.Y.Z or dev-latest)
   sudo awg31 rollback [list|NAME]  Return to the version before the last update

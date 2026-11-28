@@ -1473,3 +1473,14 @@ tr:hover .extra-dot {box-shadow:0 0 0 2px #1e2228}
 .owner-delete {margin-top:22px;padding-top:16px;border-top:1px solid var(--md-sys-color-outline-variant,#30343a)}
 .new-owner {margin-top:16px}
 @media (max-width:760px) {.owner-numbers {grid-template-columns:repeat(2,minmax(0,1fr))}}
+
+/* 0.21: import */
+.import-sources {display:grid;gap:8px;margin:4px 0 20px;padding-left:0;list-style:none}
+.import-sources li {display:grid;grid-template-columns:minmax(150px,220px) 1fr;gap:12px;align-items:baseline}
+.import-sources li span {color:var(--md-sys-color-on-surface-variant,#b9bec6);overflow-wrap:anywhere;font-family:var(--mono,ui-monospace,monospace);font-size:13px}
+.import-preview td.client-name small {display:block;margin-top:2px}
+.import-preview .import-options {margin-top:20px}
+.import-preview .import-owners ul,.import-list {margin:8px 0 16px}
+.import-list li {margin:4px 0}
+.import-list .mono {margin-left:8px}
+@media (max-width:760px) {.import-sources li {grid-template-columns:1fr;gap:2px}}

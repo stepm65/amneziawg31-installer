@@ -4,7 +4,7 @@
 
 An installer and a web console for running **AmneziaWG 3.1** on your own server: a kernel module built with DKMS, an interactive setup wizard and a bilingual (EN/RU) panel for servers, clients, traffic and backups. No Docker, no control plane in the cloud, nothing loaded from a CDN.
 
-Version **0.20.0** · MIT licence · not affiliated with the AmneziaVPN developers.
+Version **0.21.0** · MIT licence · not affiliated with the AmneziaVPN developers.
 
 ![Infrastructure overview](docs/screenshots/en-dashboard.png)
 
@@ -27,6 +27,7 @@ Version **0.20.0** · MIT licence · not affiliated with the AmneziaVPN develope
 - **Router subscriptions:** a permanent HTTPS link from which a router or container fetches its current `.conf` by itself (with `ETag` and a 304 answer when nothing changed), plus a ready script for MikroTik, OpenWrt, Docker and Linux.
 - **When the port gets blocked:** masking profiles (port plus a QUIC, STUN, DTLS or DNS shaped `I1`), a new port, obfuscation and server key in one press or on a schedule, and a 15-second incoming packet check in the panel and the bot.
 - **Owners:** one person, several devices on any server, with shared traffic (in all or a month), a shared term and a device maximum; the owner adds a device in the Telegram bot by themselves when allowed.
+- **Client import** from wg-easy, 3x-ui, AmneziaVPN and any WireGuard configuration — in the panel with a preview, or with `sudo awg31 import`.
 - **Server domain:** in the server settings you can enter a domain (e.g. `vpn.example.com`) and switch “Server address in client configurations” to “Domain”: client `Endpoint` lines, the `vpn://` link, the QR code and the subscription then carry the domain instead of the IP. It is optional, the IP stays the default. With a domain the server’s IP can change without handing out configurations again: fix the A record. After saving, the panel checks that the domain resolves to the IP in the Endpoint field and warns when it does not; the bot sends owners their new configurations.
 - **Server networking:** TCP fitted to the tunnel MTU on the server (MSS clamping) and protective kernel settings (`rp_filter`, no ICMP redirects, SYN cookies).
 
@@ -227,6 +228,24 @@ The owner is picked in the new-client form, on the client page or for the select
 When the owner has a device maximum and **The owner may add devices in the bot** is on, the bot shows them **➕ Add a device**: they pick a type (phone, computer, tablet, router, TV) and get the `.conf` and QR code at once. The device is created on the server chosen for the owner, and the administrators are told. The owner also sees the shared balance in the bot: “Shared traffic: 38 GiB of 100 GiB (a month)”.
 
 Owners are kept in `/var/lib/awg31-panel/owners.sqlite3` and are part of the backups.
+
+### Importing clients from other panels
+
+**Maintenance → Import clients**: pick the files and the server and press **Read and show** — the panel lists the clients it found without changing anything; untick those you do not want and press **Import**.
+
+| From | Files |
+|---|---|
+| wg-easy 15 | `/etc/wireguard/wg-easy.db` |
+| wg-easy 14 and older | `/etc/wireguard/wg0.json` |
+| 3x-ui | `/etc/x-ui/x-ui.db` — WireGuard and AmneziaWG inbounds, clients and their devices |
+| AmneziaVPN (self-hosted) | from the `amnezia-awg` container: `/opt/amnezia/awg/awg0.conf` (or `wg0.conf`) and `/opt/amnezia/awg/clientsTable` — both together |
+| any WireGuard server | `wg0.conf` with `[Peer]` blocks; the name comes from the comment above each peer (`# Client: …`, `### Client …`) |
+
+The name (transliterated to Latin: «Мама» → `Mama`), keys and PSK when the file has them, the address when it is inside the server subnet and free, the enabled state, term, traffic limit, comment, group and Telegram ID come over. A 3x-ui client with several devices becomes an **owner** with shared traffic, term and device maximum, and the devices become its clients. Clients with a Telegram ID get an owner too. A key already on the server is not imported a second time.
+
+AmneziaVPN keeps the private keys on the devices only, so its clients get new keys. But even with their keys kept, every imported client needs a **new configuration**: the AWG 3.1 server has its own key and obfuscation. Hand it out as a file, QR code, subscription or through the bot.
+
+From the console, e.g. for a big file: `sudo awg31 import --server awg0 x-ui.db` (`--new-keys` issues new keys, `--yes` skips the question). Through Nginx, files up to 64 MiB are accepted (at the import address only); they are read in memory and not kept.
 
 ### Moving a client to another server
 

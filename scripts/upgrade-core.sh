@@ -14,12 +14,12 @@ SUD=/etc/sudoers.d/awg31-panel
 # The installed application and controller are checked below.
 [[ -f "$APP/web.py" && -x "$APP/.venv/bin/python3" && -f "$CTR" ]] || die 'Existing panel/controller missing'
 id awgpanel >/dev/null 2>&1 || die 'awgpanel user not found'
-for f in web.py amnezialink.py quicinitial.py awg31client.py awg31helper panel.css md3.css panel.js awg31ctl awg31mgr awg31admin.py awg31bot.py; do
+for f in web.py amnezialink.py quicinitial.py awg31import.py awg31client.py awg31helper panel.css md3.css panel.js awg31ctl awg31mgr awg31admin.py awg31bot.py; do
     [[ -f "$DIR/src/$f" ]] || die "Missing src/$f"
 done
 [[ -f "$DIR/scripts/sudoers.sh" ]] || die 'Missing scripts/sudoers.sh'
 compgen -G "$DIR/src/fonts/*.woff2" >/dev/null || die 'Missing src/fonts/*.woff2'
-"$APP/.venv/bin/python3" -m py_compile "$DIR/src/web.py" "$DIR/src/amnezialink.py" "$DIR/src/quicinitial.py"
+"$APP/.venv/bin/python3" -m py_compile "$DIR/src/web.py" "$DIR/src/amnezialink.py" "$DIR/src/quicinitial.py" "$DIR/src/awg31import.py"
 python3 -m py_compile "$DIR/src/awg31ctl" "$DIR/src/awg31mgr" "$DIR/src/awg31admin.py" "$DIR/src/awg31helper" "$DIR/src/awg31client.py"
 # A snapshot of the whole installed program (and, as recovery material, the
 # databases and server configurations): a failed update returns to it at once,
@@ -52,6 +52,7 @@ awg31_install_sudoers "$SUD" || die 'Cannot install sudoers allowlist'
 say 'Updating web UI files'
 install -o root -g root -m 644 "$DIR/src/amnezialink.py" "$APP/amnezialink.py"
 install -o root -g root -m 644 "$DIR/src/quicinitial.py" "$APP/quicinitial.py"
+install -o root -g root -m 644 "$DIR/src/awg31import.py" "$APP/awg31import.py"
 install -o root -g root -m 644 "$DIR/src/awg31bot.py" "$APP"/awg31bot.py
 install -o root -g root -m 644 "$DIR/src/awg31client.py" "$APP/awg31client.py"
 install -o root -g root -m 644 "$DIR/src/web.py" "$APP/web.py"

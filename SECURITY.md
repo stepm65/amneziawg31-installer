@@ -34,6 +34,11 @@ A valid panel session is not enough for changes that outlive it. The panel passw
 - Handshake debug writes to `/sys/kernel/debug/dynamic_debug/control` and schedules a systemd timer that switches it off after 15 minutes, so it cannot be left on by accident.
 - The support report removes keys (`[key]`), Telegram tokens (`[token]`), `PrivateKey`/`PresharedKey`/`PublicKey`/`HeaderProtectionKey`/`Endpoint` lines and public addresses (always fully masked). It is generated on request and not stored on the server.
 
+## Importing clients (0.21)
+
+- Uploaded files are parsed by the unprivileged panel (`awg31import.py`), from memory and a private temporary copy opened read-only; nothing is kept. The root side gets only the extracted records and checks every field again (names, keys and their pairing, addresses inside the subnet, terms, limits, Telegram IDs); `import-batch`, the controller step, is in no sudo list, and the panel may run `clients-import` while the bot may not.
+- Nginx accepts up to 64 MiB only at `/maintenance/import`, behind the same address allow list and session; the rest of the panel keeps the 1 MiB limit. The preview page, which carries the parsed keys back to the browser, is sent with `Cache-Control: no-store`.
+
 ## Owners with shared limits (0.20)
 
 - Owners live in `/var/lib/awg31-panel/owners.sqlite3` (root, mode 0600). Clients keep only an owner ID; the owner's Telegram ID is mirrored onto each device, and changing it switches off the configuration export of every device (a permission never passes to another person silently).

@@ -318,6 +318,23 @@ panel_mgr owners </dev/null | python3 -c 'import json,sys; o=json.load(sys.stdin
 echo "{\"id\":\"$owner\"}" | panel_mgr owner-delete >/dev/null
 "$MGR" list <<<'{"interface":"awg0"}' | python3 -c 'import json,sys; c={x["name"]:x for x in json.load(sys.stdin)["clients"]}["own-a"]; assert c["owner_id"]=="" and c["enabled"], c'
 echo '{"interface":"awg0","name":"own-a"}' | "$MGR" delete >/dev/null
+# Clients from another panel (0.21): a wg-easy 14 file and a plain .conf, from the console.
+imp_dir="$(mktemp -d)"
+imp_priv="$(awg genkey)"; imp_pub="$(printf '%s' "$imp_priv" | awg pubkey)"
+papa_priv="$(awg genkey)"; papa_pub="$(printf '%s' "$papa_priv" | awg pubkey)"
+cat >"$imp_dir/wg0.json" <<JSON
+{"server": {"privateKey": "$(awg genkey)", "publicKey": "x", "address": "10.8.0.1"},
+ "clients": {"a": {"name": "Мама", "address": "10.77.10.200", "privateKey": "$imp_priv", "publicKey": "$imp_pub", "enabled": true},
+             "b": {"name": "papa", "address": "10.8.0.3", "privateKey": "$papa_priv", "publicKey": "$papa_pub", "enabled": false}}}
+JSON
+awg31 import --server awg0 --yes "$imp_dir/wg0.json" | grep -q 'Imported 2 clients' || fail 'the wg-easy import failed'
+awg show awg0 peers | grep -qxF "$imp_pub" || fail 'the imported client kept no key'
+"$MGR" list <<<'{"interface":"awg0"}' | python3 -c 'import json,sys; c={x["name"]:x for x in json.load(sys.stdin)["clients"]}; assert c["Mama"]["ip"]=="10.77.10.200" and not c["papa"]["enabled"], c'
+printf '[Interface]\nPrivateKey = %s\n### Client laptop\n[Peer]\nPublicKey = %s\nAllowedIPs = 10.9.0.2/32\n' "$(awg genkey)" "$(awg genkey | awg pubkey)" >"$imp_dir/wg0.conf"
+awg31 import --server awg0 --yes "$imp_dir/wg0.conf" | grep -q 'Imported 1 clients' || fail 'the .conf import failed'
+if awg31 import --server awg0 --yes "$imp_dir/wg0.json" | grep -q 'Imported 2'; then fail 'the same keys were imported twice'; fi
+rm -rf "$imp_dir"
+for name in Mama papa laptop; do echo "{\"interface\":\"awg0\",\"name\":\"$name\"}" | "$MGR" delete >/dev/null; done
 echo "{\"interface\":\"awg2\",\"subnet\":\"\",\"random_subnet\":true,\"port\":\"51998\",\"mtu\":\"1280\",\"endpoint\":\"203.0.113.10\",\"dns\":\"1.1.1.1\",\"mode\":\"split\",\"uplink\":\"$uplink\"}" \
   | panel_mgr server-create >/dev/null || fail 'a server with a random subnet was not created'
 "$MGR" servers | python3 -c 'import json,sys,re; s={x["interface"]:x for x in json.load(sys.stdin)["servers"]}; assert re.fullmatch(r"10\.[0-9]+\.[0-9]+\.0/24", s["awg2"]["subnet"]) and s["awg2"]["subnet"] != "10.77.10.0/24", s'

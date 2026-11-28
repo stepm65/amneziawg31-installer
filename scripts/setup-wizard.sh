@@ -188,6 +188,7 @@ install -o root -g root -m 644 "$DIR/src/web.py" /opt/awg31-panel/web.py
 install -o root -g root -m 644 "$DIR/src/awg31client.py" /opt/awg31-panel/awg31client.py
 install -o root -g root -m 644 "$DIR/src/amnezialink.py" /opt/awg31-panel/amnezialink.py
 install -o root -g root -m 644 "$DIR/src/quicinitial.py" /opt/awg31-panel/quicinitial.py
+install -o root -g root -m 644 "$DIR/src/awg31import.py" /opt/awg31-panel/awg31import.py
 install -o root -g root -m 644 "$DIR/src/awg31bot.py" /opt/awg31-panel/awg31bot.py
 install -o root -g root -m 644 "$DIR/src/panel.css" /opt/awg31-panel/panel.css
 install -o root -g root -m 644 "$DIR/src/md3.css" /opt/awg31-panel/md3.css

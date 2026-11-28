@@ -32,7 +32,7 @@ VALID_AUDIT = {'login_success', 'login_failed', 'password_changed', 'client_adde
                'panel_update_failed', 'panel_rolled_back', 'server_rotated', 'server_rotate_failed',
                'mask_profile_applied', 'subscription_created', 'subscription_revoked', 'packet_probe',
                'client_moved', 'server_silent', 'server_back',
-               'owner_created', 'owner_changed', 'owner_deleted', 'owner_blocked', 'owner_unblocked'}
+               'owner_created', 'owner_changed', 'owner_deleted', 'owner_blocked', 'owner_unblocked', 'clients_imported'}
 
 
 def _host_uplink():
@@ -2109,3 +2109,61 @@ def owner_device_add(manager, data):
                                            'comment':comment})
     audit({'event':'client_added','target':f'{iface}/{name} (owner {owner["id"]}{", telegram" if by_bot else ""})'[:120]})
     return {'ok':True,'interface':iface,'name':name,'owner':owner['name'],'config':created.get('config','')}
+
+
+# ------------------------------------------------------------------ 0.21: clients from other panels
+IMPORT_SOURCES=('wg-easy-15','wg-easy-14','3x-ui','amnezia','conf')
+IMPORT_MAX=500
+
+
+def clients_import(manager, iface, data):
+    """Records read by the panel (awg31import.py) become clients of one server. Owners named in the
+    records are found or made first, so the devices of one person stay together."""
+    clients=data.get('clients'); owners=data.get('owners') or []
+    if not isinstance(clients,list) or not 1<=len(clients)<=IMPORT_MAX: raise ValueError(f'Импорт: от 1 до {IMPORT_MAX} клиентов')
+    if not isinstance(owners,list) or len(owners)>IMPORT_MAX: raise ValueError('Импорт: неверный список владельцев')
+    source=str(data.get('source',''))
+    if source not in IMPORT_SOURCES: raise ValueError('Импорт: неизвестный источник')
+    make_owners=data.get('create_owners') is not False
+    made=0
+    with _OwnersLock():
+        con,_=_owners_open()
+        try:
+            by_name={}
+            if make_owners:
+                for item in owners:
+                    if not isinstance(item,dict): raise ValueError('Импорт: неверный владелец')
+                    fields=_owner_fields({**item,'self_add':False,'home_server':''},None,manager)
+                    row=con.execute('SELECT id FROM owners WHERE name=? COLLATE NOCASE',(fields['name'],)).fetchone()
+                    if not row and fields['telegram_id']:
+                        row=con.execute('SELECT id FROM owners WHERE telegram_id=?',(fields['telegram_id'],)).fetchone()
+                    if row: by_name[str(item.get('name','')).lower()]=row['id']; continue
+                    owner_id=_owner_insert(con,fields); made+=1
+                    con.execute('UPDATE owners SET blocked=? WHERE id=?',(_owner_state(con.execute('SELECT * FROM owners WHERE id=?',(owner_id,)).fetchone()),owner_id))
+                    by_name[str(item.get('name','')).lower()]=owner_id
+            telegram_owner={r['telegram_id']:r['id'] for r in con.execute("SELECT id,telegram_id FROM owners WHERE telegram_id<>''")}
+            telegram_of={r['id']:r['telegram_id'] for r in con.execute('SELECT id,telegram_id FROM owners')}
+            prepared=[]
+            for item in clients:
+                if not isinstance(item,dict): raise ValueError('Импорт: неверная запись')
+                record={k:item.get(k) for k in ('name','private_key','public_key','psk','address','enabled','expires_at',
+                                                'traffic_limit_bytes','quota_period','comment','group')}
+                owner_id=''
+                if make_owners:
+                    owner_id=by_name.get(str(item.get('owner') or '').lower(),'')
+                    telegram=str(item.get('telegram_id') or '')
+                    if not owner_id and OWNER_TELEGRAM.fullmatch(telegram):
+                        owner_id=telegram_owner.get(telegram,'')
+                        if not owner_id:
+                            owner_id=_owner_insert(con,{'name':f'Telegram {telegram}','telegram_id':telegram}); made+=1
+                            telegram_owner[telegram]=owner_id; telegram_of[owner_id]=telegram
+                record['owner_id']=owner_id
+                record['telegram_id']=telegram_of.get(owner_id,'') if owner_id else ''
+                prepared.append(record)
+            con.commit()
+            blocked={r['id']:r['blocked'] for r in con.execute("SELECT id,blocked FROM owners WHERE blocked<>''")}
+        finally: con.close()
+    result=manager.child(iface,'import-batch',{'clients':prepared,'keep_keys':data.get('keep_keys') is not False,
+                                               'keep_addresses':data.get('keep_addresses') is not False,'owners_blocked':blocked})
+    audit({'event':'clients_imported','target':f'{iface}: {len(result.get("created",[]))} clients from {source}'})
+    return {**result,'owners_created':made}

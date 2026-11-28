@@ -11,6 +11,7 @@ import json
 import os
 from pathlib import Path
 import secrets
+import sqlite3
 import subprocess
 import sys
 import time
@@ -23,6 +24,7 @@ from datetime import datetime, timezone
 import qrcode
 from amnezialink import build_vpn_uri
 import quicinitial
+import awg31import
 from fastapi import FastAPI, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from fastapi.exception_handlers import http_exception_handler
@@ -3759,6 +3761,7 @@ MAINTENANCE_TABS = (
     ('backups', 'maint_backups', 'archive'),
     ('restore', 'maint_restore', 'restart'),
     ('profiles', 'maint_profiles', 'file'),
+    ('import', 'maint_import', 'users'),
     ('security', 'maint_security', 'lock'),
     ('telegram', 'maint_telegram', 'radio'),
     ('logs', 'maint_logs', 'logs'),
@@ -3814,7 +3817,7 @@ def maintenance(request: Request, tab: str = 'diagnostics'):
                 for key,label,glyph in MAINTENANCE_TABS)
     info_key={
         'diagnostics':'maint_diagnostics_hint','backups':'maint_backups_hint','restore':'maint_restore_hint',
-        'profiles':'maint_profile_hint','security':'maint_security_hint','audit':'maint_audit_hint',
+        'profiles':'maint_profile_hint','security':'maint_security_hint','audit':'maint_audit_hint','import':'maint_import_hint',
         'telegram':'maint_telegram_hint','logs':'maint_logs_hint',
         'system':'maint_system_hint','update':'maint_update_hint'}
     section_title=next(t(label) for key,label,_ in MAINTENANCE_TABS if key==tab)
@@ -4115,6 +4118,8 @@ def maintenance(request: Request, tab: str = 'diagnostics'):
                        f'<div class="tg-actions"><button class="btn btn-primary" type="submit">{icon("check",17)}{h(t("tg_save"))}</button>'
                        f'<button class="btn btn-secondary" type="submit" formaction="/maintenance/telegram/test" formnovalidate>{icon("send",16)}{h(t("tg_test"))}</button>'
                        f'</div></div></form></section>')
+        elif tab=='import':
+            body+=import_tab(request,t)
         elif tab=='logs':
             body+=logs_tab(request,t,lang)
         elif tab=='update':
@@ -5269,4 +5274,181 @@ TEXT['en'].update({
     'bulk_owner_title': 'Owner for the selected clients', 'bulk_done_owner': 'Owner set for clients: {n}',
     'bulk_owner_hint': '“No owner” unlinks the clients. The owner’s device maximum is checked.',
     'bulk_skip_owner': 'Not enabled, the owner’s shared limit is reached',
+})
+
+
+
+# ------------------------------------------------------------------ 0.21: clients from other panels
+IMPORT_SKIP_REASONS = ('key_mismatch', 'key_exists', 'no_address', 'invalid')
+
+
+def import_options(t, servers, chosen='', keep_keys=True, keep_addresses=True, create_owners=True):
+    options = ''.join(f'<option value="{h(x)}"{" selected" if x == chosen else ""}>{h(x)}</option>' for x in servers)
+    def box(name, on, label):
+        return f'<label class="check-field"><input type="checkbox" name="{name}" value="1"{" checked" if on else ""}><span>{h(t(label))}</span></label>'
+    return (f'<label class="field" for="import-server"><span>{h(t("import_target"))}</span>'
+            f'<select id="import-server" name="interface">{options}</select></label>'
+            + box('keep_keys', keep_keys, 'import_keep_keys') + box('keep_addresses', keep_addresses, 'import_keep_addresses')
+            + box('create_owners', create_owners, 'import_create_owners'))
+
+
+def import_tab(request, t):
+    servers = server_names()
+    sources = ''.join(f'<li><strong>{h(t("import_src_" + key))}</strong><span>{h(t("import_where_" + key))}</span></li>'
+                      for key in ('wg_easy', 'xui', 'amnezia', 'conf'))
+    return f"""<section class="maint-form-panel import-panel"><h3>{icon('users', 19)}{h(t('import_title'))}</h3>
+      <ul class="import-sources">{sources}</ul>
+      <form method="post" action="/maintenance/import" enctype="multipart/form-data" class="import-form">{csrf(request)}
+      <label class="field" for="import-files"><span>{h(t('import_files'))}</span>
+        <input id="import-files" type="file" name="files" multiple required accept=".db,.json,.conf,.sqlite,.sqlite3,clientsTable,application/json,text/plain">
+        <small>{h(t('import_files_hint'))}</small></label>
+      {import_options(t, servers, servers[0] if servers else '')}
+      <button class="btn btn-primary" type="submit" data-busy-text="{h(t('import_reading'))}">{icon('search', 16)}{h(t('import_preview'))}</button>
+      </form>
+      <p class="info-line">{icon('info', 14)}<span>{h(t('import_note'))}</span></p></section>"""
+
+
+def no_store(response):
+    response.headers['Cache-Control'] = 'no-store'
+    return response
+
+
+@app.post('/maintenance/import')
+async def import_clients(request: Request):
+    require_auth(request)
+    lang = lang_of(request); t = lambda key: tr(lang, key)
+    form = await request.form(max_files=8, max_fields=1200, max_part_size=4 * 1024 * 1024)
+    require_csrf(request, form.get('csrf', ''))
+    servers = server_names()
+    iface = str(form.get('interface', ''))
+    if iface not in servers: raise HTTPException(422)
+    keep_keys, keep_addresses, create_owners = (form.get(k) == '1' for k in ('keep_keys', 'keep_addresses', 'create_owners'))
+    if 'records' in form:
+        return no_store(import_apply(request, form, t, iface, keep_keys, keep_addresses, create_owners))
+    files = []
+    for item in form.getlist('files'):
+        if not hasattr(item, 'read'): continue
+        data = await item.read(awg31import.MAX_FILE + 1)
+        if data: files.append((str(getattr(item, 'filename', '') or 'file')[:80], data))
+    if not files: raise HTTPException(422)
+    try: found = awg31import.parse(files)
+    except (ValueError, sqlite3.Error) as exc:
+        return error_page(request, t('import_error'), RuntimeError(str(exc)[:300]))
+    if not found['clients']:
+        return error_page(request, t('import_error'), RuntimeError(t('import_empty')))
+    rows = ''.join(
+        f"""<tr><td><input type="checkbox" class="peer-select" name="pick" value="{n}" checked aria-label="{h(c['name'])}"></td>
+          <td class="client-name"><strong>{h(c['name'])}</strong>{('<small class="muted">' + h(c['source_name']) + '</small>') if c['source_name'] != c['name'] else ''}</td>
+          <td class="mono">{h(c['address'] or '—')}</td>
+          <td>{h(t('import_key_kept' if c['private_key'] and keep_keys else 'import_key_new'))}</td>
+          <td><span class="access-pill {'is-on' if c['enabled'] else 'is-off'}">{h(t('access_on' if c['enabled'] else 'access_off'))}</span></td>
+          <td class="mono">{h((c['expires_at'] or '')[:10] or '—')}</td>
+          <td class="mono">{h(human_size(c['traffic_limit_bytes']) if c['traffic_limit_bytes'] else '—')}</td>
+          <td>{h(c['owner'] or (('Telegram ' + c['telegram_id']) if c['telegram_id'] else '—'))}</td></tr>"""
+        for n, c in enumerate(found['clients']))
+    owners = ''.join(f'<li><strong>{h(o["name"])}</strong> · {h(t("owner_quota"))}: {h(human_size(o["traffic_limit_bytes"]) if o["traffic_limit_bytes"] else "—")}'
+                     f' · {h(t("expires"))}: {h((o["expires_at"] or "")[:10] or "—")}</li>' for o in found['owners'])
+    warnings = ''.join(f'<p class="bulk-notice is-warn" role="alert">{icon("alert", 16)}<span>{h(t("import_warn_" + w))}</span></p>'
+                       for w in found['warnings'])
+    payload = json.dumps({'source': found['source'], 'clients': found['clients'], 'owners': found['owners']}, ensure_ascii=False)
+    body = f"""<section class="card import-preview"><div class="section-title"><div>
+      <span class="section-overline">{h(awg31import.SOURCES.get(found['source'], ''))}</span>
+      <h2>{icon('users', 20)}{h(t('import_found').format(n=len(found['clients'])))}</h2>
+      <p class="section-subtitle">{h(t('import_check'))}</p></div></div>{warnings}
+      {('<div class="import-owners"><h3>' + h(t('import_owners')) + '</h3><ul>' + owners + '</ul></div>') if owners else ''}
+      <form method="post" action="/maintenance/import">{csrf(request)}
+      <textarea name="records" hidden>{h(payload)}</textarea>
+      <div class="table-scroll"><table><thead><tr><th><input type="checkbox" id="select-all-peers" checked aria-label="{h(t('select_all'))}"></th>
+        <th>{h(t('name'))}</th><th>{h(t('import_address'))}</th><th>{h(t('import_keys'))}</th><th>{h(t('access'))}</th>
+        <th>{h(t('expires'))}</th><th>{h(t('quota'))}</th><th>{h(t('owner'))}</th></tr></thead><tbody>{rows}</tbody></table></div>
+      <div class="import-options">{import_options(t, servers, iface, keep_keys, keep_addresses, create_owners)}</div>
+      <div class="config-savebar"><span>{icon('info', 16)}{h(t('import_after'))}</span>
+      <button class="btn btn-primary" type="submit" data-busy-text="{h(t('import_running'))}">{icon('check', 18)}{h(t('import_go'))}</button></div>
+      </form></section>"""
+    return no_store(page(t('maint_import'), body, request))
+
+
+def import_apply(request, form, t, iface, keep_keys, keep_addresses, create_owners):
+    try:
+        found = json.loads(str(form.get('records', '')))
+        picks = {int(x) for x in form.getlist('pick')}
+    except (ValueError, TypeError):
+        raise HTTPException(422) from None
+    if not isinstance(found, dict) or not isinstance(found.get('clients'), list): raise HTTPException(422)
+    chosen = [c for n, c in enumerate(found['clients']) if n in picks and isinstance(c, dict)]
+    if not chosen: raise HTTPException(422)
+    try:
+        result = ctl('clients-import', {'interface': iface, 'source': str(found.get('source', '')), 'clients': chosen,
+                                        'owners': found.get('owners') or [], 'keep_keys': keep_keys,
+                                        'keep_addresses': keep_addresses, 'create_owners': create_owners})
+    except RuntimeError as exc:
+        return error_page(request, t('import_error'), exc)
+    created = ''.join(f'<li><a href="/servers/{h(iface)}/clients/{quote(c["name"], safe="")}">{h(c["name"])}</a> '
+                      f'<span class="mono">{h(c["ip"])}</span>{(" · " + h(t("import_key_kept"))) if c.get("kept_key") else ""}</li>'
+                      for c in result.get('created', []))
+    skipped = ''.join(f'<li><strong>{h(name)}</strong>: {h(t("import_skip_" + reason) if reason in IMPORT_SKIP_REASONS else reason)}</li>'
+                      for name, reason in (result.get('skipped') or {}).items())
+    body = f"""<section class="card import-result"><div class="section-title"><div>
+      <h2>{icon('check', 20)}{h(t('import_done').format(n=len(result.get('created', [])), server=iface))}</h2>
+      <p class="section-subtitle">{h(t('import_done_hint'))}</p></div></div>
+      {('<p>' + h(t('import_owners_made').format(n=result.get('owners_created', 0))) + ' <a href="/owners">' + h(t('owners')) + '</a></p>') if result.get('owners_created') else ''}
+      <ul class="import-list">{created}</ul>
+      {('<h3>' + h(t('import_skipped')) + '</h3><ul class="import-list">' + skipped + '</ul>') if skipped else ''}
+      <a class="btn btn-primary" href="/servers/{h(iface)}/clients">{h(t('clients'))}</a></section>"""
+    return page(t('maint_import'), body, request)
+
+
+TEXT['ru'].update({
+    'maint_import': 'Импорт клиентов',
+    'maint_import_hint': 'Перенос клиентов из wg-easy, 3x-ui, AmneziaVPN или любой конфигурации WireGuard.',
+    'import_title': 'Откуда взять файлы',
+    'import_src_wg_easy': 'wg-easy', 'import_where_wg_easy': '/etc/wireguard/wg-easy.db (версия 15) или /etc/wireguard/wg0.json (14 и старше)',
+    'import_src_xui': '3x-ui', 'import_where_xui': '/etc/x-ui/x-ui.db — подключения WireGuard и AmneziaWG, клиенты и их устройства',
+    'import_src_amnezia': 'AmneziaVPN (свой сервер)', 'import_where_amnezia': 'из контейнера amnezia-awg: /opt/amnezia/awg/awg0.conf (или wg0.conf) и /opt/amnezia/awg/clientsTable — оба файла вместе',
+    'import_src_conf': 'Любой сервер WireGuard', 'import_where_conf': 'wg0.conf с блоками [Peer]; имя берётся из комментария над пиром',
+    'import_files': 'Файлы', 'import_files_hint': 'Можно выбрать несколько файлов сразу, до 32 МиБ каждый. Файлы читаются только здесь и не сохраняются.',
+    'import_target': 'На какой сервер', 'import_keep_keys': 'Сохранить ключи клиентов, если они есть в файле',
+    'import_keep_addresses': 'Сохранить адреса, если они попадают в подсеть сервера и свободны',
+    'import_create_owners': 'Создать владельцев (клиенты 3x-ui с несколькими устройствами, Telegram ID)',
+    'import_preview': 'Прочитать и показать', 'import_reading': 'Читаю файлы…',
+    'import_note': 'Сначала панель покажет, кого нашла, — ничего не меняется, пока вы не нажмёте «Импортировать». Параметры обфускации AWG 3.1 у этого сервера свои, поэтому всем перенесённым клиентам нужна новая конфигурация.',
+    'import_error': 'Не удалось прочитать файлы', 'import_empty': 'В файлах не нашлось ни одного клиента.',
+    'import_found': 'Найдено клиентов: {n}', 'import_check': 'Снимите отметки с тех, кого переносить не нужно. Имена приведены к виду, который принимает консоль.',
+    'import_owners': 'Будут созданы владельцы', 'import_address': 'Адрес в источнике', 'import_keys': 'Ключи',
+    'import_key_kept': 'сохраняются', 'import_key_new': 'новые',
+    'import_after': 'После импорта раздайте новые конфигурации: файлом, QR-кодом, подпиской или через бота.',
+    'import_go': 'Импортировать', 'import_running': 'Импортирую…',
+    'import_warn_no_private_keys': 'В файлах нет приватных ключей клиентов (AmneziaVPN хранит их только на устройствах): клиенты получат новые ключи.',
+    'import_warn_some_without_keys': 'У части клиентов в файле нет приватного ключа: они получат новые ключи.',
+    'import_done': 'Перенесено клиентов на {server}: {n}', 'import_done_hint': 'Выдайте им новые конфигурации: старые к этому серверу не подойдут.',
+    'import_owners_made': 'Создано владельцев: {n}.', 'import_skipped': 'Пропущены',
+    'import_skip_key_mismatch': 'приватный и публичный ключи не совпадают', 'import_skip_key_exists': 'клиент с этим ключом уже есть на сервере',
+    'import_skip_no_address': 'в подсети сервера закончились адреса', 'import_skip_invalid': 'неверные данные (срок, лимит или Telegram ID)',
+})
+TEXT['en'].update({
+    'maint_import': 'Import clients',
+    'maint_import_hint': 'Bring clients over from wg-easy, 3x-ui, AmneziaVPN or any WireGuard configuration.',
+    'import_title': 'Where to get the files',
+    'import_src_wg_easy': 'wg-easy', 'import_where_wg_easy': '/etc/wireguard/wg-easy.db (version 15) or /etc/wireguard/wg0.json (14 and older)',
+    'import_src_xui': '3x-ui', 'import_where_xui': '/etc/x-ui/x-ui.db — WireGuard and AmneziaWG inbounds, clients and their devices',
+    'import_src_amnezia': 'AmneziaVPN (self-hosted)', 'import_where_amnezia': 'from the amnezia-awg container: /opt/amnezia/awg/awg0.conf (or wg0.conf) and /opt/amnezia/awg/clientsTable — both together',
+    'import_src_conf': 'Any WireGuard server', 'import_where_conf': 'wg0.conf with [Peer] blocks; the name comes from the comment above each peer',
+    'import_files': 'Files', 'import_files_hint': 'Several files at once, up to 32 MiB each. They are read here only and not kept.',
+    'import_target': 'To which server', 'import_keep_keys': 'Keep the clients’ keys when the file has them',
+    'import_keep_addresses': 'Keep the addresses when they are inside the server subnet and free',
+    'import_create_owners': 'Create owners (3x-ui clients with several devices, Telegram IDs)',
+    'import_preview': 'Read and show', 'import_reading': 'Reading the files…',
+    'import_note': 'First the panel shows whom it found; nothing changes until you press Import. This server has its own AWG 3.1 obfuscation, so every imported client needs a new configuration.',
+    'import_error': 'The files could not be read', 'import_empty': 'No clients were found in the files.',
+    'import_found': 'Clients found: {n}', 'import_check': 'Untick those you do not want to bring over. Names are adjusted to what the console accepts.',
+    'import_owners': 'Owners to be created', 'import_address': 'Address at the source', 'import_keys': 'Keys',
+    'import_key_kept': 'kept', 'import_key_new': 'new',
+    'import_after': 'After the import, hand out the new configurations: file, QR code, subscription or the bot.',
+    'import_go': 'Import', 'import_running': 'Importing…',
+    'import_warn_no_private_keys': 'The files have no private keys of the clients (AmneziaVPN keeps them on the devices only): the clients get new keys.',
+    'import_warn_some_without_keys': 'Some clients have no private key in the file: they get new keys.',
+    'import_done': 'Clients brought over to {server}: {n}', 'import_done_hint': 'Give them new configurations: the old ones do not fit this server.',
+    'import_owners_made': 'Owners created: {n}.', 'import_skipped': 'Skipped',
+    'import_skip_key_mismatch': 'the private and public keys do not match', 'import_skip_key_exists': 'a client with this key is already on the server',
+    'import_skip_no_address': 'the server subnet has no free addresses', 'import_skip_invalid': 'invalid data (term, limit or Telegram ID)',
 })
