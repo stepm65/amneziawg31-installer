@@ -720,6 +720,9 @@ def ctl(command, data=None):
 def _ctl_call(command, data=None):
     timeout = 200 if command == 'telegram-connect' else \
         90 if command in ('server-create','backup-create','backup-export','backup-restore','backup-check') else 35
+    who = ACTOR.get()
+    if who and isinstance(data, dict) and command not in READ_ONLY_OPS:
+        data = {**data, '_actor': who}                 # the audit log names the account
     try:
         code, stdout, stderr = awg31client.call(command, json.dumps(data) if data is not None else None, timeout)
     except (OSError, ConnectionError) as exc:
@@ -821,12 +824,135 @@ def read_auth():
     return json.loads(AUTH_FILE.read_text())
 
 
-def logged(request):
+# ---- 0.24: panel accounts and the list of signed-in sessions
+ACCOUNT_RE = re.compile(r'^[a-z][a-z0-9_.-]{1,31}$')
+SESSIONS_FILE = AUTH_FILE.with_name('sessions.json')
+SESSION_IDLE = 3600            # the cookie lives an hour after the last request
+SESSION_TOUCH = 300            # how often "last activity" is written down
+MAX_SESSIONS = 100
+PANEL_SESSIONS = {}            # sha256 of the cookie's session number -> entry; the number itself is only in the cookie
+ACTOR = contextvars.ContextVar('awg31_actor', default='')
+
+
+def primary_name(auth):
+    name = str(auth.get('name') or 'admin')
+    return name if ACCOUNT_RE.fullmatch(name) else 'admin'
+
+
+def account_record(auth, name=''):
+    """Credentials of one account: the main one is the top of auth.json, the others are under 'users'."""
+    name = str(name or '')
+    if not name or name == primary_name(auth): return auth
+    users = auth.get('users') if isinstance(auth.get('users'), dict) else {}
+    record = users.get(name)
+    if not ACCOUNT_RE.fullmatch(name) or not isinstance(record, dict): raise ValueError('No such account')
+    return record
+
+
+def account_role(auth, name=''):
+    record = account_record(auth, name)
+    return 'admin' if record is auth else (record.get('role') if record.get('role') in ('admin', 'viewer') else 'viewer')
+
+
+def accounts_of(auth):
+    users = auth.get('users') if isinstance(auth.get('users'), dict) else {}
+    return [primary_name(auth)] + sorted(n for n in users if ACCOUNT_RE.fullmatch(n) and isinstance(users[n], dict))
+
+
+def sid_hash(sid):
+    return hashlib.sha256(('awg31-panel-session:' + str(sid)).encode()).hexdigest()
+
+
+def _load_sessions():
+    try: items = json.loads(SESSIONS_FILE.read_text()).get('sessions', [])
+    except (OSError, ValueError, AttributeError): return
+    now = time.time()
+    for item in items if isinstance(items, list) else []:
+        try:
+            entry = {'hash': str(item['hash']), 'account': str(item['account']), 'addr': str(item.get('addr', ''))[:64],
+                     'agent': str(item.get('agent', ''))[:160], 'created': int(item.get('created', 0)), 'seen': int(item.get('seen', 0))}
+        except (KeyError, TypeError, ValueError, AttributeError): continue
+        if re.fullmatch(r'[0-9a-f]{64}', entry['hash']) and ACCOUNT_RE.fullmatch(entry['account']) and now - entry['seen'] < SESSION_IDLE:
+            PANEL_SESSIONS[entry['hash']] = entry
+
+
+_load_sessions()
+
+
+def save_sessions(ended=''):
+    """Hand the list to the root helper, so a panel restart signs nobody out. Best effort."""
+    now = time.time()
+    for key, entry in list(PANEL_SESSIONS.items()):
+        if now - entry['seen'] >= SESSION_IDLE: PANEL_SESSIONS.pop(key, None)
+    payload = {'sessions': sorted(PANEL_SESSIONS.values(), key=lambda e: -e['seen'])[:MAX_SESSIONS]}
+    if ended: payload['ended'] = ended[:120]
+    try: ctl('session-save', payload)
+    except Exception as exc:                       # never fail a request because of this
+        print(f'awg31 panel: cannot save the session list: {exc}', file=sys.stderr, flush=True)
+
+
+def end_sessions(account=None, keep='', only=None, why=''):
+    """End sessions: of one account, or the given hashes; `keep` is a hash left alone. Returns how many ended."""
+    gone = [k for k, e in PANEL_SESSIONS.items() if k != keep and (only is None or k in only) and (account is None or e['account'] == account)]
+    for key in gone: PANEL_SESSIONS.pop(key, None)
+    if gone: save_sessions(why or f'{account or "all"}: {len(gone)}')
+    return len(gone)
+
+
+def current(request):
+    """The signed-in account of this request ({'name','role','hash'}), or None."""
+    state = getattr(request, 'state', None)
+    cached = getattr(state, 'awg31_account', None) if state is not None else None
+    if cached is not None: return cached or None
+    result = {}
     try:
-        current=read_auth()
-        return request.session.get('authenticated') is True and request.session.get('auth_version','') == current.get('auth_version','')
-    except (OSError,ValueError):
-        return False
+        auth = read_auth()
+        session = request.session
+        if session.get('authenticated') is True and session.get('auth_version', '') == auth.get('auth_version', ''):
+            sid = str(session.get('sid', ''))
+            key = sid_hash(sid) if sid else ''
+            entry = PANEL_SESSIONS.get(key) if key else None
+            now = time.time()
+            if entry and now - entry['seen'] < SESSION_IDLE:
+                record = account_record(auth, entry['account'])
+                result = {'name': entry['account'], 'role': account_role(auth, entry['account']), 'hash': key,
+                          'primary': record is auth}
+                if now - entry['seen'] > SESSION_TOUCH:
+                    entry['seen'] = int(now)
+                    entry['addr'] = client_address(request)[:64]
+                    save_sessions()
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        result = {}
+    if state is not None:
+        try: state.awg31_account = result
+        except AttributeError: pass
+    if result: ACTOR.set(result['name'])
+    return result or None
+
+
+current_account = current        # for functions that have their own local `current`
+
+
+def logged(request):
+    return bool(current(request))
+
+
+def is_admin(request):
+    me = current(request)
+    return bool(me) and me['role'] == 'admin'
+
+
+def acct_payload(request):
+    """Operations on one's own credentials name the account; the main one is the default."""
+    me = current(request)
+    return {} if not me or me.get('primary') else {'account': me['name']}
+
+
+# A viewer sees the panel but changes nothing and gets no keys.
+VIEWER_GET_DENY = re.compile(r'(?:^/client/[^/]+|^/servers/[^/]+/clients/[^/]+)/(?:download|qr|vpn-link)$|^/maintenance/backup/|'
+                             r'^/maintenance/logs/download$|/settings/profile$|^/maintenance/profile$|/export/clients\.csv$')
+VIEWER_POST_OK = re.compile(r'^/maintenance/(?:password|totp/(?:enable|disable|regenerate)|totp-recovery|sessions/(?:end|others))$')
+VIEWER_TABS = ('diagnostics', 'security', 'audit')
 
 
 def audit_event(event,target=''):
@@ -838,6 +964,14 @@ def audit_event(event,target=''):
 def require_auth(request):
     if not logged(request):
         raise HTTPException(status_code=401, detail=tr(lang_of(request), 'auth_required'))
+    if request.method in ('GET', 'HEAD') and not is_admin(request) and VIEWER_GET_DENY.search(request.url.path):
+        raise HTTPException(status_code=403, detail=tr(lang_of(request), 'viewer_denied'))
+
+
+def require_admin(request):
+    require_auth(request)
+    if not is_admin(request):
+        raise HTTPException(status_code=403, detail=tr(lang_of(request), 'viewer_denied'))
 
 
 def safe_next(value, fallback='/'):
@@ -874,6 +1008,8 @@ def require_csrf(request, token):
     require_auth(request)
     if not hmac.compare_digest(str(token), str(request.session.get('csrf', ''))):
         raise HTTPException(status_code=403, detail=tr(lang_of(request), 'csrf_error'))
+    if not is_admin(request) and not VIEWER_POST_OK.fullmatch(request.url.path):
+        raise HTTPException(status_code=403, detail=tr(lang_of(request), 'viewer_denied'))
 
 
 def csrf(request):
@@ -987,6 +1123,12 @@ def page(title, content, request):
                 (tr(lang,'maint_page_subtitle') if is_maintenance else ''))
     status_link = (f'<a class="top-link" href="/logout" title="{h(tr(lang,"logout"))}">{icon("logout",18)}<span>{h(tr(lang,"logout"))}</span></a>'
                    if authenticated else '')
+    me = current(request) if authenticated else None
+    if me:
+        status_link = (f'<a class="account-chip" href="/maintenance?tab=security" title="{h(tr(lang,"account_mine"))}">{icon("users",16)}'
+                       f'<span>{h(me["name"])}</span><small>{h(tr(lang,"role_"+me["role"]))}</small></a>') + status_link
+    viewer = bool(me) and me['role'] != 'admin'
+    viewer_note = (f'<p class="viewer-banner" role="status">{icon("info",16)}<span>{h(tr(lang,"viewer_banner"))}</span></p>' if viewer else '')
     refresh_button = (f'<button class="icon-btn" id="refresh-page" type="button" aria-label="{h(tr(lang,"refresh"))}" title="{h(tr(lang,"refresh"))}">{icon("restart",18)}</button>'
                       if authenticated else '')
     login_intro = '' if authenticated else f'''<div class="login-overview">
@@ -1004,13 +1146,13 @@ def page(title, content, request):
     <link rel="stylesheet" href="/assets/panel.css?v={asset_version('panel.css')}">
     <link rel="stylesheet" href="/assets/md3.css?v={asset_version('md3.css')}">
     <script defer src="/assets/panel.js?v={asset_version('panel.js')}"></script>
-    </head><body data-server-scope="{h(scoped)}">
+    </head><body data-server-scope="{h(scoped)}"{' class="role-viewer"' if viewer else ''}>
     <header class="topbar"><div class="topbar-left">{nav_toggle}<a href="/" class="brand"><span class="brand-emblem">{icon('shield',18)}</span><span>AmneziaWG <b>3.1</b></span></a></div>
     <div class="topbar-right">{language_picker(request)}{refresh_button}{status_link}</div></header>
     {nav_overlay}<div class="shell {'shell-auth' if not authenticated else ''}">{sidebar}<main class="main {'main-login' if not authenticated else ''}">
     <div class="page-heading"><div><div class="eyebrow">{h((('СЕРВЕРЫ / ' if lang=='ru' else 'SERVERS / ')+context.upper()) if scoped else ('AWG CONSOLE / SYSTEM' if is_maintenance else 'AWG CONSOLE'))}</div>
     <h1>{h(title)}</h1>{f'<p class="heading-subtitle">{h(subtitle)}</p>' if subtitle else ''}{login_intro}</div></div>
-    {server_tabs}{scope_content(request, content)}</main></div></body></html>'''
+    {viewer_note}{server_tabs}{scope_content(request, content)}</main></div></body></html>'''
     return HTMLResponse(body, headers={
         'Cache-Control': 'no-store',
         'X-Content-Type-Options': 'nosniff',
@@ -1484,8 +1626,15 @@ def change_language(request: Request, language: str, next: str = '/'):
 def login_form(request, error='', next_path='/'):
     lang = lang_of(request)
     msg = f'<p class="error-message" role="alert">{h(error)}</p>' if error else ''
-    try: second = bool(read_auth().get('totp_secret'))
-    except (OSError, ValueError): second = False
+    try:
+        auth = read_auth()
+        names = accounts_of(auth)
+        second = any(account_record(auth, n).get('totp_secret') for n in names)
+    except (OSError, ValueError):
+        names, second = [], False
+    user_field = (f'<label class="field" for="username"><span>{h(tr(lang,"account_name"))}</span>'
+                  '<input id="username" name="username" required autocomplete="username" autocapitalize="none" spellcheck="false" maxlength="32" autofocus></label>'
+                  ) if len(names) > 1 else ''
     totp_field = (f'<label class="field" for="code"><span>{h(tr(lang,"totp_code"))}</span>'
                   '<input id="code" name="code" pattern="[0-9 ]{6,7}|[A-Za-z0-9]{5}-?[A-Za-z0-9]{5}" maxlength="11" required autocomplete="one-time-code" spellcheck="false">'
                   f'<small>{h(tr(lang,"login_code_hint"))}</small></label>') if second else ''
@@ -1496,8 +1645,8 @@ def login_form(request, error='', next_path='/'):
         <p class="login-card-hint">{h(tr(lang,'login_card_hint'))}</p>
         {msg}<form method="post" action="/login">
         <input type="hidden" name="next" value="{h(safe_next(next_path))}">
-        <label class="field" for="password"><span>{h(tr(lang,'password'))}</span>
-        <input id="password" type="password" name="password" required autocomplete="current-password" autofocus></label>
+        {user_field}<label class="field" for="password"><span>{h(tr(lang,'password'))}</span>
+        <input id="password" type="password" name="password" required autocomplete="current-password"{'' if user_field else ' autofocus'}></label>
         {totp_field}
         <button class="btn btn-primary full-width" type="submit">{h(tr(lang,'login'))}{icon('arrow',18)}</button>
         </form></section>''', request)
@@ -1515,7 +1664,7 @@ def login_get(request: Request, next: str = '/'):
 
 
 @app.post('/login')
-def login_post(request: Request, password: str = Form(...), next: str = Form('/'), code: str = Form('')):
+def login_post(request: Request, password: str = Form(...), next: str = Form('/'), code: str = Form(''), username: str = Form('')):
     lang = lang_of(request)
     target = safe_next(next)
     now = time.monotonic()
@@ -1532,43 +1681,61 @@ def login_post(request: Request, password: str = Form(...), next: str = Form('/'
     if len(attempts) >= 5:
         return page(tr(lang, 'sign_in'),
                     '<section class="card"><p role="alert">'+h(tr(lang,'login_limited'))+'</p></section>',request)
+    name = ''
     try:
         auth=read_auth()
-        candidate=hashlib.scrypt(password.encode('utf-8'),salt=bytes.fromhex(auth['salt']),
-                                 n=2**14,r=8,p=1,dklen=32)
-        valid=hmac.compare_digest(candidate.hex(),auth['password_hash'])
-        if valid and auth.get('totp_secret'):
+        name=username.strip().lower() or primary_name(auth)
+        try: record=account_record(auth,name)
+        except ValueError: record=None
+        # An unknown name costs the same scrypt round as a wrong password.
+        salt=bytes.fromhex(record['salt']) if record else b'awg31-no-such-account'
+        candidate=hashlib.scrypt(password.encode('utf-8'),salt=salt,n=2**14,r=8,p=1,dklen=32)
+        valid=bool(record) and hmac.compare_digest(candidate.hex(),record['password_hash'])
+        if valid and record.get('totp_secret'):
+            primary = record is auth
             if re.fullmatch(r'\s*[A-Za-z0-9]{5}-?[A-Za-z0-9]{5}\s*', code) and not re.fullmatch(r'[0-9 ]+', code):
                 # A recovery code instead of the app: checked and crossed out by the root helper.
                 try:
-                    ctl('totp-recovery-use', {'password': password, 'code': code})
+                    ctl('totp-recovery-use', {'password': password, 'code': code, **({} if primary else {'account': name})})
                 except RuntimeError:
                     valid = False
             else:
                 # Second factor; a code is accepted once, so a watched code cannot be replayed.
-                step=totp_step(auth['totp_secret'],code)
-                valid=step is not None and step>LAST_TOTP_STEP[0]
-                if valid: LAST_TOTP_STEP[0]=step
-    except (ValueError,OverflowError,OSError): valid=False
+                last = LAST_TOTP_STEP if primary else LAST_TOTP_STEPS.setdefault(name, [0])
+                step=totp_step(record['totp_secret'],code)
+                valid=step is not None and step>last[0]
+                if valid: last[0]=step
+    except (ValueError,OverflowError,OSError,KeyError,TypeError): valid=False
     if not valid:
         attempts.append(now)
         audit_event('login_failed',address)
         return login_form(request, tr(lang,'login_error'), target)
     login_attempts.pop(address,None)
+    ACTOR.set(name)
     audit_event('login_success',address)
+    sid=secrets.token_urlsafe(32)
+    now=int(time.time())
+    PANEL_SESSIONS[sid_hash(sid)]={'hash':sid_hash(sid),'account':name,'addr':client_address(request)[:64],
+                                   'agent':re.sub(r'[\x00-\x1f\x7f]','',request.headers.get('user-agent',''))[:160],
+                                   'created':now,'seen':now}
+    while len(PANEL_SESSIONS)>MAX_SESSIONS:
+        PANEL_SESSIONS.pop(min(PANEL_SESSIONS, key=lambda k: PANEL_SESSIONS[k]['seen']), None)
+    save_sessions()
     request.session.clear()
     request.session['authenticated']=True
     request.session['auth_version']=auth.get('auth_version','')
+    request.session['sid']=sid
     request.session['csrf']=secrets.token_urlsafe(32)
     return RedirectResponse(target, status_code=303)
 
 
 @app.get('/logout')
 def logout(request: Request):
-    if logged(request):
-        # Signed cookies cannot be recalled one by one: invalidate all of them.
-        try: ctl('session-revoke', {})
-        except (RuntimeError, ValueError): pass
+    me = current(request)
+    if me:
+        # This sign-in only; the cookie (and any copy of it) stops working at once.
+        end_sessions(only={me['hash']}, why=f'{me["name"]}: logout')
+        audit_event('logout', me['name'])
     request.session.clear()
     return RedirectResponse('/login', status_code=303)
 
@@ -1743,6 +1910,7 @@ TEXT['en'].update({
 
 
 LAST_TOTP_STEP = [0]
+LAST_TOTP_STEPS = {}
 
 
 def totp_step(secret, code):
@@ -2686,9 +2854,12 @@ def detail(request: Request, name: str, interface: str = ''):
                if request.query_params.get('rekeyed') == '1' else '')
     if request.query_params.get('moved') == '1':
         rekeyed += f'<p class="bulk-notice" role="status">{icon("route",16)}<span>{h(t("moved_notice"))}</span></p>'
+    if not is_admin(request):
+        contents = (f'<section class="card detail-card"><div class="section-title"><h2>{icon("lock",20)}{h(t("share_config"))}: '
+                    f'<span class="mono">{safe_name}</span></h2></div><p class="info-line">{h(t("viewer_no_config"))}</p></section>')
     return page(t('client') + ' ' + name,
                 '<div class="client-detail">' + rekeyed + contents + network_form + policy_form
-                + access_card(request, name, obj, t)
+                + (access_card(request, name, obj, t) if is_admin(request) else '')
                 + client_traffic_section(request, name, t, lang) + sessions_section(request, name, t, lang) + '</div>', request)
 
 
@@ -3031,13 +3202,13 @@ def clients_csv(request: Request, interface: str = ''):
 
 def recovery_block(request, t):
     """How many recovery codes are left, and a form for new ones."""
-    try: left = len(read_auth().get('totp_recovery') or [])
-    except (OSError, ValueError): left = 0
+    try: left = len(my_record(request).get('totp_recovery') or [])
+    except (OSError, ValueError, TypeError): left = 0
     state = t('recovery_status').format(n=left) if left else t('recovery_none')
     warn = f' <strong>{h(t("recovery_low"))}</strong>' if 0 < left <= 3 else ''
     return f'''<div class="recovery-box{" is-empty" if not left else ""}"><p>{icon('key',16)}<span>{h(state)}{warn}</span></p>
       <details class="totp-regenerate"><summary class="btn btn-secondary btn-small">{h(t('recovery_new'))}</summary>
-      <form method="post" action="/maintenance/totp-recovery">{csrf(request)}
+      <form method="post" action="/maintenance/totp-recovery" class="viewer-ok">{csrf(request)}
       <p class="info-line">{h(t('recovery_new_hint'))}</p>
       <div class="fields-grid"><label class="field"><span>{h(t('password'))}</span>
       <input type="password" name="password" required autocomplete="current-password"></label>
@@ -3065,7 +3236,7 @@ async def totp_recovery_route(request: Request):
     form = await request.form()
     require_csrf(request, form.get('csrf', ''))
     lang = lang_of(request)
-    try: result = ctl('totp-recovery-new', {'password': str(form.get('password', '')), 'code': str(form.get('code', ''))})
+    try: result = ctl('totp-recovery-new', {'password': str(form.get('password', '')), 'code': str(form.get('code', '')), **acct_payload(request)})
     except RuntimeError as exc: return error_page(request, tr(lang, 'maintenance_error'), exc)
     return recovery_codes_page(request, result.get('recovery_codes', []), lambda key: tr(lang, key), '/maintenance?tab=security')
 
@@ -3764,6 +3935,7 @@ MAINTENANCE_TABS = (
     ('profiles', 'maint_profiles', 'file'),
     ('import', 'maint_import', 'users'),
     ('security', 'maint_security', 'lock'),
+    ('accounts', 'maint_accounts', 'users'),
     ('telegram', 'maint_telegram', 'radio'),
     ('logs', 'maint_logs', 'logs'),
     ('audit', 'maint_audit', 'list'),
@@ -3811,14 +3983,17 @@ def maintenance(request: Request, tab: str = 'diagnostics'):
     lang=lang_of(request);t=lambda k:tr(lang,k)
     known={key for key, _, _ in MAINTENANCE_TABS}
     if tab not in known: raise HTTPException(status_code=404,detail='Unknown maintenance section')
+    shown=[x for x in MAINTENANCE_TABS if is_admin(request) or x[0] in VIEWER_TABS]
+    if tab not in {key for key,_,_ in shown}: raise HTTPException(status_code=403,detail=t('viewer_denied'))
 
     nav=''.join(f'<a class="maint-nav-link{" is-active" if key==tab else ""}" '
                 f'href="/maintenance?tab={key}" aria-current="{"page" if key==tab else "false"}">'
                 f'{icon(glyph,19)}<span>{h(t(label))}</span></a>'
-                for key,label,glyph in MAINTENANCE_TABS)
+                for key,label,glyph in shown)
     info_key={
         'diagnostics':'maint_diagnostics_hint','backups':'maint_backups_hint','restore':'maint_restore_hint',
         'profiles':'maint_profile_hint','security':'maint_security_hint','audit':'maint_audit_hint','import':'maint_import_hint',
+        'accounts':'maint_accounts_hint',
         'telegram':'maint_telegram_hint','logs':'maint_logs_hint',
         'system':'maint_system_hint','update':'maint_update_hint'}
     section_title=next(t(label) for key,label,_ in MAINTENANCE_TABS if key==tab)
@@ -3955,7 +4130,7 @@ def maintenance(request: Request, tab: str = 'diagnostics'):
                  <button class="btn btn-primary" type="submit">{h(t('profile_import'))} · {h(iface)}</button></form></section>'''
         elif tab=='security':
             body+=f'''<section class="maint-form-panel"><h3>{icon('key',19)}{h(t('password_change'))}</h3>
-                <form method="post" action="/maintenance/password">{csrf(request)}
+                <form method="post" action="/maintenance/password" class="viewer-ok">{csrf(request)}
                 <div class="fields-grid"><label class="field"><span>{h(t('password_old'))}</span>
                 <input type="password" name="old" required autocomplete="current-password"></label>
                 <label class="field"><span>{h(t('password_new'))}</span>
@@ -3964,9 +4139,9 @@ def maintenance(request: Request, tab: str = 'diagnostics'):
                 <input type="password" name="confirm" minlength="12" required autocomplete="new-password"></label></div>
                 <button class="btn btn-primary" type="submit">{icon('lock',18)}{h(t('password_change'))}</button></form>
                 </section>'''
-            if read_auth().get('totp_secret'):
+            if my_record(request).get('totp_secret'):
                 secret=base64.b32encode(secrets.token_bytes(20)).decode()
-                uri='otpauth://totp/AWG31%20Console:admin?secret='+secret+'&issuer=AWG31%20Console'
+                uri='otpauth://totp/AWG31%20Console:'+quote(current_account(request)['name'])+'?secret='+secret+'&issuer=AWG31%20Console'
                 picture=io.BytesIO(); qrcode.make(uri).save(picture,format='PNG')
                 new_qr_base64 = base64.b64encode(picture.getvalue()).decode()
                 body+=f'''<section class="maint-form-panel"><h3>{icon('shield',19)}{h(t('totp_title'))}</h3>
@@ -3979,7 +4154,7 @@ def maintenance(request: Request, tab: str = 'diagnostics'):
                 <p><img class="totp-qr" width="200" height="200" alt="TOTP QR" src="data:image/png;base64,{new_qr_base64}"></p>
                 <p>{h(t('totp_secret'))}: <code class="totp-secret-display">{secret}</code></p>
                 <p class="info-line">{'Сохраните ключ перед перегенерацией. Старый ключ перестанет работать после применения.' if lang=='ru' else 'Save the key before regenerating. The old key will stop working after applying.'}</p>
-                <form method="post" action="/maintenance/totp/regenerate">{csrf(request)}
+                <form method="post" action="/maintenance/totp/regenerate" class="viewer-ok">{csrf(request)}
                 <input type="hidden" name="secret" value="{secret}">
                 <div class="fields-grid"><label class="field"><span>{h(t('password'))}</span>
                 <input type="password" name="password" required autocomplete="current-password"></label>
@@ -3989,7 +4164,7 @@ def maintenance(request: Request, tab: str = 'diagnostics'):
                 <input name="code" inputmode="numeric" maxlength="7" required autocomplete="one-time-code"></label></div>
                 <button class="btn btn-primary" type="submit">{icon('shield',18)}{'Применить новый ключ' if lang=='ru' else 'Apply new key'}</button></form>
                 </div></details>
-                <form method="post" action="/maintenance/totp/disable" class="totp-disable-form">{csrf(request)}
+                <form method="post" action="/maintenance/totp/disable" class="totp-disable-form viewer-ok">{csrf(request)}
                 <div class="fields-grid"><label class="field"><span>{h(t('password'))}</span>
                 <input type="password" name="password" required autocomplete="current-password"></label>
                 <label class="field"><span>{h(t('totp_code'))}</span>
@@ -3997,19 +4172,22 @@ def maintenance(request: Request, tab: str = 'diagnostics'):
                 <button class="btn btn-danger" type="submit">{h(t('totp_disable'))}</button></form></section>'''
             else:
                 secret=base64.b32encode(secrets.token_bytes(20)).decode()
-                uri='otpauth://totp/AWG31%20Console:admin?secret='+secret+'&issuer=AWG31%20Console'
+                uri='otpauth://totp/AWG31%20Console:'+quote(current_account(request)['name'])+'?secret='+secret+'&issuer=AWG31%20Console'
                 picture=io.BytesIO(); qrcode.make(uri).save(picture,format='PNG')
                 body+=f'''<section class="maint-form-panel"><h3>{icon('shield',19)}{h(t('totp_title'))}</h3>
                 <p class="info-line">{h(t('totp_off_hint'))}</p>
                 <p><img class="totp-qr" width="220" height="220" alt="TOTP QR" src="data:image/png;base64,{base64.b64encode(picture.getvalue()).decode()}"></p>
                 <p>{h(t('totp_secret'))}: <code>{secret}</code></p>
-                <form method="post" action="/maintenance/totp/enable">{csrf(request)}
+                <form method="post" action="/maintenance/totp/enable" class="viewer-ok">{csrf(request)}
                 <input type="hidden" name="secret" value="{secret}">
                 <div class="fields-grid"><label class="field"><span>{h(t('password'))}</span>
                 <input type="password" name="password" required autocomplete="current-password"></label>
                 <label class="field"><span>{h(t('totp_code'))}</span>
                 <input name="code" inputmode="numeric" maxlength="7" required autocomplete="one-time-code"></label></div>
                 <button class="btn btn-primary" type="submit">{icon('shield',18)}{h(t('totp_enable'))}</button></form></section>'''
+            body+=panel_sessions_section(request,t,lang)
+        elif tab=='accounts':
+            body+=accounts_tab(request,t,lang)
         elif tab=='telegram':
             bot=ctl('telegram-status',{})
             sub='notify' if request.query_params.get('sub')=='notify' and bot.get('configured') else 'panel'
@@ -4253,9 +4431,12 @@ async def totp_change(request: Request, action: str):
     payload={'password':str(form.get('password','')),'code':str(form.get('code',''))}
     if action in ('enable','regenerate'): payload['secret']=str(form.get('secret',''))
     if action=='regenerate': payload['current_code']=str(form.get('current_code',''))
+    payload.update(acct_payload(request))
+    me=current(request)
     try: result=ctl('totp-enable' if action in ('enable','regenerate') else 'totp-disable',payload)
     except RuntimeError as exc: return error_page(request,tr(lang_of(request),'maintenance_error'),exc)
-    request.session.clear()            # every session ended: sign in again, now with the new rule
+    end_sessions(account=me['name'], why=f'{me["name"]}: two-factor changed')
+    request.session.clear()            # this account's sessions ended: sign in again, now with the new rule
     if result.get('recovery_codes'):
         lang=lang_of(request)
         return recovery_codes_page(request, result['recovery_codes'], lambda key: tr(lang, key))
@@ -4374,8 +4555,10 @@ async def change_password(request: Request):
     new=str(form.get('new',''))
     if new!=str(form.get('confirm','')):
         return error_page(request,tr(lang,'maintenance_error'),tr(lang,'password_mismatch'))
-    try: ctl('password-change',{'old_password':str(form.get('old','')),'new_password':new})
+    me=current(request)
+    try: ctl('password-change',{'old_password':str(form.get('old','')),'new_password':new,**acct_payload(request)})
     except RuntimeError as exc: return error_page(request,tr(lang,'maintenance_error'),exc)
+    end_sessions(account=me['name'], why=f'{me["name"]}: password changed')
     request.session.clear()
     return RedirectResponse('/login',status_code=303)
 
@@ -4492,7 +4675,7 @@ def audit_tab(request, t):
         return '/maintenance?tab=audit&' + '&'.join(f'{quote(str(k))}={quote(str(v))}' for k, v in merged.items() if v)
     events = ''.join(f'<option value="{h(e)}"{" selected" if e == query["event"] else ""}>{h(e)}</option>' for e in result.get('events', []))
     rows = ''.join(f'''<li class="audit-entry"><span class="audit-time">{h(item.get('timestamp', '')[:19].replace('T', ' '))}</span>
-        <span class="audit-event">{h(item.get('event', ''))}</span><span class="audit-target">{h(item.get('target', ''))}</span></li>'''
+        <span class="audit-event">{h(item.get('event', ''))}</span><span class="audit-target">{h(item.get('target', ''))}</span>{f'<span class="audit-actor">{icon("users",13)}{h(item["actor"])}</span>' if item.get('actor') else ''}</li>'''
         for item in result.get('entries', []))
     page_no, pages = int(result.get('page', 1)), int(result.get('pages', 1))
     pager = (f'<nav class="audit-pager" aria-label="{h(t("audit_pages"))}">'
@@ -4803,7 +4986,7 @@ def audit_csv(request: Request):
              'query': params.get('query', '')[:80], 'size': 1000}
     out = io.StringIO()
     writer = csv.writer(out)
-    writer.writerow(['timestamp', 'event', 'target'])
+    writer.writerow(['timestamp', 'event', 'target', 'account'])
     try:
         page_no = 1
         while page_no <= 50:                       # at most 50 000 rows
@@ -4811,7 +4994,7 @@ def audit_csv(request: Request):
             for item in result.get('entries', []):
                 target = str(item.get('target', ''))
                 if target[:1] in '=+-@': target = "'" + target   # no formulas when opened in a spreadsheet
-                writer.writerow([item.get('timestamp', ''), item.get('event', ''), target])
+                writer.writerow([item.get('timestamp', ''), item.get('event', ''), target, item.get('actor', '')])
             if page_no >= int(result.get('pages', 1)): break
             page_no += 1
     except RuntimeError as exc: return error_page(request, tr(lang_of(request), 'maintenance_error'), exc)
@@ -5789,4 +5972,228 @@ TEXT['en'].update({
     'once_step_file': 'On a computer: download the file and import it into AmneziaWG or AmneziaVPN.',
     'once_step_link': 'Or copy the link for AmneziaVPN and paste it into the app.', 'once_download': 'Download .conf',
     'once_apps': 'Apps: AmneziaVPN or AmneziaWG — for Android, iOS, Windows, macOS and Linux.',
+})
+
+
+# ------------------------------------------------------------------ 0.24: accounts, roles and sessions
+def my_record(request):
+    me = current(request)
+    if not me: return {}
+    try: return account_record(read_auth(), me['name'])
+    except (OSError, ValueError): return {}
+
+
+def ua_short(agent):
+    agent = str(agent or '')
+    browser = next((name for pattern, name in ((r'Edg/', 'Edge'), (r'OPR/|Opera', 'Opera'), (r'YaBrowser/', 'Yandex'),
+                                                (r'Firefox/', 'Firefox'), (r'Chrome/|CriOS/', 'Chrome'), (r'Version/.*Safari/', 'Safari'),
+                                                (r'curl/', 'curl')) if re.search(pattern, agent)), '')
+    system = next((name for pattern, name in ((r'iPhone|iPad', 'iOS'), (r'Android', 'Android'), (r'Windows', 'Windows'),
+                                               (r'Mac OS X|Macintosh', 'macOS'), (r'CrOS', 'ChromeOS'), (r'Linux', 'Linux'))
+                   if re.search(pattern, agent)), '')
+    return ' · '.join(x for x in (browser, system) if x) or (agent[:40] or '—')
+
+
+def ago(stamp, lang):
+    seconds = max(0, int(time.time() - int(stamp or 0)))
+    if seconds < 90: return 'только что' if lang == 'ru' else 'just now'
+    return duration_text(seconds, lang) + (' назад' if lang == 'ru' else ' ago')
+
+
+def panel_sessions_section(request, t, lang):
+    me = current(request)
+    admin = me['role'] == 'admin'
+    items = sorted((e for e in PANEL_SESSIONS.values() if admin or e['account'] == me['name']
+                    if time.time() - e['seen'] < SESSION_IDLE), key=lambda e: (e['hash'] != me['hash'], -e['seen']))
+    rows = ''
+    for entry in items:
+        mine = entry['hash'] == me['hash']
+        action = (f'<span class="acc-badge is-ok">{h(t("psess_this"))}</span>' if mine else
+                  f'<form method="post" action="/maintenance/sessions/end" class="inline viewer-ok">{csrf(request)}'
+                  f'<input type="hidden" name="id" value="{h(entry["hash"][:16])}">'
+                  f'<button class="btn btn-secondary btn-small" type="submit">{h(t("psess_end"))}</button></form>')
+        rows += (f'<tr{" class=is-current" if mine else ""}>' + (f'<td>{h(entry["account"])}</td>' if admin else '')
+                 + f'<td>{h(ua_short(entry["agent"]))}</td><td class="mono">{h(entry["addr"] or "—")}</td>'
+                 f'<td>{h(utc_minute(entry["created"]))}</td><td>{h(ago(entry["seen"], lang))}</td><td>{action}</td></tr>')
+    head = ((f'<th>{h(t("account_name"))}</th>' if admin else '') + f'<th>{h(t("psess_device"))}</th><th>{h(t("sessions_address"))}</th>'
+            f'<th>{h(t("psess_since"))}</th><th>{h(t("psess_seen"))}</th><th></th>')
+    others = sum(1 for e in items if e['account'] == me['name'] and e['hash'] != me['hash'])
+    buttons = ''
+    if others:
+        buttons += (f'<form method="post" action="/maintenance/sessions/others" class="inline viewer-ok">{csrf(request)}'
+                    f'<button class="btn btn-secondary" type="submit">{icon("logout",16)}{h(t("psess_others"))}</button></form>')
+    if admin:
+        buttons += (f'<form method="post" action="/maintenance/sessions/all" class="inline" data-confirm="{h(t("psess_all_confirm"))}">{csrf(request)}'
+                    f'<button class="btn btn-danger" type="submit">{icon("logout",16)}{h(t("psess_all"))}</button></form>')
+    return (f'<section class="maint-form-panel panel-sessions" id="panel-sessions"><h3>{icon("activity",19)}{h(t("psess_title"))}</h3>'
+            f'<p class="info-line">{h(t("psess_hint"))}</p>'
+            f'<div class="table-scroll"><table><thead><tr>{head}</tr></thead><tbody>{rows}</tbody></table></div>'
+            f'<div class="tg-actions">{buttons}</div></section>')
+
+
+def _session_id_owner(entry_id):
+    return next((k for k in PANEL_SESSIONS if k[:16] == entry_id), None)
+
+
+@app.post('/maintenance/sessions/end')
+async def panel_session_end(request: Request):
+    form = await request.form(); require_csrf(request, form.get('csrf', ''))
+    me = current(request)
+    entry_id = str(form.get('id', ''))
+    key = _session_id_owner(entry_id) if re.fullmatch(r'[0-9a-f]{16}', entry_id) else None
+    if not key or (me['role'] != 'admin' and PANEL_SESSIONS[key]['account'] != me['name']): raise HTTPException(404)
+    who = PANEL_SESSIONS[key]['account']
+    end_sessions(only={key}, why=f'{who}: ended by {me["name"]}')
+    if key == me['hash']:
+        request.session.clear()
+        return RedirectResponse('/login', status_code=303)
+    return RedirectResponse('/maintenance?tab=security#panel-sessions', status_code=303)
+
+
+@app.post('/maintenance/sessions/others')
+async def panel_session_others(request: Request):
+    form = await request.form(); require_csrf(request, form.get('csrf', ''))
+    me = current(request)
+    end_sessions(account=me['name'], keep=me['hash'], why=f'{me["name"]}: other sessions ended')
+    return RedirectResponse('/maintenance?tab=security#panel-sessions', status_code=303)
+
+
+@app.post('/maintenance/sessions/all')
+async def panel_session_all(request: Request):
+    form = await request.form(); require_csrf(request, form.get('csrf', ''))
+    try: ctl('session-revoke', {})
+    except RuntimeError as exc: return error_page(request, tr(lang_of(request), 'maintenance_error'), exc)
+    PANEL_SESSIONS.clear()
+    request.session.clear()
+    return RedirectResponse('/login', status_code=303)
+
+
+def accounts_tab(request, t, lang):
+    auth = read_auth()
+    me = current(request)
+    counts = {}
+    for entry in PANEL_SESSIONS.values():
+        if time.time() - entry['seen'] < SESSION_IDLE: counts[entry['account']] = counts.get(entry['account'], 0) + 1
+    own_password = (f'<label class="field"><span>{h(t("account_your_password"))}</span>'
+                    '<input type="password" name="password" required autocomplete="current-password"></label>')
+    rows = ''
+    for name in accounts_of(auth):
+        record = account_record(auth, name)
+        primary = record is auth
+        role = account_role(auth, name)
+        badges = (f'<span class="acc-badge">{h(t("account_main"))}</span>' if primary else '') + \
+                 (f'<span class="acc-badge is-ok">{h(t("account_you"))}</span>' if name == me['name'] else '')
+        role_select = ('' if primary or name == me['name'] else
+                       f'<label class="field"><span>{h(t("account_role"))}</span><select name="role">'
+                       + ''.join(f'<option value="{r}"{" selected" if r == role else ""}>{h(t("role_" + r))}</option>' for r in ('admin', 'viewer'))
+                       + '</select></label>')
+        name_url = quote(name, safe='')
+        edit = (f'<details class="account-edit"><summary class="btn btn-secondary btn-small">{icon("settings",14)}{h(t("account_edit"))}</summary>'
+                f'<form method="post" action="/maintenance/accounts/{name_url}" class="account-form">{csrf(request)}<div class="fields-grid">{role_select}'
+                f'<label class="field"><span>{h(t("password_new"))}</span><input type="password" name="new" minlength="12" autocomplete="new-password"'
+                f' placeholder="{h(t("account_keep_password"))}"></label>'
+                f'<label class="field"><span>{h(t("password_confirm"))}</span><input type="password" name="confirm" minlength="12" autocomplete="new-password"></label>'
+                f'{own_password}</div><button class="btn btn-primary" type="submit">{icon("check",16)}{h(t("save"))}</button></form>'
+                + ('' if primary or name == me['name'] else
+                   f'<form method="post" action="/maintenance/accounts/{name_url}/delete" class="account-form account-delete"'
+                   f' data-confirm="{h(t("account_delete_confirm").format(name=name))}">{csrf(request)}<div class="fields-grid">{own_password}</div>'
+                   f'<button class="btn btn-danger" type="submit">{icon("trash",16)}{h(t("account_delete"))}</button></form>')
+                + '</details>')
+        rows += (f'<tr><td><strong>{h(name)}</strong> {badges}</td><td>{h(t("role_" + role))}</td>'
+                 f'<td>{h(t("account_2fa_on") if record.get("totp_secret") else t("account_2fa_off"))}</td>'
+                 f'<td>{counts.get(name, 0)}</td><td>{h(str(record.get("created", ""))[:10] or "—")}</td><td>{edit}</td></tr>')
+    done = request.query_params.get('account')
+    notice = (f'<p class="bulk-notice" role="status">{icon("check",16)}<span>{h(t("account_done_" + done))}</span></p>'
+              if done in ('created', 'changed', 'deleted') else '')
+    add = (f'<section class="maint-form-panel"><h3>{icon("plus",19)}{h(t("account_add"))}</h3>'
+           f'<p class="info-line">{h(t("account_roles_hint"))}</p>'
+           f'<form method="post" action="/maintenance/accounts" class="account-form">{csrf(request)}<div class="fields-grid">'
+           f'<label class="field"><span>{h(t("account_name"))}</span><input name="name" required pattern="[a-z][a-z0-9_.\\-]{{1,31}}" maxlength="32"'
+           f' autocomplete="off" autocapitalize="none" spellcheck="false"><small>{h(t("account_name_hint"))}</small></label>'
+           f'<label class="field"><span>{h(t("account_role"))}</span><select name="role"><option value="viewer" selected>{h(t("role_viewer"))}</option>'
+           f'<option value="admin">{h(t("role_admin"))}</option></select></label>'
+           f'<label class="field"><span>{h(t("password_new"))}</span><input type="password" name="new" minlength="12" required autocomplete="new-password"></label>'
+           f'<label class="field"><span>{h(t("password_confirm"))}</span><input type="password" name="confirm" minlength="12" required autocomplete="new-password"></label>'
+           f'{own_password}</div><button class="btn btn-primary" type="submit">{icon("plus",16)}{h(t("account_create"))}</button></form></section>')
+    return (f'{notice}<section class="maint-form-panel"><h3>{icon("users",19)}{h(t("maint_accounts"))}</h3>'
+            f'<div class="table-scroll accounts-table"><table><thead><tr><th>{h(t("account_name"))}</th><th>{h(t("account_role"))}</th>'
+            f'<th>{h(t("account_2fa"))}</th><th>{h(t("account_sessions"))}</th><th>{h(t("account_created"))}</th><th></th></tr></thead>'
+            f'<tbody>{rows}</tbody></table></div></section>{add}')
+
+
+@app.post('/maintenance/accounts')
+async def account_create(request: Request):
+    form = await request.form(); require_csrf(request, form.get('csrf', ''))
+    lang = lang_of(request)
+    new = str(form.get('new', ''))
+    if new != str(form.get('confirm', '')): return error_page(request, tr(lang, 'maintenance_error'), tr(lang, 'password_mismatch'))
+    name = str(form.get('name', '')).strip().lower()
+    try: ctl('account-set', {'create': True, 'name': name, 'role': str(form.get('role', 'viewer')), 'new_password': new,
+                             'actor': current(request)['name'], 'password': str(form.get('password', ''))})
+    except RuntimeError as exc: return error_page(request, tr(lang, 'maintenance_error'), exc)
+    return RedirectResponse('/maintenance?tab=accounts&account=created', status_code=303)
+
+
+@app.post('/maintenance/accounts/{name}')
+async def account_change(request: Request, name: str):
+    form = await request.form(); require_csrf(request, form.get('csrf', ''))
+    lang = lang_of(request)
+    if not ACCOUNT_RE.fullmatch(name): raise HTTPException(404)
+    new = str(form.get('new', ''))
+    if new != str(form.get('confirm', '')): return error_page(request, tr(lang, 'maintenance_error'), tr(lang, 'password_mismatch'))
+    payload = {'name': name, 'actor': current(request)['name'], 'password': str(form.get('password', ''))}
+    if form.get('role'): payload['role'] = str(form.get('role'))
+    if new: payload['new_password'] = new
+    try: result = ctl('account-set', payload)
+    except RuntimeError as exc: return error_page(request, tr(lang, 'maintenance_error'), exc)
+    if result.get('ended'):
+        me = current(request)
+        end_sessions(account=name, keep=me['hash'] if name == me['name'] else '', why=f'{name}: account changed')
+    return RedirectResponse('/maintenance?tab=accounts&account=changed', status_code=303)
+
+
+@app.post('/maintenance/accounts/{name}/delete')
+async def account_remove(request: Request, name: str):
+    form = await request.form(); require_csrf(request, form.get('csrf', ''))
+    lang = lang_of(request)
+    if not ACCOUNT_RE.fullmatch(name): raise HTTPException(404)
+    try: ctl('account-delete', {'name': name, 'actor': current(request)['name'], 'password': str(form.get('password', ''))})
+    except RuntimeError as exc: return error_page(request, tr(lang, 'maintenance_error'), exc)
+    end_sessions(account=name, why=f'{name}: account deleted')
+    return RedirectResponse('/maintenance?tab=accounts&account=deleted', status_code=303)
+
+
+TEXT['ru'].update({
+    'maint_accounts': 'Учётные записи', 'maint_accounts_hint': 'Кто входит в панель: администраторы меняют всё, наблюдатели только смотрят. Ключи и конфигурации наблюдателям не показываются.',
+    'account_name': 'Учётная запись', 'account_name_hint': '2–32 символа: a–z, 0–9, точка, _ и -, начинается с буквы.',
+    'account_role': 'Роль', 'role_admin': 'администратор', 'role_viewer': 'наблюдатель', 'account_mine': 'Моя учётная запись и сессии',
+    'account_main': 'главная', 'account_you': 'вы', 'account_2fa': '2FA', 'account_2fa_on': 'вкл.', 'account_2fa_off': 'выкл.',
+    'account_sessions': 'Сессий', 'account_created': 'Создана', 'account_edit': 'Изменить', 'account_keep_password': 'не менять',
+    'account_your_password': 'Ваш пароль', 'account_delete': 'Удалить учётную запись', 'account_delete_confirm': 'Удалить учётную запись {name}? Её сессии завершатся.',
+    'account_add': 'Новая учётная запись', 'account_create': 'Создать', 'save': 'Сохранить',
+    'account_roles_hint': 'Наблюдатель видит серверы, клиентов, статистику, диагностику и журнал действий, но ничего не меняет и не получает ключи, конфигурации и копии. Двухфакторный вход каждый включает себе сам в «Безопасность».',
+    'account_done_created': 'Учётная запись создана.', 'account_done_changed': 'Изменения сохранены; сессии этой учётной записи завершены.',
+    'account_done_deleted': 'Учётная запись удалена.',
+    'viewer_banner': 'Режим наблюдателя: изменения недоступны.', 'viewer_denied': 'Недоступно для наблюдателя.',
+    'viewer_no_config': 'Конфигурация, QR-код и ссылки доступны только администраторам.',
+    'psess_title': 'Активные сессии', 'psess_hint': 'Где сейчас выполнен вход в панель. Сессия заканчивается через час без действий; завершённая сессия перестаёт работать сразу.',
+    'psess_device': 'Браузер', 'psess_since': 'Вход (UTC)', 'psess_seen': 'Активность', 'psess_this': 'Эта сессия', 'psess_end': 'Завершить',
+    'psess_others': 'Завершить мои остальные сессии', 'psess_all': 'Выйти везде', 'psess_all_confirm': 'Завершить все сессии всех учётных записей, включая эту?',
+})
+TEXT['en'].update({
+    'maint_accounts': 'Accounts', 'maint_accounts_hint': 'Who signs in to the panel: administrators change everything, viewers only look. Viewers never see keys or configurations.',
+    'account_name': 'Account', 'account_name_hint': '2–32 characters: a–z, 0–9, dot, _ and -, starting with a letter.',
+    'account_role': 'Role', 'role_admin': 'administrator', 'role_viewer': 'viewer', 'account_mine': 'My account and sessions',
+    'account_main': 'main', 'account_you': 'you', 'account_2fa': '2FA', 'account_2fa_on': 'on', 'account_2fa_off': 'off',
+    'account_sessions': 'Sessions', 'account_created': 'Created', 'account_edit': 'Change', 'account_keep_password': 'unchanged',
+    'account_your_password': 'Your password', 'account_delete': 'Delete the account', 'account_delete_confirm': 'Delete the account {name}? Its sessions end.',
+    'account_add': 'New account', 'account_create': 'Create', 'save': 'Save',
+    'account_roles_hint': 'A viewer sees servers, clients, statistics, diagnostics and the audit log, but changes nothing and gets no keys, configurations or backups. Everyone turns on two-factor sign-in for themselves under Security.',
+    'account_done_created': 'The account was created.', 'account_done_changed': 'Saved; the account’s sessions have ended.',
+    'account_done_deleted': 'The account was deleted.',
+    'viewer_banner': 'Viewer mode: changes are not available.', 'viewer_denied': 'Not available to a viewer.',
+    'viewer_no_config': 'The configuration, QR code and links are for administrators only.',
+    'psess_title': 'Active sessions', 'psess_hint': 'Where the panel is signed in right now. A session ends after an hour without activity; an ended session stops working at once.',
+    'psess_device': 'Browser', 'psess_since': 'Signed in (UTC)', 'psess_seen': 'Activity', 'psess_this': 'This session', 'psess_end': 'End',
+    'psess_others': 'End my other sessions', 'psess_all': 'Sign out everywhere', 'psess_all_confirm': 'End every session of every account, this one included?',
 })

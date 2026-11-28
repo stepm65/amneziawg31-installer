@@ -33,7 +33,10 @@ VALID_AUDIT = {'login_success', 'login_failed', 'password_changed', 'client_adde
                'mask_profile_applied', 'subscription_created', 'subscription_revoked', 'once_link_created', 'once_link_revoked', 'once_link_used', 'packet_probe',
                'client_moved', 'server_silent', 'server_back',
                'owner_created', 'owner_changed', 'owner_deleted', 'owner_blocked', 'owner_unblocked', 'clients_imported',
-               'snapshot_deleted'}
+               'snapshot_deleted', 'account_created', 'account_changed', 'account_deleted', 'session_ended'}
+ACCOUNT_RE=re.compile(r'^[a-z][a-z0-9_.-]{1,31}$')
+ROLES=('admin','viewer')
+MAX_ACCOUNTS=20
 
 
 def _host_uplink():
@@ -336,6 +339,8 @@ def audit(data):
     target = mask_text(target)
     path = audit_file(); path.parent.mkdir(parents=True,exist_ok=True,mode=0o700)
     record={'timestamp':datetime.now(timezone.utc).isoformat(),'event':event,'target':target}
+    who=actor()
+    if who: record['actor']=who
     fd=os.open(path,os.O_WRONLY|os.O_APPEND|os.O_CREAT|os.O_NOFOLLOW,0o600)
     try:
         os.write(fd,(json.dumps(record,ensure_ascii=False)+'\n').encode())
@@ -359,6 +364,136 @@ def audit_recent():
     return {'entries':items[-100:]}
 
 
+def actor():
+    """Who asked: the panel account (handed over by awg31mgr), the bot, or root at the console."""
+    caller=os.environ.get('AWG31_CALLER','') or os.environ.get('SUDO_USER','')
+    if caller=='awgpanel':
+        name=os.environ.get('AWG31_ACTOR','')
+        return name if ACCOUNT_RE.fullmatch(name) else ''
+    if caller=='awgbot': return 'telegram'
+    if os.environ.get('SUDO_USER'): return 'console'
+    return ''
+
+
+def primary_name(auth):
+    name=str(auth.get('name') or 'admin')
+    return name if ACCOUNT_RE.fullmatch(name) else 'admin'
+
+
+def account_record(auth, name=''):
+    """The credentials of one account: the main one lives at the top of auth.json, the others under 'users'."""
+    name=str(name or '')
+    if not name or name==primary_name(auth): return auth
+    users=auth.get('users') if isinstance(auth.get('users'),dict) else {}
+    record=users.get(name)
+    if not ACCOUNT_RE.fullmatch(name) or not isinstance(record,dict): raise ValueError('No such account')
+    return record
+
+
+def account_role(auth, name=''):
+    record=account_record(auth,name)
+    return 'admin' if record is auth else (record.get('role') if record.get('role') in ROLES else 'viewer')
+
+
+def _hash_password(record, new):
+    salt=secrets.token_bytes(16)
+    record['salt']=salt.hex()
+    record['password_hash']=hashlib.scrypt(new.encode(),salt=salt,n=2**14,r=8,p=1,dklen=32).hex()
+
+
+def _require_admin_password(auth, data):
+    """Account changes: the acting account must be an administrator and type its own password."""
+    who=str(data.get('actor',''))
+    try: record=account_record(auth,who)
+    except ValueError: raise ValueError('Incorrect password') from None
+    if account_role(auth,who)!='admin' or not _password_ok(record,data.get('password','')): raise ValueError('Incorrect password')
+    return primary_name(auth) if record is auth else who
+
+
+def account_set(data):
+    """Create an account, or change its role or password. The main account always stays an administrator."""
+    file=auth_file(); auth=json.loads(file.read_text())
+    who=_require_admin_password(auth,data)
+    name=str(data.get('name',''))
+    if not ACCOUNT_RE.fullmatch(name): raise ValueError('Account name: 2-32 characters a-z, 0-9, . _ -, starting with a letter')
+    users=auth.setdefault('users',{})
+    if not isinstance(users,dict): raise ValueError('auth.json is damaged')
+    role=str(data.get('role',''))
+    new=str(data.get('new_password',''))
+    if role and role not in ROLES: raise ValueError('Role: admin or viewer')
+    if new: _check_new_password(new)
+    if data.get('create'):
+        if name==primary_name(auth) or name in users: raise ValueError('The account already exists')
+        if len(users)>=MAX_ACCOUNTS-1: raise ValueError('At most 20 accounts')
+        if not new: raise ValueError('Password must be 12-256 characters')
+        record={'role':role or 'viewer','created':datetime.now(timezone.utc).isoformat(timespec='seconds')}
+        _hash_password(record,new); users[name]=record
+        _save_auth(auth,file,rotate=False)
+        audit({'event':'account_created','target':f'{name} ({record["role"]})'})
+        return {'ok':True,'name':name,'ended':False}
+    record=account_record(auth,name)
+    if record is auth and role and role!='admin': raise ValueError('The main account is always an administrator')
+    if name==who and role and role!='admin': raise ValueError('You cannot take the administrator role from yourself')
+    changes=[]
+    if role and record is not auth and role!=record.get('role'): record['role']=role; changes.append('role '+role)
+    if new: _hash_password(record,new); changes.append('password')
+    if not changes: return {'ok':True,'name':name,'ended':False}
+    _save_auth(auth,file,rotate=False)
+    audit({'event':'account_changed','target':f'{name}: '+', '.join(changes)})
+    return {'ok':True,'name':name,'ended':True}            # the panel ends that account's sessions
+
+
+def account_delete(data):
+    file=auth_file(); auth=json.loads(file.read_text())
+    who=_require_admin_password(auth,data)
+    name=str(data.get('name',''))
+    if name==primary_name(auth): raise ValueError('The main account cannot be deleted')
+    if name==who: raise ValueError('You cannot delete yourself')
+    users=auth.get('users') if isinstance(auth.get('users'),dict) else {}
+    if name not in users: raise ValueError('No such account')
+    users.pop(name)
+    _save_auth(auth,file,rotate=False)
+    audit({'event':'account_deleted','target':name})
+    return {'ok':True,'name':name}
+
+
+SESSION_ID=re.compile(r'^[0-9a-f]{16}$')
+
+
+def sessions_file():
+    return auth_file().with_name('sessions.json')
+
+
+def session_save(data):
+    """The panel keeps its sign-ins in memory and hands them here to survive a restart: only hashes of the
+    cookies' session numbers, never the numbers themselves."""
+    items=data.get('sessions')
+    if not isinstance(items,list) or len(items)>200: raise ValueError('Invalid sessions')
+    clean=[]
+    for item in items:
+        if not isinstance(item,dict): raise ValueError('Invalid sessions')
+        entry={'hash':str(item.get('hash','')),'account':str(item.get('account','')),'addr':str(item.get('addr',''))[:64],
+               'agent':str(item.get('agent',''))[:160],'created':int(item.get('created',0) or 0),'seen':int(item.get('seen',0) or 0)}
+        if not re.fullmatch(r'[0-9a-f]{64}',entry['hash']) or not ACCOUNT_RE.fullmatch(entry['account']):
+            raise ValueError('Invalid sessions')
+        if any(ord(x)<32 for x in entry['addr']+entry['agent']): raise ValueError('Invalid sessions')
+        clean.append(entry)
+    file=sessions_file()
+    fd,path=tempfile.mkstemp(prefix='.awg31-sessions-',dir=file.parent)
+    try:
+        with os.fdopen(fd,'w') as fp:
+            json.dump({'sessions':clean},fp); fp.flush(); os.fsync(fp.fileno()); os.fchmod(fp.fileno(),0o640)
+        original=auth_file().stat()
+        os.chown(path,original.st_uid,original.st_gid)
+        os.replace(path,file)
+    finally:
+        Path(path).unlink(missing_ok=True)
+    if data.get('ended'):
+        what=str(data['ended'])[:120]
+        if not any(ord(x)<32 for x in what): audit({'event':'session_ended','target':what})
+    return {'ok':True,'count':len(clean)}
+
+
 def session_revoke():
     """Sign out everywhere: cookies issued before this moment stop working.
 
@@ -367,7 +502,9 @@ def session_revoke():
     """
     file=auth_file(); auth=json.loads(file.read_text())
     _save_auth(auth,file)
-    audit({'event':'logout'})
+    try: sessions_file().unlink(missing_ok=True)
+    except OSError: pass
+    audit({'event':'logout','target':'all sessions'})
     return {'ok':True}
 
 
@@ -379,9 +516,9 @@ def _store_password(auth, new, file):
     _save_auth(auth,file)
 
 
-def _save_auth(auth, file):
-    # Keep middleware signing key, but expire all previously issued sessions.
-    auth['auth_version']=secrets.token_hex(16)
+def _save_auth(auth, file, rotate=True):
+    # Keep middleware signing key; rotate=True expires every issued session (sign out everywhere, console reset).
+    if rotate or not auth.get('auth_version'): auth['auth_version']=secrets.token_hex(16)
     fd,path=tempfile.mkstemp(prefix='.awg31-auth-',dir=file.parent)
     try:
         with os.fdopen(fd,'w') as fp:
@@ -431,7 +568,10 @@ def require_panel_password(data):
     if not from_service(): return
     try: auth=json.loads(auth_file().read_text())
     except (OSError,ValueError): raise ValueError('Cannot read the panel credentials') from None
-    if not _password_ok(auth,data.get('password','')): raise ValueError('Incorrect panel password')
+    try: record=account_record(auth,str(os.environ.get('AWG31_ACTOR','') or ''))
+    except ValueError: raise ValueError('Incorrect panel password') from None
+    if record is not auth and record.get('role')!='admin': raise ValueError('Incorrect panel password')
+    if not _password_ok(record,data.get('password','')): raise ValueError('Incorrect panel password')
 
 
 RECOVERY_ALPHABET='abcdefghjkmnpqrstuvwxyz23456789'      # no 0/o, 1/l/i: read from paper without doubt
@@ -460,19 +600,19 @@ def _recovery_issue(auth):
 
 def totp_recovery_new(data):
     """New recovery codes (the old ones stop working): the password and a current code."""
-    file=auth_file(); auth=json.loads(file.read_text())
+    file=auth_file(); root=json.loads(file.read_text()); auth=account_record(root,data.get('account',''))
     if not auth.get('totp_secret'): raise ValueError('Two-factor sign-in is off')
     if not _password_ok(auth,data.get('password','')): raise ValueError('Incorrect password')
     if totp_counter_for(auth['totp_secret'],data.get('code','')) is None: raise ValueError('Incorrect code')
     codes=_recovery_issue(auth)
-    _save_auth(auth,file)
-    audit({'event':'totp_recovery_new'})
+    _save_auth(root,file,rotate=False)
+    audit({'event':'totp_recovery_new','target':str(data.get('account','') or '')})
     return {'ok':True,'recovery_codes':codes}
 
 
 def totp_recovery_use(data):
     """Sign-in with a recovery code instead of the app: the password too, and every code works once."""
-    file=auth_file(); auth=json.loads(file.read_text())
+    file=auth_file(); root=json.loads(file.read_text()); auth=account_record(root,data.get('account',''))
     if not auth.get('totp_secret') or not auth.get('totp_recovery'): raise ValueError('No recovery codes')
     if not _password_ok(auth,data.get('password','')): raise ValueError('Incorrect password')
     code=_recovery_norm(data.get('code',''))
@@ -481,8 +621,8 @@ def totp_recovery_use(data):
     left=[x for x in auth['totp_recovery'] if not secrets.compare_digest(x,wanted)]
     if len(left)==len(auth['totp_recovery']): raise ValueError('Incorrect recovery code')
     auth['totp_recovery']=left
-    _save_auth(auth,file)
-    audit({'event':'totp_recovery_used','target':f'{len(left)} left'})
+    _save_auth(root,file,rotate=False)
+    audit({'event':'totp_recovery_used','target':(str(data.get('account') or '')+' ' if data.get('account') else '')+f'{len(left)} left'})
     return {'ok':True,'left':len(left)}
 
 
@@ -491,7 +631,7 @@ def totp_enable(data):
     when a key is already set, a code from the current one."""
     secret=str(data.get('secret','')).strip().upper()
     if not re.fullmatch(r'[A-Z2-7]{32}',secret): raise ValueError('Invalid TOTP secret')
-    file=auth_file(); auth=json.loads(file.read_text())
+    file=auth_file(); root=json.loads(file.read_text()); auth=account_record(root,data.get('account',''))
     if not _password_ok(auth,data.get('password','')): raise ValueError('Incorrect password')
     if auth.get('totp_secret'):
         if secret==auth['totp_secret']: raise ValueError('The new key must differ from the current one')
@@ -501,19 +641,19 @@ def totp_enable(data):
         raise ValueError('The code does not match: check the clock of the server and of the phone')
     auth['totp_secret']=secret
     codes=_recovery_issue(auth)            # a new key comes with new recovery codes
-    _save_auth(auth,file)
-    audit({'event':'totp_enabled'})
+    _save_auth(root,file,rotate=False)     # the panel ends this account's sessions
+    audit({'event':'totp_enabled','target':str(data.get('account','') or '')})
     return {'ok':True,'recovery_codes':codes}
 
 
 def totp_disable(data):
-    file=auth_file(); auth=json.loads(file.read_text())
+    file=auth_file(); root=json.loads(file.read_text()); auth=account_record(root,data.get('account',''))
     if not auth.get('totp_secret'): return {'ok':True}
     if not _password_ok(auth,data.get('password','')): raise ValueError('Incorrect password')
     if totp_counter_for(auth['totp_secret'],data.get('code','')) is None: raise ValueError('Incorrect code')
     for key in ('totp_secret','totp_recovery','totp_recovery_salt'): auth.pop(key,None)
-    _save_auth(auth,file)
-    audit({'event':'totp_disabled'})
+    _save_auth(root,file,rotate=False)
+    audit({'event':'totp_disabled','target':str(data.get('account','') or '')})
     return {'ok':True}
 
 
@@ -1215,11 +1355,12 @@ def password_change(data):
     old=str(data.get('old_password',''))
     new=str(data.get('new_password',''))
     _check_new_password(new)
-    file=auth_file(); auth=json.loads(file.read_text())
+    file=auth_file(); root=json.loads(file.read_text()); auth=account_record(root,data.get('account',''))
     if not _password_ok(auth,old):
         raise ValueError('Incorrect old password')
-    _store_password(auth,new,file)
-    audit({'event':'password_changed'})
+    _hash_password(auth,new)
+    _save_auth(root,file,rotate=False)          # the panel ends this account's sessions
+    audit({'event':'password_changed','target':str(data.get('account','') or '')})
     return {'ok':True}
 
 
@@ -1565,7 +1706,7 @@ def audit_list(data=None):
                 if event and item.get('event')!=event: continue
                 if since and stamp[:10]<since: continue
                 if until and stamp[:10]>until: continue
-                if text and text not in (str(item.get('event',''))+' '+str(item.get('target',''))).lower(): continue
+                if text and text not in (str(item.get('event',''))+' '+str(item.get('target',''))+' '+str(item.get('actor',''))).lower(): continue
                 matched.append({'timestamp':stamp,'event':str(item.get('event','')),'target':str(item.get('target',''))})
     matched.reverse()
     total=len(matched)

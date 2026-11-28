@@ -1508,3 +1508,27 @@ tr:hover .extra-dot {box-shadow:0 0 0 2px #1e2228}
 .client-traffic-chart .ct-tx {fill:var(--blue,#8fb4ff)}
 .client-traffic-chart .ct-hit {fill:transparent}
 .client-traffic-chart g:hover .ct-hit {fill:rgba(255,255,255,.05)}
+
+/* 0.24: accounts, viewer mode, panel sessions */
+.account-chip {display:inline-flex;align-items:center;gap:6px;min-height:36px;padding:0 12px;border:1px solid var(--md-sys-color-outline-variant);border-radius:999px;color:var(--text,#e9ecf0);text-decoration:none;font-size:13px;font-weight:600;white-space:nowrap}
+.account-chip small {color:var(--muted);font-weight:500}
+.account-chip:hover {border-color:#f3a51e}
+@media (max-width:640px){.account-chip small{display:none}}
+.viewer-banner {display:flex;align-items:center;gap:8px;margin:0 0 16px;padding:10px 14px;border-radius:12px;background:rgba(110,170,240,.1);border:1px solid rgba(110,170,240,.25);color:#bcd5f3;font-size:13.5px}
+.role-viewer form[method="post"]:not(.viewer-ok) {pointer-events:none}
+.role-viewer form[method="post"]:not(.viewer-ok) button,
+.role-viewer form[method="post"]:not(.viewer-ok) [type="submit"],
+.role-viewer button[form],
+.role-viewer .admin-only {display:none !important}
+.acc-badge {display:inline-block;margin-left:6px;padding:1px 8px;border-radius:999px;border:1px solid var(--md-sys-color-outline-variant);color:var(--muted);font-size:11.5px;font-weight:600;vertical-align:middle}
+.acc-badge.is-ok {border-color:rgba(67,195,147,.35);color:#92dbc0;background:rgba(67,195,147,.08)}
+.accounts-table td, .panel-sessions td {vertical-align:top}
+.account-edit summary {list-style:none;cursor:pointer}
+.account-edit summary::-webkit-details-marker {display:none}
+.account-edit[open] {min-width:min(560px,80vw)}
+.account-form {margin-top:12px}
+.account-delete {padding-top:12px;border-top:1px solid var(--md-sys-color-outline-variant)}
+.panel-sessions tr.is-current td {background:rgba(67,195,147,.05)}
+.audit-actor {display:inline-flex;align-items:center;gap:4px;color:#a9c8ef;font-size:12.5px}
+@media (min-width:641px){.audit-entry{grid-template-columns:minmax(150px,190px) minmax(150px,1fr) minmax(140px,1.4fr) minmax(0,auto)}}
+.panel-sessions .tg-actions {margin-top:14px;display:flex;flex-wrap:wrap;gap:10px}

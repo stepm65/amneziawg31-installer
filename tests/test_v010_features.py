@@ -258,7 +258,8 @@ def test_totp_needs_password_and_a_valid_code_to_turn_on_and_off(auth):
     assert 'totp_secret' not in json.loads(file.read_text())
     admin.totp_enable({'password': 'the-right-password', 'secret': secret, 'code': totp_now(secret, -1)})   # one step of drift
     stored = json.loads(file.read_text())
-    assert stored['totp_secret'] == secret and stored['auth_version'] != 'v1', 'every session ends when the rule changes'
+    # 0.24: the panel ends this account's sessions itself; other accounts stay signed in.
+    assert stored['totp_secret'] == secret and stored['auth_version'] == 'v1'
     with pytest.raises(ValueError):
         admin.totp_disable({'password': 'the-right-password', 'code': '111111'})
     with pytest.raises(ValueError):

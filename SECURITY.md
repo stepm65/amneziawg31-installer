@@ -34,6 +34,14 @@ A valid panel session is not enough for changes that outlive it. The panel passw
 - Handshake debug writes to `/sys/kernel/debug/dynamic_debug/control` and schedules a systemd timer that switches it off after 15 minutes, so it cannot be left on by accident.
 - The support report removes keys (`[key]`), Telegram tokens (`[token]`), `PrivateKey`/`PresharedKey`/`PublicKey`/`HeaderProtectionKey`/`Endpoint` lines and public addresses (always fully masked). It is generated on request and not stored on the server.
 
+## Accounts and sessions (0.24)
+
+- Accounts live in `auth.json` (root:awgpanel 640): the main account at the top, the others under `users`, each with its own scrypt hash, TOTP key and recovery codes. Only the root helper writes the file; creating, changing or deleting an account needs an administrator account and that account's password, checked by the helper. The main account cannot be demoted or deleted, nobody can demote or delete themselves.
+- A viewer is refused on the server side: every POST except its own password, two-factor and session forms returns 403 before reaching the helper, and the routes that return keys (configuration download, QR, `vpn://` link, backups, profiles, CSV export, log download) refuse it as well. The client page shows a viewer no configuration. Panel-password checks in the helper (backup encryption, Telegram, update) accept only an administrator account.
+- The audit log records the account. The panel sends its signed-in account to awg31mgr as `_actor`; awg31mgr believes it only when the caller is the panel user, records `telegram` for the bot user and `console` for root through sudo.
+- Sessions: the signed cookie carries a random 256-bit session number; the panel keeps sha256 of it with the account, address, browser and times, and saves that list through the helper to `/etc/awg31-panel/sessions.json` (root:awgpanel 640), so a restart signs nobody out. A cookie is accepted only while its entry exists, its account exists and the global `auth_version` matches, so ending one session or deleting an account takes effect at once. “Sign out everywhere” changes `auth_version` and removes the list. Idle sessions end after an hour; at most 100 are kept.
+- An unknown account name at sign-in costs the same scrypt round as a wrong password; failures are rate limited per address as before.
+
 ## Importing clients (0.21)
 
 - Uploaded files are parsed by the unprivileged panel (`awg31import.py`), from memory and a private temporary copy opened read-only; nothing is kept. The root side gets only the extracted records and checks every field again (names, keys and their pairing, addresses inside the subnet, terms, limits, Telegram IDs); `import-batch`, the controller step, is in no sudo list, and the panel may run `clients-import` while the bot may not.

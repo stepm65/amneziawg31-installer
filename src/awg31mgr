@@ -34,7 +34,7 @@ ADMIN = {'servers', 'server-create', 'client-move', 'server-start', 'server-stop
          'backup-encryption','backup-encryption-set','backup-export-encrypted',
          'backup-encryption-change','backup-remote','backup-remote-set','backup-remote-test',
          'audit-search','logging-status','logging-set','logs-read','handshake-debug','support-report',
-         'owners','owner-set','owner-delete','owner-device-add','clients-import','snapshot-delete'}
+         'owners','owner-set','owner-delete','owner-device-add','clients-import','snapshot-delete','account-set','account-delete','session-save'}
 # Ops that may give a client an owner, and ops that must know which owners are blocked.
 OWNER_OPS = {'add', 'client-policy', 'client-batch'}
 BLOCK_AWARE = {'enable', 'client-batch'}
@@ -172,9 +172,15 @@ def main():
     no_payload = {'servers', 'sample-all', 'backup-create', 'backup-list', 'backup-policy', 'backup-run', 'audit-list',
                   'session-revoke', 'obfuscation-generate', 'totp-reset', 'telegram-status', 'telegram-test',
                   'backup-encryption', 'backup-remote', 'backup-remote-test', 'logging-status', 'support-report'}
-    raw = '' if op in no_payload or sys.stdin.isatty() else sys.stdin.read(1 << 20 if op == 'clients-import' else 32768)
+    raw = '' if op in no_payload or sys.stdin.isatty() else sys.stdin.read(1 << 20 if op == 'clients-import' else 1 << 17 if op == 'session-save' else 32768)
     data=json.loads(raw) if raw.strip() else {}
     if not isinstance(data,dict): raise ValueError('Expected JSON object')
+    # The panel names its signed-in account for the audit log; only the panel's word counts.
+    actor=data.pop('_actor',None)
+    os.environ.pop('AWG31_ACTOR',None)
+    caller=os.environ.get('AWG31_CALLER','') or os.environ.get('SUDO_USER','')
+    if caller=='awgpanel' and isinstance(actor,str) and re.fullmatch(r'[a-z][a-z0-9_.-]{1,31}',actor):
+        os.environ['AWG31_ACTOR']=actor
     admin=load_source('awg31admin',Path(__file__).with_name('awg31admin.py'))
     if op=='servers': return {'servers':[info(x) for x in interfaces()]}
     me=sys.modules[__name__]
@@ -199,6 +205,9 @@ def main():
     if op=='update-status': return admin.update_status(data)
     if op=='update-start': return admin.update_start(data)
     if op=='snapshot-delete': return admin.snapshot_delete(data)
+    if op=='account-set': return admin.account_set(data)
+    if op=='account-delete': return admin.account_delete(data)
+    if op=='session-save': return admin.session_save(data)
     if op=='telegram-status': return admin.telegram_status()
     if op=='telegram-connect': return admin.telegram_connect(data)
     if op=='telegram-disconnect': return admin.telegram_disconnect(data)

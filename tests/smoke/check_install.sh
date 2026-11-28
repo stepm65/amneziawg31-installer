@@ -448,6 +448,19 @@ grep -q 'Incorrect panel password' <<<"$sudo_reply" || fail "the sudo path ran w
 reply="$(PW="$panel_password" python3 -c 'import json,os; print(json.dumps({"passphrase": "smoke NEW passphrase 2027", "password": os.environ["PW"]}))')"
 panel_call backup-encryption-change "$reply" | grep -q '^0 ' || fail 'the panel cannot change the passphrase with its password'
 opens 'smoke NEW passphrase 2027' || fail 'the archive does not open after the change from the panel'
+# 0.24: accounts. A viewer is created with the administrator's password, cannot pass a panel-password check
+# with its own, and the audit log names who acted.
+reply="$(PW="$panel_password" python3 -c 'import json,os; print(json.dumps({"create": True, "name": "smoke-viewer", "role": "viewer", "new_password": "viewer-password-1", "actor": "admin", "password": os.environ["PW"], "_actor": "admin"}))')"
+panel_call account-set "$reply" | grep -q '^0 ' || fail 'the panel cannot create an account'
+python3 -c 'import json; a=json.load(open("/etc/awg31-panel/auth.json")); assert a["users"]["smoke-viewer"]["role"]=="viewer"' || fail 'the account was not stored'
+grep '"account_created"' /var/log/awg31-panel/audit.jsonl | tail -n1 | grep -q '"actor": "admin"' || fail 'the audit log does not name the account'
+panel_call backup-encryption-change '{"passphrase": "smoke viewer passphrase 2029", "password": "viewer-password-1", "_actor": "smoke-viewer"}' \
+  | grep -q 'Incorrect panel password' || fail 'a viewer passed the panel-password check'
+panel_call session-save '{"sessions": [{"hash": "'"$(printf 'a%.0s' {1..64})"'", "account": "admin", "addr": "198.51.100.9", "agent": "smoke", "created": 1, "seen": 2}]}' \
+  | grep -q '^0 ' || fail 'the panel cannot save its session list'
+[[ "$(stat -c '%U:%G %a' /etc/awg31-panel/sessions.json)" == 'root:awgpanel 640' ]] || fail 'the session list has wrong owner or mode'
+reply="$(PW="$panel_password" python3 -c 'import json,os; print(json.dumps({"name": "smoke-viewer", "actor": "admin", "password": os.environ["PW"]}))')"
+panel_call account-delete "$reply" | grep -q '^0 ' || fail 'the panel cannot delete an account'
 
 step 'Backups are uploaded over SFTP'
 if systemctl is-active --quiet ssh || systemctl is-active --quiet sshd; then

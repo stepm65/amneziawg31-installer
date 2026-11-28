@@ -150,6 +150,10 @@ TEXT = {
         'n_login': '🔐 Вход в веб-панель с адреса <code>{target}</code>.',
         'n_login_failed': '⚠️ Неудачные попытки входа в веб-панель: {count} (последний адрес <code>{target}</code>).',
         'n_password': '🔑 Пароль веб-панели изменён.',
+        'n_by': ' Учётная запись: <b>{who}</b>.',
+        'n_account_created': '👤 В веб-панели создана учётная запись <code>{target}</code>.',
+        'n_account_changed': '👤 Учётная запись веб-панели изменена: <code>{target}</code>.',
+        'n_account_deleted': '👤 Учётная запись веб-панели удалена: <code>{target}</code>.',
         'b_tg': '👤 Telegram ID', 'ask_tg': 'Отправьте числовой Telegram ID владельца <b>{name}</b>. Он сможет смотреть состояние этого клиента в боте (только просмотр). 0 — убрать.',
         'bad_tg': 'Нужен числовой ID (только цифры), а не @имя. 0 — убрать.', 'owner': '\nВладелец (Telegram ID): {id}',
         'my': '<b>Ваш VPN</b>', 'my_client': ('<b>{name}</b>\nСостояние: {state}\nИспользовано: {used}{quota}\n'
@@ -291,6 +295,10 @@ TEXT = {
         'n_login': '🔐 Sign-in to the web panel from <code>{target}</code>.',
         'n_login_failed': '⚠️ Failed sign-in attempts to the web panel: {count} (last address <code>{target}</code>).',
         'n_password': '🔑 The web panel password was changed.',
+        'n_by': ' Account: <b>{who}</b>.',
+        'n_account_created': '👤 A web panel account was created: <code>{target}</code>.',
+        'n_account_changed': '👤 A web panel account was changed: <code>{target}</code>.',
+        'n_account_deleted': '👤 A web panel account was deleted: <code>{target}</code>.',
         'b_tg': '👤 Telegram ID', 'ask_tg': 'Send the numeric Telegram ID of the owner of <b>{name}</b>. That person can view the state of this client in the bot (read only). 0 removes it.',
         'bad_tg': 'Send a numeric ID (digits only), not a @username. 0 removes it.', 'owner': '\nOwner (Telegram ID): {id}',
         'my': '<b>Your VPN</b>', 'my_client': ('<b>{name}</b>\nState: {state}\nUsed: {used}{quota}\n'
@@ -1394,8 +1402,9 @@ class Bot:
                 continue
             if '(telegram ' in target:
                 continue                    # the administrator did this through the bot and already saw the result
+            who = str(entry.get('actor', ''))
             if event == 'login_success' and self.on('login'):
-                self.notify(self.t('n_login', target=target))
+                self.notify(self.t('n_login', target=target) + (self.t('n_by', who=html.escape(who)) if who else ''))
             elif event in ('panel_updated', 'panel_update_failed', 'panel_rolled_back') and self.on('update'):
                 key = {'panel_updated': 'n_updated', 'panel_update_failed': 'n_update_failed', 'panel_rolled_back': 'n_rolled_back'}[event]
                 self.notify(self.t(key, target=target or '?'))
@@ -1406,9 +1415,12 @@ class Bot:
             elif event in ('owner_blocked', 'owner_unblocked'):
                 self.owner_limit_changed(event, target)
             elif event == 'totp_recovery_used' and self.on('totp_recovery'):
-                self.notify(self.t('n_totp_recovery', left=target.split()[0] if target else '?'))
+                left = re.search(r'([0-9]+) left', target)
+                self.notify(self.t('n_totp_recovery', left=left.group(1) if left else '?') + (self.t('n_by', who=html.escape(who)) if who else ''))
             elif event == 'password_changed' and self.on('password'):
-                self.notify(self.t('n_password'))
+                self.notify(self.t('n_password') + (self.t('n_by', who=html.escape(who)) if who else ''))
+            elif event in ('account_created', 'account_changed', 'account_deleted') and self.on('password'):
+                self.notify(self.t('n_' + event, target=html.escape(target)) + (self.t('n_by', who=html.escape(who)) if who else ''))
             elif event in ('client_disabled', 'client_enabled') and target.endswith('(auto)'):
                 if self.on('client_auto'):
                     self.notify(self.t('n_disabled' if event == 'client_disabled' else 'n_enabled', target=target[:-len('(auto)')].strip()))

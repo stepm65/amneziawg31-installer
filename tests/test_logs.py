@@ -333,7 +333,7 @@ def test_panel_logs_pages(monkeypatch, tmp_path):
     archive = client.post('/maintenance/logs/report', data={'csrf': token})
     assert archive.headers['content-type'] == 'application/gzip' and archive.content == report.getvalue()
     csv = client.get('/maintenance/audit.csv?event=client_added').text
-    assert csv.splitlines()[1].endswith('"\'=HYPERLINK(""x"")"'), 'no spreadsheet formulas'
+    assert csv.splitlines()[1].endswith('"\'=HYPERLINK(""x"")",'), 'no spreadsheet formulas'
     audit = client.get('/maintenance?tab=audit&event=client_added&since=2026-11-01&page=1')
     assert 'Страница 1 из 1' in audit.text and ('audit-search', {'event': 'client_added', 'since': '2026-11-01', 'until': '',
                                                                  'query': '', 'page': '1'}) in calls

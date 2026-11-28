@@ -804,27 +804,24 @@ def test_logout_revokes_every_issued_cookie(tmp_path, monkeypatch):
     assert '"logout"' in (tmp_path / 'audit.jsonl').read_text()
 
 
-def test_panel_logout_calls_the_revocation_and_old_cookie_stops_working(ui):
+def test_panel_logout_ends_this_session_and_its_copies(ui):
     module, client, calls = ui
     from fastapi.testclient import TestClient
     stolen = TestClient(module.app, follow_redirects=False)
     stolen.cookies.update(dict(client.cookies))
     assert stolen.get('/servers').status_code == 200
-    original = module.ctl
-
-    def revoking(op, data=None):
-        if op == 'session-revoke':                       # what the root helper does on the real system
-            current = json.loads(module.AUTH_FILE.read_text())
-            current['auth_version'] = 'after-logout'
-            module.AUTH_FILE.write_text(json.dumps(current))
-        return original(op, data)
-    module.ctl = revoking
+    other = TestClient(module.app, follow_redirects=False)
+    assert other.post('/login', data={'password': 'correct-test-password'}).status_code == 303
     client.get('/logout')
-    assert ('session-revoke', {}) in calls
-    assert stolen.get('/servers').status_code == 303     # the copied cookie is dead
+    assert ('session-revoke', {}) not in calls                # 0.24: only this sign-in ends
+    assert stolen.get('/servers').status_code == 303         # the copied cookie is dead
+    assert other.get('/servers').status_code == 200          # another sign-in is not
+    saved = [d for op, d in calls if op == 'session-save'][-1]
+    assert len(saved['sessions']) == 1 and saved['ended'] == 'admin: logout'
+    assert all('sid' not in json.dumps(e) and len(e['hash']) == 64 for e in saved['sessions'])
     calls.clear()
     TestClient(module.app, follow_redirects=False).get('/logout')
-    assert ('session-revoke', {}) not in calls            # an anonymous request cannot sign the admin out
+    assert not [op for op, _ in calls if op == 'session-save']   # an anonymous request ends nothing
 
 
 def test_login_rate_limit_table_evicts_idle_entries_not_everyone(ui):
