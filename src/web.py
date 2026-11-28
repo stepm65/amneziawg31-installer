@@ -855,6 +855,11 @@ def account_role(auth, name=''):
     return 'admin' if record is auth else (record.get('role') if record.get('role') in ('admin', 'viewer') else 'viewer')
 
 
+def name_required(auth):
+    """The sign-in page asks for the account once there are several or the main one has its own name."""
+    return primary_name(auth) != 'admin' or len(accounts_of(auth)) > 1
+
+
 def accounts_of(auth):
     users = auth.get('users') if isinstance(auth.get('users'), dict) else {}
     return [primary_name(auth)] + sorted(n for n in users if ACCOUNT_RE.fullmatch(n) and isinstance(users[n], dict))
@@ -1641,7 +1646,7 @@ def login_form(request, error='', next_path='/'):
                      f'<p class="error-message" role="alert" data-passkey-status hidden></p></div>') if has_keys and rp_of(request) else ''
     user_field = (f'<label class="field" for="username"><span>{h(tr(lang,"account_name"))}</span>'
                   '<input id="username" name="username" required autocomplete="username" autocapitalize="none" spellcheck="false" maxlength="32" autofocus></label>'
-                  ) if len(names) > 1 else ''
+                  ) if names and name_required(auth) else ''
     totp_field = (f'<label class="field" for="code"><span>{h(tr(lang,"totp_code"))}</span>'
                   '<input id="code" name="code" pattern="[0-9 ]{6,7}|[A-Za-z0-9]{5}-?[A-Za-z0-9]{5}" maxlength="11" required autocomplete="one-time-code" spellcheck="false">'
                   f'<small>{h(tr(lang,"login_code_hint"))}</small></label>') if second else ''
@@ -1691,8 +1696,8 @@ def login_post(request: Request, password: str = Form(...), next: str = Form('/'
     name = ''
     try:
         auth=read_auth()
-        name=username.strip().lower() or primary_name(auth)
-        try: record=account_record(auth,name)
+        name=username.strip().lower() or ('' if name_required(auth) else primary_name(auth))
+        try: record=account_record(auth,name) if name else None
         except ValueError: record=None
         # An unknown name costs the same scrypt round as a wrong password.
         salt=bytes.fromhex(record['salt']) if record else b'awg31-no-such-account'
@@ -6100,7 +6105,9 @@ def accounts_tab(request, t, lang):
                        + '</select></label>')
         name_url = quote(name, safe='')
         edit = (f'<details class="account-edit"><summary class="btn btn-secondary btn-small">{icon("settings",14)}{h(t("account_edit"))}</summary>'
-                f'<form method="post" action="/maintenance/accounts/{name_url}" class="account-form">{csrf(request)}<div class="fields-grid">{role_select}'
+                f'<form method="post" action="/maintenance/accounts/{name_url}" class="account-form">{csrf(request)}<div class="fields-grid">'
+                f'<label class="field"><span>{h(t("account_name"))}</span><input name="new_name" value="{h(name)}" required pattern="[a-z][a-z0-9_.\\-]{{1,31}}"'
+                f' maxlength="32" autocomplete="off" autocapitalize="none" spellcheck="false"></label>{role_select}'
                 f'<label class="field"><span>{h(t("password_new"))}</span><input type="password" name="new" minlength="12" autocomplete="new-password"'
                 f' placeholder="{h(t("account_keep_password"))}"></label>'
                 f'<label class="field"><span>{h(t("password_confirm"))}</span><input type="password" name="confirm" minlength="12" autocomplete="new-password"></label>'
@@ -6154,12 +6161,22 @@ async def account_change(request: Request, name: str):
     if new != str(form.get('confirm', '')): return error_page(request, tr(lang, 'maintenance_error'), tr(lang, 'password_mismatch'))
     payload = {'name': name, 'actor': current(request)['name'], 'password': str(form.get('password', ''))}
     if form.get('role'): payload['role'] = str(form.get('role'))
+    new_name = str(form.get('new_name', '')).strip().lower()
+    if new_name and new_name != name: payload['new_name'] = new_name
     if new: payload['new_password'] = new
     try: result = ctl('account-set', payload)
     except RuntimeError as exc: return error_page(request, tr(lang, 'maintenance_error'), exc)
+    me = current(request)
+    if result.get('renamed'):
+        # Signed-in sessions follow the account to its new name.
+        for entry in PANEL_SESSIONS.values():
+            if entry['account'] == name: entry['account'] = result['renamed']
+        save_sessions()
+        if name in LAST_TOTP_STEPS: LAST_TOTP_STEPS[result['renamed']] = LAST_TOTP_STEPS.pop(name)
+        name = result['renamed']
     if result.get('ended'):
-        me = current(request)
-        end_sessions(account=name, keep=me['hash'] if name == me['name'] else '', why=f'{name}: account changed')
+        end_sessions(account=name, keep=me['hash'] if name == me['name'] or result.get('renamed') and me['name'] == payload['name'] else '',
+                     why=f'{name}: account changed')
     return RedirectResponse('/maintenance?tab=accounts&account=changed', status_code=303)
 
 

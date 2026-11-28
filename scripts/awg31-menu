@@ -126,14 +126,16 @@ case "${1:-menu}" in
   reset-password)
     # Console-only recovery: the web panel cannot call this (not in sudoers).
     [[ -t 0 ]] || { echo 'Run interactively from the server console or SSH' >&2; exit 1; }
+    current="$(python3 -c 'import json; print(json.load(open("/etc/awg31-panel/auth.json")).get("name") or "admin")' 2>/dev/null || echo admin)"
+    read -r -p "Sign-in name of the main panel account [$current]: " login
     IFS= read -r -s -p 'New panel administrator password (12+ characters): ' first; echo
     IFS= read -r -s -p 'Repeat the new password: ' second; echo
     [[ "$first" == "$second" ]] || { echo 'Passwords do not match; nothing changed' >&2; exit 1; }
     # The password travels over stdin only, never argv or environment.
-    printf '%s' "$first" | python3 -c 'import json,sys; print(json.dumps({"new_password": sys.stdin.read()}))' \
-      | /usr/local/sbin/awg31mgr password-reset
+    printf '%s' "$first" | LOGIN="${login:-$current}" python3 -c 'import json,os,sys; print(json.dumps({"new_password": sys.stdin.read(), "name": os.environ["LOGIN"]}))' \
+      | /usr/local/sbin/awg31mgr password-reset >/dev/null || exit 1
     unset first second
-    echo 'Password changed. All existing panel sessions were signed out.'
+    echo "Password changed for the account ${login:-$current}. All existing panel sessions were signed out."
     ;;
   totp-off)
     # Console-only recovery for a lost authenticator: not reachable from the panel.
@@ -324,7 +326,7 @@ AmneziaWG 3.1 local management
   sudo awg31 update [VER]    Update panel and controller (latest release, vX.Y.Z or dev-latest)
   sudo awg31 rollback [list|NAME]  Return to the version before the last update
   sudo awg31 version         Show the installed version
-  sudo awg31 reset-password  Set a new panel password (forgotten password)
+  sudo awg31 reset-password  Set a new panel password and sign-in name (forgotten password)
   sudo awg31 totp-off        Turn off two-factor sign-in (lost authenticator)
   sudo awg31 backup-encryption on|off|status|change  Encrypt backups with a passphrase
   sudo awg31 backup-remote s3|sftp|test|status|off  Upload every new backup to S3 or SFTP

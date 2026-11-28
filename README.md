@@ -4,7 +4,7 @@
 
 An installer and a web console for running **AmneziaWG 3.1** on your own server: a kernel module built with DKMS, an interactive setup wizard and a bilingual (EN/RU) panel for servers, clients, traffic and backups. No Docker, no control plane in the cloud, nothing loaded from a CDN.
 
-Version **0.25.0** · MIT licence · not affiliated with the AmneziaVPN developers.
+Version **0.26.0** · MIT licence · not affiliated with the AmneziaVPN developers.
 
 ![Infrastructure overview](docs/screenshots/en-dashboard.png)
 
@@ -113,6 +113,7 @@ curl -Ls https://raw.githubusercontent.com/stepm65/amneziawg31-installer/main/in
 | `AWG31_MTU` | `1280` |
 | `AWG31_ENDPOINT` | detected public IPv4 |
 | `AWG31_ENDPOINT_DOMAIN` | empty; the server domain that client configurations get instead of the IP |
+| `AWG31_ADMIN_NAME` | `admin`; the web panel sign-in name (a–z, 0–9, dot, _ and -, starting with a letter) |
 | `AWG31_DNS` | `1.1.1.1` |
 | `AWG31_MODE` | `full` |
 | `AWG31_UPLINK` | interface of the default route |
@@ -285,7 +286,7 @@ sudo awg31 backup           create a full backup
 sudo awg31 backups          list backups
 sudo awg31 restore-check N  verify a backup
 sudo awg31 restore N        restore a backup (VPN restarts)
-sudo awg31 reset-password   set a new panel password
+sudo awg31 reset-password   set a new panel password (and, if you like, the sign-in name)
 sudo awg31 totp-off         turn off two-factor sign-in (lost authenticator)
 sudo awg31 backup-encryption on|off|status|change   encrypt backups with a passphrase
 sudo awg31 backup-remote s3|sftp|test|status|off    upload every new backup to S3 or SFTP
@@ -401,7 +402,7 @@ sudo bash amneziawg31-installer/scripts/resume-panel.sh
 - `sudo awg31 backup-remote s3` (AWS S3, MinIO, Backblaze B2, Yandex Object Storage and other S3-compatible services) or `sudo awg31 backup-remote sftp` uploads every new backup, scheduled or manual, right after it is created. Only encrypted archives are uploaded, so encryption has to be on. The access keys stay on the server, readable by root only; for SFTP the server gets its own SSH key and remembers the host key at the first connection. A failed upload does not fail the backup: it is written to the audit log and reported by the bot. Old files in the storage are not deleted — use the lifecycle rules of the storage.
 - After a kernel update the console checks, several times a day, that the AmneziaWG module is built for the new kernel, and tries to build it. If that fails, the panel (Maintenance → System) and the bot warn before the reboot that would leave the VPN down.
 - Two-factor sign-in is set up in **Maintenance → Security**. When it is switched on, the panel shows 10 recovery codes once: each replaces an app code for one sign-in, together with the password. Only their hashes are stored; the same place shows how many are left and creates new ones (the previous ones stop working). The bot tells the administrators about a sign-in with a recovery code. Without both the phone and the codes the second factor is reset from the console with `sudo awg31 totp-off`.
-- **Accounts** live under **Maintenance → Accounts** (administrators only). The main account is `admin`, created at installation; it is always an administrator and cannot be deleted. Up to 19 more can be added with the role **administrator** or **viewer**. A viewer sees servers, clients, statistics, diagnostics and the audit log but changes nothing: the forms are hidden and the panel refuses any change from it; configurations, QR codes, links, backups and profiles are not available to it. Creating, changing and deleting accounts needs your password; after a role or password change that account's sessions end. Everyone changes their own password and two-factor sign-in under Security. With more than one account the sign-in page asks for the account name. Every audit entry shows who made it (`telegram` for the bot, `console` for the root console); the bot names the account in sign-in and account notices.
+- **Accounts** live under **Maintenance → Accounts** (administrators only). The main account is created at installation: the wizard asks for its sign-in name (`admin` by default) together with the password, under “Panel sign-in”. It is always an administrator and cannot be deleted. Any account, the main one included, can be renamed in its Change form without ending its sessions; `sudo awg31 reset-password` shows and can change a forgotten main sign-in name. Up to 19 more can be added with the role **administrator** or **viewer**. A viewer sees servers, clients, statistics, diagnostics and the audit log but changes nothing: the forms are hidden and the panel refuses any change from it; configurations, QR codes, links, backups and profiles are not available to it. Creating, changing and deleting accounts needs your password; after a role or password change that account's sessions end. Everyone changes their own password and two-factor sign-in under Security. With more than one account, or when the main one has its own name (not `admin`), the sign-in page asks for the account name and does not sign in without it. Every audit entry shows who made it (`telegram` for the bot, `console` for the root console); the bot names the account in sign-in and account notices.
 - **Active sessions** are under **Maintenance → Security**: browser, address, sign-in time and last activity. Any session can be ended (a viewer ends only its own), plus “End my other sessions” and, for administrators, “Sign out everywhere”. **Log out** now ends only the current session. A session ends after an hour without activity; the list survives a panel restart (only hashes of session numbers are stored).
 - **Passkeys** are added under **Maintenance → Security** (with the account's password): a phone, a computer with Windows Hello / Touch ID, or a security key. The sign-in page then offers **Sign in with a passkey**: no password, no code, no account name. It works when the panel is opened by a domain name over HTTPS (`sudo awg31 nginx`) or at `localhost` through an SSH tunnel; browsers do not allow passkeys for an IP address. Up to 10 passkeys per account; the password and two-factor sign-in keep working, so a lost passkey is simply deleted in the same place.
 - Speed is limited apart for download (to the client) and upload (from the client); 0 means no limit in that direction. It works with `tc` on the VPN interface and covers the networks behind the client. Download goes through the client’s own queue and stays smooth; upload above the limit is dropped, so it may come out slightly lower. The bot sets one number for both directions. After the update to 0.19.6 the former single limit keeps applying both ways. A monthly quota resets on the first day of the month, UTC.

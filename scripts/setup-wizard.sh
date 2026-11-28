@@ -75,7 +75,7 @@ fi
 RANDOM_SUBNET="${AWG31_RANDOM_SUBNET:-0}"
 if [[ "$UI" == whiptail ]]; then
     SUBNET='10.77.10.0/24' PORT=51820 MTU=1280 ENDPOINT="$DEFAULT_IP" ENDPOINT_DOMAIN="${AWG31_ENDPOINT_DOMAIN:-}" DNS=1.1.1.1 MODE=full UPLINK="${DEFAULT_UPLINK:-eth0}"
-    PANEL_PORT=8080 FIRST_CLIENT=test-client NGINX_MODE=none NGINX_HOST='' NGINX_HTTPS_PORT=443 NGINX_CERT='' NGINX_KEY=''
+    PANEL_PORT=8080 FIRST_CLIENT=test-client ADMIN_NAME="${AWG31_ADMIN_NAME:-admin}" NGINX_MODE=none NGINX_HOST='' NGINX_HTTPS_PORT=443 NGINX_CERT='' NGINX_KEY=''
     WIZ_PASSWORD='' WIZ_FIREWALL='' AWG31_OPEN_FIREWALL="${AWG31_OPEN_FIREWALL:-yes}"
     if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q '^Status: active'; then WIZ_FIREWALL=ufw
     elif command -v firewall-cmd >/dev/null 2>&1 && systemctl is-active --quiet firewalld 2>/dev/null; then WIZ_FIREWALL=firewalld; fi
@@ -97,7 +97,9 @@ ask UPLINK 'Внешний интерфейс для выхода клиенто
 ask PANEL_PORT 'TCP-порт localhost для веб-панели' '8080'
 ask FIRST_CLIENT 'Имя первого клиента (skip = не создавать)' 'test-client'
 [[ "$FIRST_CLIENT" == 'skip' ]] && FIRST_CLIENT='' || true
+ask ADMIN_NAME 'Имя для входа в веб-панель (a–z, 0–9, точка, _ и -, с буквы)' 'admin'
 fi
+ADMIN_NAME="${ADMIN_NAME,,}"
 # Plain ASCII digits only. Python's int() also accepts '8_080', '+8080' and
 # full-width digits, which would pass validation and then break systemd/curl
 # after the VPN has already been created.
@@ -125,7 +127,7 @@ NGINX_HOST='' NGINX_HTTPS_PORT=443 NGINX_CERT='' NGINX_KEY=''
 fi
 # Pure validation; aborts before apt installation or writing any system files.
 validate_values() {
-export AWG31_SUBNET="$SUBNET" AWG31_PORT="$PORT" AWG31_MTU="$MTU" AWG31_ENDPOINT="$ENDPOINT" AWG31_ENDPOINT_DOMAIN="$ENDPOINT_DOMAIN" AWG31_DNS="$DNS" AWG31_MODE="$MODE" AWG31_UPLINK="$UPLINK" AWG31_PANEL_PORT="$PANEL_PORT" AWG31_FIRST_CLIENT="$FIRST_CLIENT"
+export AWG31_SUBNET="$SUBNET" AWG31_PORT="$PORT" AWG31_MTU="$MTU" AWG31_ENDPOINT="$ENDPOINT" AWG31_ENDPOINT_DOMAIN="$ENDPOINT_DOMAIN" AWG31_DNS="$DNS" AWG31_MODE="$MODE" AWG31_UPLINK="$UPLINK" AWG31_PANEL_PORT="$PANEL_PORT" AWG31_FIRST_CLIENT="$FIRST_CLIENT" AWG31_ADMIN_NAME="$ADMIN_NAME"
 python3 - "$DIR/src" <<'PY'
 import importlib.util,ipaddress,json,os,pathlib,subprocess,sys
 from importlib.machinery import SourceFileLoader
@@ -137,6 +139,8 @@ port=int(os.environ['AWG31_PANEL_PORT'])
 assert 1<=port<=65535 and port!=setting['port'], 'Порт веб-панели некорректен или совпадает с UDP VPN'
 name=os.environ['AWG31_FIRST_CLIENT']
 assert not name or m.NAME_RE.fullmatch(name), 'Неверное имя первого клиента'
+import re
+assert re.fullmatch(r'[a-z][a-z0-9_.-]{1,31}',os.environ['AWG31_ADMIN_NAME']), 'Имя для входа в панель: 2–32 символа a–z, 0–9, точка, _ и -, начинается с буквы'
 net=ipaddress.ip_network(d['subnet'])
 for line in subprocess.run(['ip','-4','-o','addr','show'],capture_output=True,text=True,check=True).stdout.splitlines():
     fields=line.split()
@@ -371,11 +375,11 @@ else
     unset PANEL_PASSWORD_REPEAT
 fi
 # Password travels over stdin, not argv or environment.
-printf '%s' "$PANEL_PASSWORD" | python3 -c '
-import hashlib,json,secrets,sys
+printf '%s' "$PANEL_PASSWORD" | AWG31_ADMIN_NAME="$ADMIN_NAME" python3 -c '
+import hashlib,json,os,secrets,sys
 salt=secrets.token_bytes(16)
 password=sys.stdin.buffer.read()
-cred={"salt":salt.hex(), "password_hash":hashlib.scrypt(password,salt=salt,n=2**14,r=8,p=1,dklen=32).hex(), "session_key":secrets.token_urlsafe(48)}
+cred={"name":os.environ["AWG31_ADMIN_NAME"], "salt":salt.hex(), "password_hash":hashlib.scrypt(password,salt=salt,n=2**14,r=8,p=1,dklen=32).hex(), "session_key":secrets.token_urlsafe(48)}
 with open("/etc/awg31-panel/auth.json","w") as f: json.dump(cred,f)
 '
 unset PANEL_PASSWORD
@@ -517,6 +521,7 @@ echo "$LINE"
 echo "  VPN:      UDP $PORT · подсеть $SUBNET · интерфейс awg0"
 if [[ -n "$ENDPOINT_DOMAIN" ]]; then echo "  Домен:    $ENDPOINT_DOMAIN (в конфигурациях клиентов вместо $ENDPOINT)"; fi
 echo "  Панель:   http://127.0.0.1:$PANEL_PORT (только с самого сервера)"
+echo "  Вход:     $ADMIN_NAME + пароль"
 case "$NGINX_RESULT" in
     ready)   echo "  HTTPS:    https://$NGINX_HOST:$NGINX_HTTPS_PORT" ;;
     failed)  echo '  HTTPS:    Nginx НЕ настроен (повтор: sudo awg31 nginx); VPN и панель работают' ;;

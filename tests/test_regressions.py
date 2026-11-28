@@ -138,7 +138,7 @@ def test_console_password_reset(tmp_path, monkeypatch):
     monkeypatch.setenv('AWG31_AUDIT', str(tmp_path / 'audit.jsonl'))
     with pytest.raises(ValueError):
         admin.password_reset({'new_password': 'short'})
-    assert admin.password_reset({'new_password': 'a-brand-new-password'}) == {'ok': True}
+    assert admin.password_reset({'new_password': 'a-brand-new-password'}) == {'ok': True, 'name': 'admin'}
     stored = json.loads(auth.read_text())
     assert stored['session_key'] == 'S' * 48          # signing key kept
     assert stored['auth_version'] != 'old'            # every session expired

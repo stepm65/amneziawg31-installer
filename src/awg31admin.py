@@ -436,12 +436,21 @@ def account_set(data):
     if record is auth and role and role!='admin': raise ValueError('The main account is always an administrator')
     if name==who and role and role!='admin': raise ValueError('You cannot take the administrator role from yourself')
     changes=[]
+    renamed=str(data.get('new_name','') or '').strip().lower()
+    if renamed and renamed!=name:
+        if not ACCOUNT_RE.fullmatch(renamed): raise ValueError('Account name: 2-32 characters a-z, 0-9, . _ -, starting with a letter')
+        if renamed==primary_name(auth) or renamed in users: raise ValueError('The account already exists')
+        if record is auth: auth['name']=renamed
+        else: users[renamed]=users.pop(name)
+        changes.append('renamed to '+renamed)
+    else: renamed=''
     if role and record is not auth and role!=record.get('role'): record['role']=role; changes.append('role '+role)
     if new: _hash_password(record,new); changes.append('password')
     if not changes: return {'ok':True,'name':name,'ended':False}
     _save_auth(auth,file,rotate=False)
     audit({'event':'account_changed','target':f'{name}: '+', '.join(changes)})
-    return {'ok':True,'name':name,'ended':True}            # the panel ends that account's sessions
+    # A rename alone keeps the account's sessions (the panel renames them); a new role or password ends them.
+    return {'ok':True,'name':renamed or name,'renamed':renamed,'ended':any(not c.startswith('renamed') for c in changes)}
 
 
 def account_delete(data):
@@ -1440,9 +1449,15 @@ def password_reset(data):
     file=auth_file(); auth=json.loads(file.read_text())
     if not isinstance(auth,dict) or 'session_key' not in auth:
         raise ValueError('auth.json is damaged; reinstall the panel credentials')
+    name=str(data.get('name','') or '').strip().lower()
+    if name and name!=primary_name(auth):
+        users=auth.get('users') if isinstance(auth.get('users'),dict) else {}
+        if not ACCOUNT_RE.fullmatch(name): raise ValueError('Account name: 2-32 characters a-z, 0-9, . _ -, starting with a letter')
+        if name in users: raise ValueError('The account already exists')
+        auth['name']=name
     _store_password(auth,new,file)
-    audit({'event':'password_changed','target':'console reset'})
-    return {'ok':True}
+    audit({'event':'password_changed','target':f'console reset ({primary_name(auth)})'})
+    return {'ok':True,'name':primary_name(auth)}
 
 
 def _collect(manager):

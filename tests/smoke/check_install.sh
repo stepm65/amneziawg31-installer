@@ -62,7 +62,7 @@ iptables -w -t nat -S POSTROUTING | grep -q MASQUERADE || fail 'NAT rule missing
 
 step 'Panel: sign in, create a client, download its configuration'
 python3 - <<'PY'
-import http.cookiejar, re, urllib.parse, urllib.request
+import http.cookiejar, json, re, urllib.parse, urllib.request
 base = 'http://127.0.0.1:18080'
 password = open('/root/awg31-initial-password.txt').read().strip()
 class Jar(http.cookiejar.CookieJar):
@@ -73,6 +73,7 @@ opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(Jar()))
 def post(path, **fields):
     return opener.open(base + path, urllib.parse.urlencode(fields).encode(), timeout=30)
 assert post('/login', password='wrong-password-123').geturl().endswith('/login')
+assert json.load(open('/etc/awg31-panel/auth.json')).get('name') == 'admin', 'the default sign-in name is not stored'
 post('/login', password=password)
 page = opener.open(base + '/servers/awg0/clients', timeout=30).read().decode()
 assert 'ci-client' in page, 'first client is not listed'

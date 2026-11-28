@@ -144,7 +144,7 @@ def test_login_asks_for_the_account_once_there_are_several(ui):
     _, ok = sign_in(app, 'olga', 'correct-test-password'); assert not ok             # someone else's password
     _, ok = sign_in(app, 'ghost', 'olga-password-1'); assert not ok
     _, ok = sign_in(app, 'admin', 'correct-test-password'); assert ok
-    _, ok = sign_in(app, '', 'correct-test-password'); assert ok                   # an empty name is the main account
+    _, ok = sign_in(app, '', 'correct-test-password'); assert not ok               # the page asks for the name: it is needed
     secret = base64.b32encode(os.urandom(20)).decode()
     with_users(app, olga=record('olga-password-1', totp_secret=secret))
     _, ok = sign_in(app, 'olga', 'olga-password-1'); assert not ok
@@ -269,3 +269,59 @@ def test_audit_page_and_csv_show_the_account(ui):
                                      if op == 'audit-search' else original(op, data))
     assert '<span class="audit-actor">' in client.get('/maintenance?tab=audit').text
     assert client.get('/maintenance/audit.csv').text.splitlines() == ['timestamp,event,target,account', '2026-11-28T10:00:00,client_added,alpha,olga']
+
+
+def test_the_main_account_can_have_its_own_name(ui):
+    app, client, calls = ui
+    stored = json.loads(app.AUTH_FILE.read_text()); stored['name'] = 'owner'; app.AUTH_FILE.write_text(json.dumps(stored))
+    assert 'name="username"' in TestClient(app.app).get('/login').text          # one account, but not "admin"
+    for name, ok in (('', False), ('admin', False), ('owner', True), ('Owner', True)):
+        assert sign_in(app, name, 'correct-test-password')[1] is ok, name
+    browser_, _ = sign_in(app, 'owner', 'correct-test-password')
+    assert '<span>owner</span><small>администратор</small>' in browser_.get('/servers').text
+
+
+def test_rename_keeps_the_sessions(ui):
+    app, client, calls = ui
+    with_users(app, olga=record('olga-password-1'))
+    olga, _ = sign_in(app, 'olga', 'olga-password-1')
+    page = client.get('/maintenance?tab=accounts')
+    assert 'name="new_name" value="admin"' in page.text and 'name="new_name" value="olga"' in page.text
+    original, sent = app.ctl, []
+    app.ctl = lambda op, data=None: (sent.append(data) or {'ok': True, 'renamed': data.get('new_name', ''), 'ended': False}
+                                     if op == 'account-set' else original(op, data))
+    client.post('/maintenance/accounts/olga', data={'csrf': token(page), 'new_name': 'Olga.K', 'role': 'viewer', 'password': 'pw'})
+    assert sent[-1] == {'name': 'olga', 'actor': 'admin', 'password': 'pw', 'role': 'viewer', 'new_name': 'olga.k'}
+    assert {e['account'] for e in app.PANEL_SESSIONS.values()} == {'admin', 'olga.k'}
+    with_users(app, **{'olga.k': record('olga-password-1')})
+    assert olga.get('/servers').status_code == 200                               # still signed in under the new name
+    client.post('/maintenance/accounts/admin', data={'csrf': token(page), 'new_name': 'boss', 'password': 'pw'})
+    stored = json.loads(app.AUTH_FILE.read_text()); stored['name'] = 'boss'; app.AUTH_FILE.write_text(json.dumps(stored))
+    assert client.get('/servers').status_code == 200 and '<span>boss</span>' in client.get('/servers').text
+
+
+def test_rename_and_console_reset_on_the_root_side(auth, monkeypatch):
+    admin, file = auth
+    me = {'actor': 'admin', 'password': 'the-right-password'}
+    admin.account_set({**me, 'create': True, 'name': 'olga', 'new_password': 'olga-password-1'})
+    result = admin.account_set({**me, 'name': 'olga', 'new_name': 'Olga.K'})
+    assert result == {'ok': True, 'name': 'olga.k', 'renamed': 'olga.k', 'ended': False}
+    assert set(json.loads(file.read_text())['users']) == {'olga.k'}
+    for bad, why in (('admin', 'exists'), ('olga.k', None), ('1x', 'name')):
+        if why:
+            with pytest.raises(ValueError, match=why):
+                admin.account_set({**me, 'name': 'olga.k', 'new_name': bad})
+    assert admin.account_set({**me, 'name': 'admin', 'new_name': 'boss'})['renamed'] == 'boss'
+    assert json.loads(file.read_text())['name'] == 'boss'
+    with pytest.raises(ValueError, match='password'):
+        admin.account_set({**me, 'name': 'boss', 'new_name': 'x1'})                  # "admin" is no longer an account
+    me = {'actor': 'boss', 'password': 'the-right-password'}
+    with pytest.raises(ValueError, match='exists'):
+        admin.account_set({**me, 'name': 'boss', 'new_name': 'olga.k'})
+    # The console reset can set the name too, and says which it is.
+    assert admin.password_reset({'new_password': 'n' * 12})['name'] == 'boss'
+    assert admin.password_reset({'new_password': 'n' * 12, 'name': 'Root.Admin'})['name'] == 'root.admin'
+    with pytest.raises(ValueError, match='exists'):
+        admin.password_reset({'new_password': 'n' * 12, 'name': 'olga.k'})
+    menu = (ROOT / 'scripts/awg31-menu').read_text()
+    assert 'Sign-in name of the main panel account' in menu and '"name": os.environ["LOGIN"]' in menu

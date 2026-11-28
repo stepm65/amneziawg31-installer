@@ -15,10 +15,13 @@ declare -A T_ru=(
   [lang_title]='Язык / Language' [lang_text]='Язык мастера установки'
   [welcome_title]='Добро пожаловать'
   [welcome]='Мастер поставит VPN AmneziaWG 3.1 (модуль ядра, без Docker) и веб-панель.\n\nСистема: %s\nВнешний интерфейс: %s\nПубличный адрес: %s\n\nСначала вы выберете параметры — ничего не меняется, пока не нажмёте «Установить».\nСтрелки — выбор, Enter — открыть, Esc — назад.'
-  [menu_title]='Параметры установки' [menu_text]='Выберите пункт, чтобы изменить его. Значения по умолчанию подходят для большинства серверов.'
+  [menu_title]='Параметры установки' [menu_text]='Выберите пункт, чтобы изменить. Значения по умолчанию подходят почти всем.'
   [i_subnet]='Подсеть VPN' [i_port]='UDP-порт VPN' [i_endpoint]='Адрес сервера для клиентов' [i_dns]='DNS для клиентов'
   [i_mode]='Какой трафик через VPN' [i_uplink]='Внешний интерфейс' [i_mtu]='MTU туннеля' [i_panel]='Порт веб-панели'
   [i_client]='Первый клиент' [i_https]='HTTPS для панели' [i_password]='Пароль панели' [i_firewall]='Открыть порт в %s'
+  [i_login]='Имя для входа в панель' [i_access]='Вход в панель' [v_pass]='пароль'
+  [login_text]='Имя учётной записи администратора, которое вводится при входе в веб-панель: 2–32 символа a–z, 0–9, точка, _ и -, начинается с буквы. Позже его можно сменить в «Обслуживание → Учётные записи».'
+  [login_bad]='Имя: 2–32 символа a–z, 0–9, точка, _ и -, начинается с буквы.'
   [i_install]='▶ Установить' [i_cancel]='Отмена'
   [subnet_text]='Подсеть, из которой клиенты получают адреса.'
   [subnet_default]='Стандартная 10.77.10.0/24' [subnet_random]='Случайная 10.x.y.0/24 (своя на каждом сервере)' [subnet_custom]='Своя…'
@@ -65,6 +68,9 @@ declare -A T_en=(
   [i_subnet]='VPN subnet' [i_port]='VPN UDP port' [i_endpoint]='Server address for clients' [i_dns]='DNS for clients'
   [i_mode]='Traffic through the VPN' [i_uplink]='Uplink interface' [i_mtu]='Tunnel MTU' [i_panel]='Web panel port'
   [i_client]='First client' [i_https]='HTTPS for the panel' [i_password]='Panel password' [i_firewall]='Open the port in %s'
+  [i_login]='Panel sign-in name' [i_access]='Panel sign-in' [v_pass]='password'
+  [login_text]='The administrator account name you type when signing in to the web panel: 2–32 characters a–z, 0–9, dot, _ and -, starting with a letter. You can change it later under Maintenance → Accounts.'
+  [login_bad]='The name: 2–32 characters a–z, 0–9, dot, _ and -, starting with a letter.'
   [i_install]='▶ Install' [i_cancel]='Cancel'
   [subnet_text]='The subnet clients get their addresses from.'
   [subnet_default]='Standard 10.77.10.0/24' [subnet_random]='Random 10.x.y.0/24 (its own on every server)' [subnet_custom]='Custom…'
@@ -143,7 +149,13 @@ ui_uplinks() {
 }
 
 ui_password_screen() {
-    local choice first second
+    local choice first second value
+    while :; do
+        value="$(ui_input "$(ui_t i_login)" "$(ui_t login_text)" "$ADMIN_NAME")" || return 0
+        value="${value,,}"
+        if [[ "$value" =~ ^[a-z][a-z0-9_.-]{1,31}$ ]]; then ADMIN_NAME="$value"; break; fi
+        ui_msg "$(ui_t error_title)" "$(ui_t login_bad)"
+    done
     choice="$(ui_choice "$(ui_t i_password)" "$(ui_t pass_text)" "$([[ -n "$WIZ_PASSWORD" ]] && echo own || echo gen)" \
               gen "$(ui_t pass_gen)" own "$(ui_t pass_own)")" || return 0
     if [[ "$choice" == gen ]]; then WIZ_PASSWORD=''; return 0; fi
@@ -180,7 +192,7 @@ ui_configure() {
                dns "$(ui_t i_dns): $DNS" mode "$(ui_t i_mode): $([[ "$MODE" == full ]] && ui_t mode_full || ui_t mode_split)"
                uplink "$(ui_t i_uplink): $UPLINK" mtu "$(ui_t i_mtu): $MTU" panel "$(ui_t i_panel): $PANEL_PORT"
                client "$(ui_t i_client): ${FIRST_CLIENT:-$(ui_t v_none)}" https "$(ui_t i_https): $label"
-               password "$(ui_t i_password): $([[ -n "$WIZ_PASSWORD" ]] && ui_t v_own || ui_t v_gen)")
+               password "$(ui_t i_access): $ADMIN_NAME · $(ui_t v_pass) $([[ -n "$WIZ_PASSWORD" ]] && ui_t v_own || ui_t v_gen)")
         if [[ -n "$WIZ_FIREWALL" ]]; then
             # shellcheck disable=SC2059
             items+=(firewall "$(printf "$(ui_t i_firewall)" "$WIZ_FIREWALL"): $([[ "$AWG31_OPEN_FIREWALL" == no ]] && ui_t v_no || ui_t v_yes)")

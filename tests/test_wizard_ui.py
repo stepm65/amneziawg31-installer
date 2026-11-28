@@ -33,7 +33,7 @@ source "{ROOT}/scripts/wizard-ui.sh"
 awg31_random_subnet() {{ echo 10.55.66.0/24; }}
 SUBNET=10.77.10.0/24 PORT=51820 MTU=1280 ENDPOINT=203.0.113.5 DNS=1.1.1.1 MODE=full UPLINK=eth0 PANEL_PORT=8080
 ENDPOINT_DOMAIN='' FIRST_CLIENT=test-client NGINX_MODE=none NGINX_HOST='' NGINX_HTTPS_PORT=443 NGINX_CERT='' NGINX_KEY='' WIZ_PASSWORD=''
-WIZ_FIREWALL='' AWG31_OPEN_FIREWALL=yes
+WIZ_FIREWALL='' AWG31_OPEN_FIREWALL=yes ADMIN_NAME=admin
 '''
     out = subprocess.run(['bash', '-c', prelude + script], capture_output=True, text=True, env=environment, timeout=30)
     calls = (tmp_path / 'calls').read_text() if (tmp_path / 'calls').exists() else ''
@@ -46,7 +46,7 @@ def show(names):
 
 def test_settings_menu_changes_values_and_checks_before_install(tmp_path):
     answers = ['port', '51999', 'dns', 'custom', '9.9.9.10', 'subnet', 'random', 'mode', 'split',
-               'password', 'own', 'short', 'longpassword123', 'longpassword124', 'longpassword123', 'longpassword123',
+               'password', 'admin', 'own', 'short', 'longpassword123', 'longpassword124', 'longpassword123', 'longpassword123',
                'https', 'self-signed', 'vpn.example.com', '8443',
                'install', 'install']
     script = '''tries=0
@@ -130,3 +130,19 @@ def test_wizard_passes_the_domain_on():
     wizard = (ROOT / 'scripts/setup-wizard.sh').read_text()
     assert wizard.count("'endpoint','endpoint_domain','dns','mode','uplink'") == 2      # checked and given to init
     assert "ask ENDPOINT_DOMAIN" in wizard and 'domain_warning' in wizard and 'Домен:    $ENDPOINT_DOMAIN' in wizard
+
+
+def test_sign_in_name_on_the_password_screen(tmp_path):
+    script = 'wizard_check() { :; }\nui_configure\n' + show(['ADMIN_NAME', 'WIZ_PASSWORD'])
+    out, calls = run(tmp_path, script, ['password', 'Bad Name', 'Owner', 'gen', 'install'])
+    assert 'ADMIN_NAME=owner WIZ_PASSWORD=' in out.stdout
+    assert 'Вход в панель: admin · пароль сгенерировать' in calls and 'Вход в панель: owner · пароль сгенерировать' in calls
+    assert 'Имя: 2–32 символа' in calls                                  # the bad name was refused
+
+
+def test_wizard_stores_and_checks_the_name():
+    wizard = (ROOT / 'scripts/setup-wizard.sh').read_text()
+    assert "ask ADMIN_NAME 'Имя для входа в веб-панель" in wizard and 'ADMIN_NAME="${AWG31_ADMIN_NAME:-admin}"' in wizard
+    assert '"name":os.environ["AWG31_ADMIN_NAME"]' in wizard and 'AWG31_ADMIN_NAME="$ADMIN_NAME"' in wizard
+    assert "re.fullmatch(r'[a-z][a-z0-9_.-]{1,31}',os.environ['AWG31_ADMIN_NAME'])" in wizard
+    assert 'Вход:     $ADMIN_NAME + пароль' in wizard
