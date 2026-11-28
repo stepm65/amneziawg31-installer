@@ -76,6 +76,50 @@ def valid_endpoint(raw):
         return value
 
 
+def valid_domain(raw):
+    """The optional DNS name that client configurations use instead of the IP. Empty is allowed."""
+    value = str(raw or '').strip().lower().rstrip('.')
+    if not value: return ''
+    try: is_ip = bool(ipaddress.ip_address(value))
+    except ValueError: is_ip = False
+    if is_ip: raise ValueError('В поле домена нужно имя, а не IP-адрес')
+    labels = value.split('.')
+    if (len(value) > 253 or len(labels) < 2 or not HOST_RE.fullmatch(value) or labels[-1].isdigit()
+            or any(not label or len(label) > 63 or label[0] == '-' or label[-1] == '-' for label in labels)):
+        raise ValueError('Домен: нужно DNS-имя вида vpn.example.com (без схемы и порта)')
+    return value
+
+
+def client_host(cfg):
+    """What client configurations put before the port: the domain when it is switched on, else the endpoint."""
+    domain = str(cfg.get('endpoint_domain') or '')
+    return domain if domain and switch(cfg, 'use_domain') == 'on' else cfg['endpoint']
+
+
+def domain_addresses(domain, timeout=3.0):
+    """IPv4 addresses of a name, or None when it does not resolve in time. Never blocks for long."""
+    import socket
+    import threading
+    found = {}
+
+    def look():
+        try: found['a'] = sorted({i[4][0] for i in socket.getaddrinfo(domain, None, socket.AF_INET, socket.SOCK_DGRAM)})
+        except (OSError, UnicodeError): found['a'] = []
+    worker = threading.Thread(target=look, daemon=True)
+    worker.start(); worker.join(timeout)
+    return found.get('a') or None
+
+
+def domain_check(cfg):
+    """'' when the domain is fine or not in use; 'unresolved' or 'mismatch' as a warning for the admin."""
+    if client_host(cfg) == cfg['endpoint'] or not cfg.get('endpoint_domain'): return ''
+    addresses = domain_addresses(cfg['endpoint_domain'])
+    if not addresses: return 'unresolved'
+    try: ipaddress.ip_address(cfg['endpoint'])
+    except ValueError: return ''                      # the endpoint is a name itself: nothing to compare
+    return '' if cfg['endpoint'] in addresses else 'mismatch'
+
+
 def valid_dns(raw):
     val = str(raw).strip()
     ip = ipaddress.ip_address(val)
@@ -117,6 +161,7 @@ def validate_settings(payload, initial=False, old=None):
         'port': valid_port(payload.get('port', old.get('port', 51820))),
         'mtu': valid_mtu(payload.get('mtu', old.get('mtu', 1280))),
         'endpoint': valid_endpoint(payload.get('endpoint', old.get('endpoint'))),
+        'endpoint_domain': valid_domain(payload.get('endpoint_domain', old.get('endpoint_domain', ''))),
         'dns': valid_dns(payload.get('dns', old.get('dns', '1.1.1.1'))),
         'mode': mode, 'uplink': uplink,
     }
@@ -600,7 +645,10 @@ def awg_lines(cfg, for_client=False):
 
 
 PRIVATE_NETWORKS = ('10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16')
-SWITCHES = {'client_to_client': None, 'private_access': 'on', 'ipv6_block': 'off', 'host_access': 'on', 'mss_clamp': 'off'}
+SETTINGS_BACKUPS = Path('/var/backups/awg31-panel/settings')
+SWITCHES = {'client_to_client': None, 'private_access': 'on', 'ipv6_block': 'off', 'host_access': 'on', 'mss_clamp': 'off',
+            # Client configurations name the server by endpoint_domain instead of the endpoint.
+            'use_domain': 'off'}
 
 
 def switch(cfg, name):
@@ -798,7 +846,7 @@ def client_config(cfg, p, peers=(), extra=True):
         *(['', *extra_lines(p)] if extra and extra_lines(p) else ()),
         '', '[Peer]', f'PublicKey = {cfg["public_key"]}',
         f'PresharedKey = {p["psk"]}',
-        f'Endpoint = {cfg["endpoint"]}:{cfg["port"]}',
+        f'Endpoint = {client_host(cfg)}:{cfg["port"]}',
         f'AllowedIPs = {allowed}', 'PersistentKeepalive = 25', ''
     ])
 
@@ -1561,7 +1609,7 @@ def host_firewall_port(new, old):
 
 
 def settings_backup(con, label):
-    backup = Path('/var/backups/awg31-panel/settings') / (
+    backup = SETTINGS_BACKUPS / (
         datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S') + '-' + IFACE + '-' + label + '-' + secrets.token_hex(3))
     backup.mkdir(parents=True, mode=0o700, exist_ok=False)
     os.chmod(backup, 0o700)
@@ -1812,6 +1860,8 @@ def settings_update(con):
     if (old_mode == 'full' and switches['private_access'] == 'off' and dns.is_private
             and dns not in ipaddress.ip_network(old['subnet'])):
         raise ValueError('DNS клиентов находится в частной сети: оставьте доступ к частным сетям включённым или укажите публичный DNS')
+    if switches['use_domain'] == 'on' and not new['endpoint_domain']:
+        raise ValueError('Чтобы клиенты подключались по домену, укажите домен сервера')
     cfg = {**old, **new, **obf, **switches}
     stored = {**new, **obf, **switches}
     stored['header_key'] = obf['header_key']
@@ -1819,7 +1869,7 @@ def settings_update(con):
     if new['mode'] != old_mode or new['uplink'] != old['uplink']:
         raise ValueError('Смена режима маршрутизации/интерфейса после установки пока запрещена')
     # Save durable recovery copies before replacing any live config.
-    backup = Path('/var/backups/awg31-panel/settings') / (
+    backup = SETTINGS_BACKUPS / (
         datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')+'-'+IFACE+'-'+secrets.token_hex(3))
     backup.mkdir(parents=True,mode=0o700,exist_ok=False)
     os.chmod(backup,0o700)
@@ -1836,7 +1886,8 @@ def settings_update(con):
     con.commit()
     after = get_settings(con)
     changed = [p['name'] for p in peers if config_fingerprint(client_config(after, p, peers)) != before[p['name']]]
-    return {'ok':True,'reimport_clients':bool(changed),'configs_changed':len(changed),'backup':str(backup)}
+    return {'ok':True,'reimport_clients':bool(changed),'configs_changed':len(changed),'backup':str(backup),
+            'domain_warning':domain_check(after)}
 
 
 def logging_settings():
@@ -1929,6 +1980,8 @@ def live_stats():
 def get_status(con, with_clients=False):
     cfg = get_settings(con)
     result = {k:cfg[k] for k in ('subnet','server_ip','port','mtu','dns','endpoint','mode','uplink','public_key')}
+    result['endpoint_domain'] = cfg.get('endpoint_domain', '')
+    result['client_host'] = client_host(cfg)
     for name in SWITCHES:
         result[name] = switch(cfg, name)
     # Only authenticated dashboard receives this, never the public traffic API.

@@ -21,7 +21,7 @@ BASE = Path(os.environ.get('AWG31_ROOT', '/var/lib/awg31-panel'))
 CONFIG_DIR = Path(os.environ.get('AWG31_CONFIG_DIR', '/etc/amnezia/amneziawg'))
 CTL = os.environ.get('AWG31_CTL_PATH', '/usr/local/sbin/awg31ctl')
 VALID = re.compile(r'^awg(?:0|[1-9][0-9]?)$')
-OPTIONAL_PROFILE = ('client_to_client', 'private_access', 'ipv6_block', 'host_access')
+OPTIONAL_PROFILE = ('client_to_client', 'private_access', 'ipv6_block', 'host_access', 'mss_clamp', 'endpoint_domain', 'use_domain')
 OPS = {'status', 'list', 'add', 'add-batch', 'download', 'enable', 'disable', 'delete', 'delete-batch', 'settings', 'client-network', 'client-extra', 'client-policy', 'history', 'sessions',
        'client-rekey', 'client-batch', 'client-invite', 'invite-redeem',
        'sub-token', 'sub-fetch', 'rotate', 'rotate-schedule', 'mask-apply', 'probe', 'watch-set'}

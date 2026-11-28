@@ -2221,6 +2221,8 @@ def server_content(request: Request, section: str = 'overview'):
 
     fields = ''.join([
         form_field('endpoint', state['endpoint'], t('public_endpoint')),
+        form_field('endpoint_domain', state.get('endpoint_domain', ''), t('domain_label'), t('domain_help'), required=False),
+        switch_field('use-domain', 'use_domain', 'dom', state, lang, order=('off', 'on')),
         form_field('port', state['port'], t('server_port')),
         form_field('mtu', state['mtu'], t('mtu_label')),
         form_field('dns', state['dns'], t('client_dns')),
@@ -2252,6 +2254,10 @@ def server_content(request: Request, section: str = 'overview'):
                     f'<div><strong>{h(t("settings_saved"))}</strong><p>{h(t("settings_saved_hint"))}</p></div>'
                     f'<a class="btn btn-secondary btn-small" href="/servers/{h(state["interface"])}/clients">{h(t("clients"))}</a></div>'
                     if request.query_params.get('saved') == '1' else '')
+    domain_warning = request.query_params.get('domain', '')
+    if domain_warning in ('unresolved', 'mismatch') and state.get('endpoint_domain'):
+        saved_notice += (f'<p class="bulk-notice is-warn" role="alert">{icon("alert",16)}<span>'
+                         f'{h(t("dom_warn_" + domain_warning).format(d=state["endpoint_domain"], ip=state["endpoint"]))}</span></p>')
     settings = f'''{saved_notice}<section class="card settings-card" id="settings">
         <form method="post" action="/settings" data-confirm="{h(t('confirm_restart'))}">{csrf(request)}
         <div class="config-group-header"><div><h2>{h('Подключение' if lang=='ru' else 'Connection')}</h2>
@@ -2273,6 +2279,7 @@ def server_content(request: Request, section: str = 'overview'):
             (t('subnet'),state['subnet']),
             (t('udp_port'),str(state['port'])),
             (t('public_endpoint'),state['endpoint']),
+            *([(t('dom_in_configs'), state['client_host'])] if state.get('client_host', state['endpoint']) != state['endpoint'] else []),
             ('MTU',str(state['mtu'])),
             (t('client_dns'),state['dns']),
             (t('mode'),t('full' if state['mode']=='full' else 'split')),
@@ -2484,7 +2491,7 @@ async def settings(request: Request, interface: str = ''):
     form=await request.form()
     require_csrf(request,form.get('csrf',''))
     lang=lang_of(request)
-    payload={k: str(form[k]) for k in ('endpoint','port','mtu','dns','client_to_client','private_access','ipv6_block','host_access','mss_clamp') if k in form}
+    payload={k: str(form[k]) for k in ('endpoint','endpoint_domain','use_domain','port','mtu','dns','client_to_client','private_access','ipv6_block','host_access','mss_clamp') if k in form}
     payload.update({k: str(form[k]) for k in OBF_EDIT_FIELDS if k in form})
     try:
         result = control(request,'settings',payload)
@@ -2492,7 +2499,9 @@ async def settings(request: Request, interface: str = ''):
         audit_event('server_settings_changed', selected_server(request) + (f': {changed} client configurations changed' if changed else ''))
     except RuntimeError as exc:
         return error_page(request,tr(lang,'settings_error'),exc)
-    return RedirectResponse(f'/servers/{selected_server(request)}/settings?saved=1',status_code=303)
+    warning = str((result or {}).get('domain_warning') or '')
+    suffix = f'&domain={warning}' if warning in ('unresolved', 'mismatch') else ''
+    return RedirectResponse(f'/servers/{selected_server(request)}/settings?saved=1{suffix}',status_code=303)
 
 @app.post('/client')
 @app.post('/servers/{interface}/clients')
@@ -4910,4 +4919,26 @@ TEXT['en'].update({
     'chart_now': 'now', 'chart_ago': '{n} s ago',
     'chart_avg': 'Average speed per {n}', 'chart_total': 'in the period: ↑ {rx} · ↓ {tx}',
     'unit_bit': 'bit/s', 'unit_kbit': 'kbit/s', 'unit_mbit': 'Mbit/s', 'unit_gbit': 'Gbit/s',
+})
+
+
+TEXT['ru'].update({
+    'domain_label': 'Домен сервера (необязательно)',
+    'domain_help': 'Например, vpn.example.com. A-запись домена должна указывать на IP этого сервера.',
+    'dom_label': 'Адрес сервера в конфигурациях клиентов', 'dom_off': 'IP-адрес (поле Endpoint)', 'dom_on': 'Домен',
+    'dom_hint': 'С доменом IP сервера можно сменить, не раздавая конфигурации заново: достаточно поправить A-запись. '
+                'Переключение меняет конфигурации всех клиентов.',
+    'dom_warn_unresolved': 'Домен {d} сейчас не находится в DNS. Клиенты не подключатся, пока у домена нет A-записи.',
+    'dom_warn_mismatch': 'Домен {d} указывает не на {ip}. Клиенты будут подключаться туда, куда указывает домен: проверьте A-запись.',
+    'dom_in_configs': 'В конфигурациях',
+})
+TEXT['en'].update({
+    'domain_label': 'Server domain (optional)',
+    'domain_help': 'For example vpn.example.com. Its A record must point to this server’s IP.',
+    'dom_label': 'Server address in client configurations', 'dom_off': 'IP address (the Endpoint field)', 'dom_on': 'Domain',
+    'dom_hint': 'With a domain the server’s IP can change without handing out configurations again: fix the A record and that is it. '
+                'Switching changes every client’s configuration.',
+    'dom_warn_unresolved': 'The domain {d} does not resolve right now. Clients cannot connect until it has an A record.',
+    'dom_warn_mismatch': 'The domain {d} does not point to {ip}. Clients connect wherever the domain points: check the A record.',
+    'dom_in_configs': 'In configurations',
 })

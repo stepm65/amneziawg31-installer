@@ -4,7 +4,7 @@
 
 An installer and a web console for running **AmneziaWG 3.1** on your own server: a kernel module built with DKMS, an interactive setup wizard and a bilingual (EN/RU) panel for servers, clients, traffic and backups. No Docker, no control plane in the cloud, nothing loaded from a CDN.
 
-Version **0.19.7** · MIT licence · not affiliated with the AmneziaVPN developers.
+Version **0.19.8** · MIT licence · not affiliated with the AmneziaVPN developers.
 
 ![Infrastructure overview](docs/screenshots/en-dashboard.png)
 
@@ -26,6 +26,7 @@ Version **0.19.7** · MIT licence · not affiliated with the AmneziaVPN develope
 - **Optional Nginx** reverse proxy with a self-signed or your own certificate.
 - **Router subscriptions:** a permanent HTTPS link from which a router or container fetches its current `.conf` by itself (with `ETag` and a 304 answer when nothing changed), plus a ready script for MikroTik, OpenWrt, Docker and Linux.
 - **When the port gets blocked:** masking profiles (port plus a QUIC, STUN, DTLS or DNS shaped `I1`), a new port, obfuscation and server key in one press or on a schedule, and a 15-second incoming packet check in the panel and the bot.
+- **Server domain:** in the server settings you can enter a domain (e.g. `vpn.example.com`) and switch “Server address in client configurations” to “Domain”: client `Endpoint` lines, the `vpn://` link, the QR code and the subscription then carry the domain instead of the IP. It is optional, the IP stays the default. With a domain the server’s IP can change without handing out configurations again: fix the A record. After saving, the panel checks that the domain resolves to the IP in the Endpoint field and warns when it does not; the bot sends owners their new configurations.
 - **Server networking:** TCP fitted to the tunnel MTU on the server (MSS clamping) and protective kernel settings (`rp_filter`, no ICMP redirects, SYN cookies).
 
 ## Requirements

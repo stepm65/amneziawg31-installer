@@ -260,6 +260,16 @@ if awg show awg0 peers | grep -qxF "$sub_key"; then fail 'the old key of the sub
 awg show awg0 peers | grep -qxF "$other_key" || fail 'a client without a subscription lost its key'
 echo '{"interface":"awg0","days":7,"parts":["port"]}' | panel_mgr rotate-schedule | grep -q '"days": 7' || fail 'rotation schedule not saved'
 echo '{"interface":"awg0","days":0}' | panel_mgr rotate-schedule >/dev/null
+# An optional domain in the client configurations instead of the IP (0.19.8).
+echo '{"interface":"awg0","endpoint_domain":"vpn.smoke.invalid","use_domain":"on"}' | panel_mgr settings \
+  | python3 -c 'import json,sys; r=json.load(sys.stdin); assert r["configs_changed"] > 0 and r["domain_warning"] == "unresolved", r'
+echo '{"interface":"awg0","name":"team-01"}' | "$MGR" download | grep -q "Endpoint = vpn.smoke.invalid:$new_port\\\\n" \
+  || fail 'the configuration does not use the server domain'
+echo "{\"interface\":\"awg0\",\"token\":\"$SUB\"}" | panel_mgr sub-fetch | grep -q "Endpoint = vpn.smoke.invalid:$new_port" \
+  || fail 'the subscription does not hand out the domain'
+echo '{"interface":"awg0","use_domain":"off"}' | panel_mgr settings >/dev/null
+echo '{"interface":"awg0","name":"team-01"}' | "$MGR" download | grep -q "Endpoint = 203.0.113.10:$new_port\\\\n" \
+  || fail 'switching the domain off did not bring the IP back'
 (sleep 2; python3 -c "import socket; s=socket.socket(socket.AF_INET, socket.SOCK_DGRAM); [s.sendto(b'x'*200, ('127.0.0.1', $new_port)) for _ in range(3)]") &
 echo '{"interface":"awg0","seconds":5}' | panel_mgr probe | python3 -c 'import json,sys; r=json.load(sys.stdin); assert r["incoming"] >= 3 and r["sizes"], r'
 wait
