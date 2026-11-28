@@ -4,7 +4,7 @@
 
 An installer and a web console for running **AmneziaWG 3.1** on your own server: a kernel module built with DKMS, an interactive setup wizard and a bilingual (EN/RU) panel for servers, clients, traffic and backups. No Docker, no control plane in the cloud, nothing loaded from a CDN.
 
-Version **0.27.0** · MIT licence · not affiliated with the AmneziaVPN developers.
+Version **0.28.0** · MIT licence · not affiliated with the AmneziaVPN developers.
 
 ![Infrastructure overview](docs/screenshots/en-dashboard.png)
 
@@ -197,6 +197,10 @@ Short notation does not mean a small packet: `<r 1000>` is 1000 random bytes on 
 
 Templates only set the shape of the first packets. Whether they help against a particular filter depends on that network, so test them where you use the VPN. After changing I1–I5, import the client configuration again.
 
+### Access schedule
+
+The client page has an **Access schedule** in its limits: days of the week, from and to times and a time zone (the server's by default). Outside that time the client switches off by itself (“Outside its schedule” in the list, a “With a schedule” filter) and comes back as soon as the time comes; the check runs every minute with the limits. A window may run over midnight, e.g. 22:00–07:00 — the days then say on which days it starts. A client that expired or used up its quota meanwhile is not switched back on by the schedule. Removing the schedule switches a client it stopped back on at once. The owner sees the schedule on their bot screen.
+
 ### Groups, filters, actions on the selected clients and CSV
 
 A client can have a **group** (“office”, “family”, …): set it in the creation form, on the client page, or for the selected clients with the **Group** button. The group is shown next to the name. Above the list there are the chips All, Online, Offline and Off, a group filter (including “No group”) and a flag filter: expires within 3 days, needs a new configuration, routers with a subscription, with a Telegram owner. The search also looks at the group and the comment. “Select all” selects only the visible rows, so a group can be filtered and then extended, switched off or reconfigured at once.
@@ -369,6 +373,12 @@ An owner cannot change anything or see other clients, servers and addresses. By 
 An owner of a client with an expiry date has an **Extend** button: the administrators get the request with ready answers (+7, +30, +90 days, refuse), and the owner is told the result. One request per client a day. The owner is also told when 80 % of the quota is used, when the client is disabled by expiry or quota, and when a monthly quota starts again. The person finds their numeric ID with any “user info” bot in Telegram, and has to press **Start** in your bot once: Telegram does not let a bot write first.
 
 If a client’s configuration got into the wrong hands, press **Replace the key** on the client page (in the bot — **New key**): the client gets a new key pair and PSK, while address, limits, expiry, owner and history stay. The old configuration stops working at once. The bot sends the administrator the new file and QR code and tells the owner where to get the new configuration.
+
+### Access requests and messages to owners
+
+**Access requests** (off by default) are turned on under **Maintenance → Telegram → Access requests**. A stranger who writes to the bot then sees **Ask for access**, and the administrators get the person's name, @username and ID with **Grant** and **Refuse** buttons. Grant makes a client from the template (server, term, traffic quota, speed, whether the owner may get the configuration in the bot) named like `tg-username` and makes the person its owner, who at once sees their screen with the configuration. At most 20 requests wait at once, the bot answers one person at most every 30 seconds, and after a refusal a new request is possible in a week. Viewers do not get requests. Grants and refusals go to the audit log.
+
+A **message to owners** is one message to everyone who has a client with a Telegram ID: server work, a new configuration and so on. In the bot it is **📣 Message owners** in the menu (text, a preview with the number of recipients, send); in the panel, the “Message to owners” card in the Telegram tab (the bot sends it within a minute). A **My connections** button can be added that opens the owner's screen with the configuration (where allowed). The text goes as it is, without markup, up to 1000 characters; the result (“sent N of M”) goes to the administrators and the audit log.
 
 Unattended: `AWG31_TELEGRAM_TOKEN` and `AWG31_TELEGRAM_ADMINS` (IDs separated by commas), optionally `AWG31_TELEGRAM_LANG` (`ru`/`en`) and `AWG31_TELEGRAM_NOTIFY` (`all`, `none` or a list of `server,clients,security,backups`). They work both with the installer and with `sudo -E awg31 telegram`.
 

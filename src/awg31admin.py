@@ -36,7 +36,7 @@ VALID_AUDIT = {'login_success', 'login_failed', 'password_changed', 'client_adde
                'owner_created', 'owner_changed', 'owner_deleted', 'owner_blocked', 'owner_unblocked', 'clients_imported',
                'snapshot_deleted', 'account_created', 'account_changed', 'account_deleted', 'session_ended',
                'passkey_added', 'passkey_deleted', 'backup_verified', 'backup_verify_failed', 'databases_compacted',
-               'metrics_changed'}
+               'metrics_changed', 'access_request_granted', 'access_request_refused', 'owners_broadcast'}
 ACCOUNT_RE=re.compile(r'^[a-z][a-z0-9_.-]{1,31}$')
 ROLES=('admin','viewer')
 MAX_ACCOUNTS=20
@@ -854,6 +854,47 @@ def _id_list(value, limit):
     return result
 
 
+def telegram_requests(raw):
+    """Strangers may ask the bot for access (0.28); a granted request makes a client from this template."""
+    if not isinstance(raw,dict): raise ValueError('Invalid access request settings')
+    def number(key,high):
+        try: value=int(raw.get(key) or 0)
+        except (TypeError,ValueError): raise ValueError(f'Access requests: {key} must be a whole number') from None
+        if not 0<=value<=high: raise ValueError(f'Access requests: {key} from 0 to {high}')
+        return value
+    server=str(raw.get('server') or '')
+    if server and not re.fullmatch(r'awg(?:0|[1-9][0-9]?)',server): raise ValueError('Access requests: unknown server')
+    return {'enabled':bool(raw.get('enabled')),'server':server,'days':number('days',3650),'quota_gb':number('quota_gb',100000),
+            'speed':number('speed',10000),'export':raw.get('export',True) is not False}
+
+
+def _requests_or_default(raw):
+    try: return telegram_requests(raw if isinstance(raw,dict) else {})
+    except ValueError: return telegram_requests({})
+
+
+def broadcast_file():
+    return Path(os.environ.get('AWG31_BOT_BROADCAST','/var/lib/awg31-bot/broadcast.json'))
+
+
+def telegram_broadcast(data):
+    """A message for every client owner; the bot sends it within a minute."""
+    if not bot_config_file().is_file(): raise ValueError('The bot is not connected: connect it first')
+    text=str(data.get('text') or '').replace('\r\n','\n').strip()
+    if not text or len(text)>1000: raise ValueError('The message: 1 to 1000 characters')
+    if any(ord(c)<32 and c not in '\n\t' for c in text): raise ValueError('The message has control characters')
+    path=broadcast_file()
+    if path.exists(): raise ValueError('The previous message has not been sent yet: wait a minute')
+    path.parent.mkdir(parents=True,exist_ok=True)
+    _atomic_private_file(path,json.dumps({'text':text,'button':bool(data.get('button'))})+'\n',mode=0o600)
+    try:
+        bot=pwd.getpwnam('awgbot')
+        os.chown(path,bot.pw_uid,bot.pw_gid)
+    except (KeyError,OSError): pass
+    audit({'event':'owners_broadcast','target':f'queued, {len(text)} characters'})
+    return {'ok':True,'queued':True}
+
+
 def telegram_status():
     _telegram_pending_cleanup()
     file=bot_config_file()
@@ -879,6 +920,7 @@ def telegram_status():
             'username':str(config.get('username','')),
             'admins':[int(x) for x in config.get('admins',[])],
             'viewers':[int(x) for x in config.get('viewers',[])],'lang':config.get('lang','ru'),
+            'requests':_requests_or_default(config.get('requests')),
             'notify':groups,
             'events':{key:bool(chosen.get(key,groups.get(group,True))) for key,group in TELEGRAM_EVENTS.items()},
             'thresholds':thresholds,'digest':digest,
@@ -1148,6 +1190,8 @@ def telegram_set(data):
             raise ValueError('Telegram did not accept the new token, or the API server is unreachable')
         config.update(token=token,username=username)
     enabled=data.get('enabled',True) is not False
+    if 'requests' in data:
+        config['requests']=telegram_requests(data['requests'])
     config.update({'admins':admins,'viewers':viewers,'lang':lang,'digest':digest,'events':events,
                    'thresholds':thresholds,'backup_file':bool(data.get('backup_file',config.get('backup_file',old_groups['backups']))),
                    # Group switches stay for older tools: on while any event of the group is on.

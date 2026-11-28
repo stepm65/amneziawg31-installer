@@ -35,7 +35,7 @@ ADMIN = {'servers', 'server-create', 'client-move', 'server-start', 'server-stop
          'backup-encryption-change','backup-remote','backup-remote-set','backup-remote-test',
          'audit-search','logging-status','logging-set','logs-read','handshake-debug','support-report',
          'owners','owner-set','owner-delete','owner-device-add','clients-import','snapshot-delete','account-set','account-delete','session-save','passkey-add','passkey-delete','passkey-used',
-         'backup-verify','db-status','db-vacuum','metrics','metrics-set'}
+         'backup-verify','db-status','db-vacuum','metrics','metrics-set','telegram-broadcast'}
 # Ops that may give a client an owner, and ops that must know which owners are blocked.
 OWNER_OPS = {'add', 'client-policy', 'client-batch'}
 BLOCK_AWARE = {'enable', 'client-batch'}
@@ -248,6 +248,7 @@ def main():
     if op=='db-vacuum': return admin.db_vacuum(sys.modules[__name__])
     if op=='metrics': return admin.metrics_collect(sys.modules[__name__])
     if op=='metrics-set': return admin.metrics_set(data)
+    if op=='telegram-broadcast': return admin.telegram_broadcast(data)
     if op=='backup-policy-set': return admin.save_backup_policy(data)
     if op=='backup-delete': return admin.delete_backup(data)
     if op=='backup-list': return admin.list_backups()

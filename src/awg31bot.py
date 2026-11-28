@@ -35,6 +35,11 @@ TOKEN_RE = re.compile(r'[0-9]{5,14}:[A-Za-z0-9_-]{30,60}')
 PAGE = 8
 PENDING_SECONDS = 300
 READ_KINDS = {'m', 'h', 's', 'cl', 'c', 'st', 'bk'}     # buttons a viewer may press: screens only
+BROADCAST = Path(os.environ.get('AWG31_BOT_BROADCAST', '/var/lib/awg31-bot/broadcast.json'))   # queued by the panel
+BROADCAST_MAX = 1000             # characters of one message to owners
+REQUEST_PENDING_MAX = 20         # access requests waiting for an administrator at once
+REQUEST_COOLDOWN = 7 * 86400     # after a refusal, no new request for a week
+STRANGER_INTERVAL = 30           # seconds between answers to one stranger
 QUOTA_WARNING = 0.8
 RENEW_INTERVAL = 86400
 OWNERS_TTL = 60          # how long the list of client owners is trusted
@@ -178,6 +183,21 @@ TEXT = {
         'n_next_kernel_ok': '🟢 Модуль AmneziaWG для нового ядра собран: перезагружать сервер можно.',
         'n_upload_failed': '⚠️ Резервная копия не отправлена во внешнее хранилище: {target}',
         'n_verify_failed': '⚠️ Проверка резервной копии не пройдена: {target}. Из такой копии восстановиться может не получиться.',
+        'reason_schedule': ' (вне расписания)', 'my_schedule': '\n   Доступ по расписанию: {when}',
+        'request_offer': 'Это частный VPN-бот. Можно попросить доступ: администратор получит вашу заявку и решит.',
+        'b_request': '🙋 Запросить доступ', 'request_sent': 'Заявка отправлена администратору. Ответ придёт сюда.',
+        'request_pending': 'Заявка уже у администратора — ответ придёт сюда.',
+        'request_refused': 'Администратор отклонил заявку. Повторить можно через неделю.',
+        'request_busy': 'Сейчас слишком много заявок. Попробуйте позже.',
+        'n_request': '🙋 <b>Запрос доступа</b>\n{who}', 'b_grant': '✅ Выдать', 'b_refuse': '✖️ Отклонить',
+        'request_gone': 'Эта заявка уже обработана.', 'request_no': 'Администратор отклонил заявку на доступ.',
+        'request_ok': '✅ Доступ выдан: клиент <code>{name}</code>. Ниже — ваши подключения.',
+        'request_refused_admin': 'Заявка отклонена: {who}', 'request_granted_admin': '✅ Выдано: {who} → <code>{iface}/{name}</code>',
+        'b_broadcast': '📣 Рассылка', 'ask_broadcast': 'Напишите сообщение для владельцев клиентов (сейчас их {n}). До 1000 символов.',
+        'broadcast_preview': 'Сообщение получат владельцы: {n}.', 'b_send': '📨 Отправить', 'b_send_button': '📨 С кнопкой «Мои подключения»',
+        'broadcast_long': 'Слишком длинно: не больше {n} символов.', 'broadcast_sending': 'Отправляю…',
+        'broadcast_done': '📣 Сообщение владельцам отправлено: {sent} из {total}.', 'broadcast_head': '📣 <b>Сообщение администратора</b>\n\n',
+        'b_my': '📱 Мои подключения',
         'speed': '\nСкорость: до {n} Мбит/с', 'speed_split': '\nСкорость: ↓ {down} · ↑ {up} (Мбит/с)', 'monthly': ' в месяц', 'b_speed': '🚦 Скорость', 'b_nospeed': 'Без ограничения',
         'b_mbit': '{n} Мбит/с', 'ask_speed': 'Ограничение скорости <b>{name}</b> (в обе стороны).',
         'b_renew': '🙏 Продлить {name}', 'renew_sent': 'Запрос на продление <b>{name}</b> отправлен администратору.',
@@ -324,6 +344,21 @@ TEXT = {
         'n_next_kernel_ok': '🟢 The AmneziaWG module for the new kernel is built: the server can be rebooted.',
         'n_upload_failed': '⚠️ The backup was not sent to the remote storage: {target}',
         'n_verify_failed': '⚠️ A backup failed its check: {target}. A restore from it may not work.',
+        'reason_schedule': ' (outside its schedule)', 'my_schedule': '\n   Access on schedule: {when}',
+        'request_offer': 'This is a private VPN bot. You can ask for access: the administrator gets your request and decides.',
+        'b_request': '🙋 Ask for access', 'request_sent': 'The request went to the administrator. The answer comes here.',
+        'request_pending': 'Your request is with the administrator; the answer comes here.',
+        'request_refused': 'The administrator refused the request. You can ask again in a week.',
+        'request_busy': 'Too many requests right now. Try later.',
+        'n_request': '🙋 <b>Access request</b>\n{who}', 'b_grant': '✅ Grant', 'b_refuse': '✖️ Refuse',
+        'request_gone': 'This request was already answered.', 'request_no': 'The administrator refused your access request.',
+        'request_ok': '✅ Access granted: client <code>{name}</code>. Your connections are below.',
+        'request_refused_admin': 'Request refused: {who}', 'request_granted_admin': '✅ Granted: {who} → <code>{iface}/{name}</code>',
+        'b_broadcast': '📣 Message owners', 'ask_broadcast': 'Write a message for the client owners ({n} now). Up to 1000 characters.',
+        'broadcast_preview': 'Owners who get the message: {n}.', 'b_send': '📨 Send', 'b_send_button': '📨 With a “My connections” button',
+        'broadcast_long': 'Too long: at most {n} characters.', 'broadcast_sending': 'Sending…',
+        'broadcast_done': '📣 Message to owners sent: {sent} of {total}.', 'broadcast_head': '📣 <b>Message from the administrator</b>\n\n',
+        'b_my': '📱 My connections',
         'speed': '\nSpeed: up to {n} Mbit/s', 'speed_split': '\nSpeed: ↓ {down} · ↑ {up} (Mbit/s)', 'monthly': ' per month', 'b_speed': '🚦 Speed', 'b_nospeed': 'Unlimited',
         'b_mbit': '{n} Mbit/s', 'ask_speed': 'Speed limit of <b>{name}</b> (both directions).',
         'b_renew': '🙏 Extend {name}', 'renew_sent': 'The request to extend <b>{name}</b> was sent to the administrator.',
@@ -508,7 +543,30 @@ def load_config(path=CONFIG):
             'viewers': {int(item) for item in data.get('viewers', [])} - admins,
             'digest': CRON_ALIASES.get(digest, digest),
             'api_base': str(data.get('api_base') or 'https://api.telegram.org'),
-            'username': str(data.get('username') or '')}
+            'username': str(data.get('username') or ''),
+            'requests': request_settings(data.get('requests'))}
+
+
+def request_settings(raw):
+    """Access requests from strangers (0.28): off unless the administrator turned them on."""
+    raw = raw if isinstance(raw, dict) else {}
+    def number(key, low, high):
+        try: return min(high, max(low, int(raw.get(key) or 0)))
+        except (TypeError, ValueError): return 0
+    server = str(raw.get('server') or '')
+    return {'enabled': raw.get('enabled') is True, 'server': server if IFACE_RE.fullmatch(server) else '',
+            'days': number('days', 0, 3650), 'quota_gb': number('quota_gb', 0, 100000), 'speed': number('speed', 0, 10000),
+            'export': raw.get('export', True) is not False}
+
+
+def schedule_label(raw, lang):
+    try: rule = json.loads(raw) if isinstance(raw, str) and raw else None
+    except ValueError: rule = None
+    if not rule: return ''
+    names = ('Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс') if lang == 'ru' else ('Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun')
+    days = sorted(rule.get('days') or [])
+    label = ('ежедневно' if lang == 'ru' else 'daily') if len(days) == 7 else ', '.join(names[d] for d in days if 0 <= d <= 6)
+    return f"{label} {rule.get('from')}–{rule.get('to')} ({rule.get('tz')})"
 
 
 def parse_expiry(text, now=None):
@@ -540,6 +598,8 @@ class Bot:
         self.owner_seen = {}                          # Telegram ID -> time of the last answered request
         self.viewing = False                          # the update being handled comes from a viewer
         self.invite_tries = {}                        # Telegram ID -> times of recent invitation attempts
+        self.broadcasts = {}                          # admin id -> text waiting for confirmation
+        self.sleep = time.sleep
 
     # ------------------------------------------------------------ helpers
     def t(self, key, **values):
@@ -610,7 +670,8 @@ class Bot:
     # ------------------------------------------------------------ screens
     def screen_menu(self):
         return self.t('menu'), [[(self.t('b_servers'), 's'), (self.t('b_clients'), 'cl')],
-                                [(self.t('b_status'), 'st'), (self.t('b_backup'), 'bk')], [(self.t('b_help'), 'h')]]
+                                [(self.t('b_status'), 'st'), (self.t('b_backup'), 'bk')],
+                                [(self.t('b_broadcast'), 'bc'), (self.t('b_help'), 'h')]]
 
     def screen_servers(self):
         servers = self.servers()
@@ -824,6 +885,160 @@ class Bot:
         handle = re.sub(r'[^A-Za-z0-9_]', '', str((sender or {}).get('username') or ''))[:32]
         return f"{(who + (f' @{handle}' if handle else '')).strip() or user} (ID {user})"
 
+    def serve_guest(self, user, chat, message_id=None, callback_id=None, data=''):
+        if not user or (chat or {}).get('type') != 'private':
+            return
+        try:
+            known = int(user.get('id', 0)) in self.owners()
+        except BotError:
+            known = False
+        if known:
+            self.serve_owner(user, chat, message_id, callback_id, data)
+        else:
+            self.serve_stranger(user, chat, message_id, callback_id, data)
+
+    # ------------------------------------------------------------ access requests (0.28)
+    def requests(self):
+        items = self.state.get('requests')
+        if not isinstance(items, dict):
+            items = self.state['requests'] = {}
+        now = self.clock()
+        for key in [k for k, v in items.items() if not isinstance(v, dict) or now - float(v.get('at', 0)) > 30 * 86400]:
+            items.pop(key, None)
+        return items
+
+    def serve_stranger(self, user, chat, message_id=None, callback_id=None, data=''):
+        settings = self.config.get('requests') or {}
+        if not settings.get('enabled'):
+            return                                    # as before: strangers get no reply at all
+        uid = int(user.get('id', 0))
+        now = self.clock()
+        if callback_id:
+            try:
+                self.api.call('answerCallbackQuery', callback_query_id=callback_id)
+            except BotError:
+                pass
+        elif now - self.owner_seen.get(uid, -STRANGER_INTERVAL) < STRANGER_INTERVAL:
+            return
+        self.owner_seen[uid] = now
+        items = self.requests()
+        mine = items.get(str(uid)) or {}
+        try:
+            if mine.get('status') == 'pending':
+                self.show(chat['id'], self.t('request_pending'), message_id=message_id)
+            elif mine.get('status') == 'rejected' and now - float(mine.get('at', 0)) < REQUEST_COOLDOWN:
+                self.show(chat['id'], self.t('request_refused'), message_id=message_id)
+            elif data == 'rq':
+                if sum(1 for v in items.values() if v.get('status') == 'pending') >= REQUEST_PENDING_MAX:
+                    self.show(chat['id'], self.t('request_busy'), message_id=message_id)
+                    return
+                who = self.person(user, uid)
+                items[str(uid)] = {'status': 'pending', 'at': now, 'who': who[:80],
+                                   'username': re.sub(r'[^A-Za-z0-9_]', '', str(user.get('username') or ''))[:32],
+                                   'first': re.sub(r'[^\w .-]', '', str(user.get('first_name') or ''))[:32]}
+                self._save_state()
+                for admin in sorted(self.config['admins']):
+                    try:
+                        self.api.call('sendMessage', chat_id=admin, parse_mode='HTML', text=self.t('n_request', who=who),
+                                      reply_markup=self.keyboard([[(self.t('b_grant'), f'ra:{uid}'), (self.t('b_refuse'), f'rj:{uid}')]]))
+                    except BotError as exc:
+                        log(f'cannot tell {admin} about a request: {exc}')
+                self.show(chat['id'], self.t('request_sent'), message_id=message_id)
+            else:
+                self.show(chat['id'], self.t('request_offer'), [[(self.t('b_request'), 'rq')]], message_id)
+        except BotError as exc:
+            log(f'stranger request failed: {exc}')
+
+    def request_name(self, uid, item, iface):
+        base = (item.get('username') or item.get('first') or '').lower()
+        base = re.sub(r'[^a-z0-9_-]', '', base.replace(' ', '-'))[:20] or str(uid)
+        name = f'tg-{base}'[:28]
+        taken = {c['name'] for c in self.clients(iface)}
+        candidate, number = name, 2
+        while candidate in taken:
+            candidate, number = f'{name}-{number}', number + 1
+        return candidate
+
+    def answer_request(self, chat, admin, uid, grant, message_id):
+        items = self.requests()
+        item = items.get(str(uid))
+        if not item or item.get('status') != 'pending':
+            self.show(chat, self.t('request_gone'), message_id=message_id)
+            return
+        if not grant:
+            item.update(status='rejected', at=self.clock())
+            self._save_state()
+            self.audit('access_request_refused', item.get('who', str(uid)), admin)
+            try:
+                self.api.call('sendMessage', chat_id=uid, text=self.t('request_no'))
+            except BotError:
+                pass
+            self.show(chat, self.t('request_refused_admin', who=item.get('who', str(uid))), message_id=message_id)
+            return
+        settings = self.config.get('requests') or {}
+        iface = settings.get('server') or self.default_server()
+        if iface not in {s['interface'] for s in self.servers()}:
+            iface = self.default_server()
+        name = self.request_name(uid, item, iface)
+        payload = {'interface': iface, 'name': name, 'telegram_id': str(uid), 'owner_export': bool(settings.get('export', True)),
+                   'comment': f"Telegram: {item.get('who', '')}"[:200]}
+        if settings.get('days'):
+            payload['expires_at'] = (datetime.now(timezone.utc) + timedelta(days=int(settings['days']))).date().isoformat()
+        if settings.get('quota_gb'):
+            payload['traffic_limit_bytes'] = int(settings['quota_gb']) * 1024 ** 3
+        if settings.get('speed'):
+            payload['speed_limit_mbit'] = payload['speed_up_mbit'] = int(settings['speed'])
+        self.ctl('add', payload)
+        item.update(status='approved', at=self.clock(), client=f'{iface}/{name}')
+        self._save_state()
+        self.audit('access_request_granted', f'{iface}/{name} for {item.get("who", uid)}', admin)
+        self.owners_at = None
+        self.owner_seen.pop(uid, None)
+        try:
+            self.api.call('sendMessage', chat_id=uid, parse_mode='HTML', text=self.t('request_ok', name=name))
+            self.serve_owner({'id': uid}, {'id': uid, 'type': 'private'})
+        except BotError as exc:
+            log(f'cannot tell {uid} about the new access: {exc}')
+        self.show(chat, self.t('request_granted_admin', who=item.get('who', str(uid)), name=name, iface=iface), message_id=message_id)
+
+    # ------------------------------------------------------------ messages to owners (0.28)
+    def send_broadcast(self, text, button=False):
+        """One message to every client owner; returns (sent, total)."""
+        self.owners_at = None
+        recipients = sorted(self.owners())
+        markup = self.keyboard([[(self.t('b_my'), 'me')]]) if button else None
+        sent = 0
+        for uid in recipients:
+            try:
+                self.api.call('sendMessage', chat_id=uid, parse_mode='HTML', text=self.t('broadcast_head') + html.escape(text),
+                              reply_markup=markup, disable_web_page_preview=True)
+                sent += 1
+            except BotError as exc:
+                log(f'cannot send the message to {uid}: {exc}')
+            self.sleep(0.05)                          # Telegram allows about 30 messages a second
+        return sent, len(recipients)
+
+    def queued_broadcast(self):
+        """A message the panel left for the owners."""
+        try:
+            data = json.loads(BROADCAST.read_text())
+        except (OSError, ValueError):
+            return
+        try:
+            BROADCAST.unlink()
+        except OSError as exc:
+            log(f'cannot take the queued message: {exc}')
+            return
+        text = str((data or {}).get('text') or '').strip()[:BROADCAST_MAX] if isinstance(data, dict) else ''
+        if not text:
+            return
+        sent, total = self.send_broadcast(text, bool(data.get('button')))
+        try:
+            self.ctl('audit', {'event': 'owners_broadcast', 'target': f'{sent}/{total} owners (panel)'})
+        except BotError:
+            pass
+        self.notify(self.t('broadcast_done', sent=sent, total=total))
+
     def serve_owner(self, user, chat, message_id=None, callback_id=None, data=''):
         """Answer a non-administrator; returns silently unless they own a client."""
         if not user or (chat or {}).get('type') != 'private':
@@ -877,8 +1092,10 @@ class Bot:
             for iface, c in mine:
                 enabled = bool(c.get('enabled'))
                 state = self.plain('enabled' if enabled else 'disabled')
-                if not enabled and c.get('disabled_reason') in ('expired', 'quota', 'owner_quota', 'owner_expired'):
+                if not enabled and c.get('disabled_reason') in ('expired', 'quota', 'owner_quota', 'owner_expired', 'schedule'):
                     state += self.plain('reason_' + c['disabled_reason'])
+                if c.get('schedule'):
+                    state += self.plain('my_schedule', when=schedule_label(c['schedule'], self.config['lang']))
                 handshake = int((c.get('stats') or {}).get('handshake') or 0)
                 limit = int(c.get('traffic_limit_bytes') or 0)
                 parts.append(self.t('my_client', name=c['name'], state=state, used=human_size(c.get('used_bytes', 0)),
@@ -1099,7 +1316,7 @@ class Bot:
             query = update['callback_query']
             message = query.get('message') or {}
             if not self.authorized(query.get('from'), message.get('chat')):
-                self.serve_owner(query.get('from'), message.get('chat'), message.get('message_id'), query.get('id'),
+                self.serve_guest(query.get('from'), message.get('chat'), message.get('message_id'), query.get('id'),
                                  str(query.get('data', '')))
                 return
             try:
@@ -1122,8 +1339,9 @@ class Bot:
                 self.redeem_invite(sender, int(chat['id']), words[1])
                 return
             if not self.authorized(message.get('from'), message.get('chat')):
-                # Strangers and group chats get no reply at all; a client owner gets their status.
-                self.serve_owner(message.get('from'), message.get('chat'))
+                # Group chats get no reply; a client owner gets their status; a stranger may ask for access
+                # when the administrator allowed requests, else gets no reply at all.
+                self.serve_guest(message.get('from'), message.get('chat'))
                 return
             text = str(message.get('text') or '').strip()
             if text:
@@ -1175,6 +1393,16 @@ class Bot:
             self.pending.pop(admin, None)
             self.show(chat, self.t('expired_input'), [[(self.t('b_menu'), 'm')]])
             return
+        if kind == 'bc':
+            if len(text) > BROADCAST_MAX:
+                self.show(chat, self.t('broadcast_long', n=BROADCAST_MAX))
+                return
+            self.pending.pop(admin, None)
+            self.broadcasts[admin] = text
+            self.owners_at = None
+            self.show(chat, self.t('broadcast_preview', n=len(self.owners())) + '\n\n' + html.escape(text),
+                      [[(self.t('b_send'), 'bs:plain'), (self.t('b_send_button'), 'bs:button')], [(self.t('b_no'), 'm')]])
+            return
         if kind == 'add':
             if self.add_client(chat, admin, iface, text):
                 self.pending.pop(admin, None)
@@ -1209,6 +1437,24 @@ class Bot:
         kind = parts[0]
         if self.viewing and kind not in READ_KINDS:
             raise BotError(self.plain('read_only'))
+        if kind in ('ra', 'rj') and len(parts) == 2 and re.fullmatch(r'[1-9][0-9]{2,14}', parts[1]):
+            self.answer_request(chat, admin, int(parts[1]), kind == 'ra', message_id)
+            return
+        if kind == 'bc':
+            self.pending[admin] = ('bc', '', '', self.clock() + PENDING_SECONDS)
+            self.owners_at = None
+            self.show(chat, self.t('ask_broadcast', n=len(self.owners())), [[(self.t('b_no'), 'm')]], message_id)
+            return
+        if kind == 'bs' and len(parts) == 2 and parts[1] in ('plain', 'button'):
+            text = self.broadcasts.pop(admin, '')
+            if not text:
+                self.show(chat, self.t('expired_input'), [[(self.t('b_menu'), 'm')]], message_id)
+                return
+            self.show(chat, self.t('broadcast_sending'), message_id=message_id)
+            sent, total = self.send_broadcast(text, parts[1] == 'button')
+            self.audit('owners_broadcast', f'{sent}/{total} owners', admin)
+            self.show(chat, self.t('broadcast_done', sent=sent, total=total), [[(self.t('b_menu'), 'm')]])
+            return
         iface = parts[1] if len(parts) > 1 else ''
         if iface and not IFACE_RE.fullmatch(iface):
             raise BotError('bad request')
@@ -1370,6 +1616,10 @@ class Bot:
             self.check_host()
         except Exception as exc:
             log(f'host check failed: {type(exc).__name__}: {exc}')
+        try:
+            self.queued_broadcast()
+        except Exception as exc:
+            log(f'queued message failed: {type(exc).__name__}: {exc}')
         self.own_actions = {key: stamp for key, stamp in self.own_actions.items() if self.clock() - stamp < 600}
         self._save_state()
 

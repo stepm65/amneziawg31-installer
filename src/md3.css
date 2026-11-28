@@ -1549,3 +1549,10 @@ tr:hover .extra-dot {box-shadow:0 0 0 2px #1e2228}
 @media (max-width:640px){.backup-verify-state{align-items:flex-start;text-align:left}}
 .tg-state.is-off::before {background:#e07a5f}
 #databases .tg-actions {margin-top:14px}
+/* 0.28: access schedule */
+.schedule-field {margin:18px 0 10px;padding:14px 0 0;border:0;border-top:1px solid var(--md-sys-color-outline-variant);min-width:0}
+.schedule-field legend {display:inline-flex;align-items:center;gap:6px;padding:0 8px 0 0;font-weight:600}
+.schedule-days {display:flex;flex-wrap:wrap;gap:8px;margin:10px 0}
+.schedule-day {display:inline-flex;align-items:center;gap:6px;padding:6px 10px;border:1px solid var(--md-sys-color-outline-variant);border-radius:999px;cursor:pointer;font-size:13px}
+.schedule-day input {margin:0}
+.schedule-times {margin-top:4px}

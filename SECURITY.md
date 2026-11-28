@@ -34,6 +34,12 @@ A valid panel session is not enough for changes that outlive it. The panel passw
 - Handshake debug writes to `/sys/kernel/debug/dynamic_debug/control` and schedules a systemd timer that switches it off after 15 minutes, so it cannot be left on by accident.
 - The support report removes keys (`[key]`), Telegram tokens (`[token]`), `PrivateKey`/`PresharedKey`/`PublicKey`/`HeaderProtectionKey`/`Endpoint` lines and public addresses (always fully masked). It is generated on request and not stored on the server.
 
+## Access requests, messages to owners, schedules (0.28)
+
+- Access requests are off by default; while off, strangers get no reply at all, as before. When on, a stranger can only ask: the bot stores the request (name, @username, ID) in its own state, at most 20 waiting, one answer per person per 30 seconds, a week's pause after a refusal. Only administrators (not viewers) get Grant/Refuse, and granting goes through the bot's existing `add` permission with the administrator's template. Requests and decisions are audited.
+- A message to owners is plain text (HTML-escaped by the bot), at most 1000 characters, sent only to Telegram IDs that own a client. The panel queues it through the root helper as a file in the bot's state directory (awgbot 600); the bot takes and deletes it. The optional button only opens the owner's own screen, where the usual per-client export permission still applies.
+- An access schedule is enforced by the root sampler once a minute; it can only switch a client off, or back on when the schedule itself stopped it and nothing else (term, quota, owner limits) holds it.
+
 ## Metrics and backup checks (0.27)
 
 - `/metrics` is off by default. When on, it needs `Authorization: Bearer <token>`; the 256-bit token is shown once and only its sha256 is kept in `/etc/awg31-panel/metrics.json` (root:awgpanel 640), compared in constant time. Off → 404, wrong token → 401 and the same per-address rate limit as subscriptions. Turning it on, off or regenerating the token needs the panel password and an administrator account, and is audited. The output has no keys, configurations or addresses; client names appear only with per-client metrics on.

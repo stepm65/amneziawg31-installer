@@ -2172,6 +2172,7 @@ def server_content(request: Request, section: str = 'overview'):
             ('sub', bool(c.get('subscription'))), ('owner', bool(c.get('owner_id') or c.get('telegram_id'))),
             ('owner_limit', str(c.get('disabled_reason') or '').startswith('owner_')),
             ('expired', c.get('disabled_reason') == 'expired'), ('quota', c.get('disabled_reason') == 'quota'),
+            ('schedule', bool(c.get('schedule'))),
             ('expiring', bool(c.get('expires_at')) and active and c['expires_at'] <= soon)))
         flags = ' '.join(flag for flag, on in flag_on.items() if on)
         # Presence (is the tunnel up right now?) and access (is the client allowed?) are different questions.
@@ -2184,6 +2185,7 @@ def server_content(request: Request, section: str = 'overview'):
         presence_cell = (f'<td><span class="presence-state {"is-online" if is_online else "is-offline"}"><i aria-hidden="true"></i>'
                          f'{h(t("online_now" if is_online else "offline_now"))}</span>{last}</td>')
         reason = ('filter_expired' if flag_on['expired'] else 'filter_quota' if flag_on['quota']
+                  else 'schedule_off_note' if c.get('disabled_reason') == 'schedule'
                   else 'owner_limit_note' if flag_on['owner_limit'] else 'filter_expiring' if flag_on['expiring'] else '')
         owner_name = owner_names.get(c.get('owner_id') or '', '')
         access_cell = (f'<td><span class="access-pill {"is-on" if active else "is-off"}">{h(t("access_on" if active else "access_off"))}</span>'
@@ -2246,7 +2248,7 @@ def server_content(request: Request, section: str = 'overview'):
           <option value="*">{h(t('group_all'))}</option>{''.join(f'<option value="{h(g)}">{h(g)}</option>' for g in sorted(set(groups_all)) if g)}
           <option value="">{h(t('group_none'))}</option></select></label>
         <label class="table-filter"><span class="sr-only">{h(t('filter_state'))}</span><select id="client-state-filter" aria-label="{h(t('filter_state'))}">
-          {''.join(f'<option value="{key}">{h(t("filter_" + (key or "all")))}</option>' for key in ('', 'expiring', 'stale', 'sub', 'owner'))}
+          {''.join(f'<option value="{key}">{h(t("filter_" + (key or "all")))}</option>' for key in ('', 'expiring', 'stale', 'sub', 'owner', 'schedule'))}
           </select></label>
         <span class="table-count mono" id="client-count" data-total="{len(clients_all)}" aria-live="polite">{len(clients_all)} {h('клиентов' if lang=='ru' else 'peers')}</span>
         <a class="btn btn-secondary btn-small" href="/servers/{h(state['interface'])}/export/clients.csv" download title="{h(t('export_csv_hint'))}">{icon('download',15)}{h(t('export_csv'))}</a></div></div>
@@ -2866,7 +2868,7 @@ def detail(request: Request, name: str, interface: str = ''):
         {form_field('quota_gib',gib_format(obj.get('traffic_limit_bytes',0)),t('quota'),required=False,field_id='policy-quota')}
         {owner_select(owners_all(), obj.get('owner_id') or '', 'policy-owner', lang)}
         {policy_extra_fields({**obj,'_lang':lang,'_groups':known_groups(request)}, 'policy')}
-      </div><label class="check-field"><input type="checkbox" name="owner_export" value="1"{' checked' if obj.get('owner_export') else ''}><span>{h(t('owner_export'))}</span></label><button class="btn btn-primary" type="submit">{h(t('save_policy'))}</button>
+      </div>{schedule_fields(obj.get('schedule') or '', t)}<label class="check-field"><input type="checkbox" name="owner_export" value="1"{' checked' if obj.get('owner_export') else ''}><span>{h(t('owner_export'))}</span></label><button class="btn btn-primary" type="submit">{h(t('save_policy'))}</button>
       </form></section>'''
     rekeyed = (f'<p class="bulk-notice" role="status">{icon("key",16)}<span>{h(t("rekeyed"))}</span></p>'
                if request.query_params.get('rekeyed') == '1' else '')
@@ -2912,6 +2914,8 @@ async def policy_update(request: Request, name: str, interface: str = ''):
              'traffic_limit_bytes':gib_bytes(form.get('quota_gib','0')),
              **owner_choice(form),
              'owner_export':form.get('owner_export')=='1', **policy_extras(form)}
+    if form.get('schedule_present') == '1':
+        payload['schedule'] = schedule_from_form(form)
     try: control(request,'client-policy',payload)
     except RuntimeError as exc: return error_page(request,tr(lang_of(request),'error'),exc)
     audit_event('client_modified',f'{selected_server(request)}/{name}')
@@ -4321,6 +4325,7 @@ def maintenance(request: Request, tab: str = 'diagnostics'):
                        f'<div class="tg-actions"><button class="btn btn-primary" type="submit">{icon("check",17)}{h(t("tg_save"))}</button>'
                        f'<button class="btn btn-secondary" type="submit" formaction="/maintenance/telegram/test" formnovalidate>{icon("send",16)}{h(t("tg_test"))}</button>'
                        f'</div></div></form></section>')
+                body+=telegram_extras(request,t,bot)
         elif tab=='import':
             body+=import_tab(request,t)
         elif tab=='logs':
@@ -6660,4 +6665,173 @@ TEXT['en'].update({
     'metrics_token': 'Metrics token', 'metrics_selfsigned': 'true for a self-signed certificate', 'metrics_token_once': 'The token is shown once: save it in the Prometheus settings. The panel keeps only its hash.',
     'metrics_scrape': 'Prometheus setup', 'metrics_scrape_hint': 'Address: {url}. If the HTTPS site has an address allow list (sudo awg31 nginx), add the Prometheus address to it. Add to prometheus.yml with the token:',
     'metrics_list': 'Main metrics: awg31_server_up, awg31_server_clients_online, awg31_server_receive_bytes_total / transmit, awg31_client_* (per client), awg31_backup_last_timestamp_seconds, awg31_backup_verify_ok.',
+})
+
+
+# ------------------------------------------------------------------ 0.28: access schedule
+SCHEDULE_ZONES = ('UTC', 'Europe/Kaliningrad', 'Europe/Moscow', 'Europe/Samara', 'Asia/Yekaterinburg', 'Asia/Omsk',
+                  'Asia/Novosibirsk', 'Asia/Krasnoyarsk', 'Asia/Irkutsk', 'Asia/Yakutsk', 'Asia/Vladivostok', 'Asia/Magadan',
+                  'Asia/Kamchatka', 'Europe/Minsk', 'Europe/Kyiv', 'Europe/Chisinau', 'Asia/Tbilisi', 'Asia/Yerevan', 'Asia/Baku',
+                  'Asia/Almaty', 'Asia/Tashkent', 'Asia/Bishkek', 'Asia/Dushanbe', 'Europe/Istanbul', 'Europe/Riga', 'Europe/Berlin',
+                  'Europe/London', 'Asia/Dubai', 'America/New_York', 'America/Los_Angeles')
+
+
+def server_zone():
+    """The server's own time zone, as the default for new schedules."""
+    try:
+        text = Path('/etc/timezone').read_text().strip()
+        if re.fullmatch(r'[A-Za-z][A-Za-z0-9_+-]*(?:/[A-Za-z0-9_+-]+){0,2}', text): return text
+    except OSError: pass
+    try:
+        target = os.readlink('/etc/localtime')
+        if '/zoneinfo/' in target: return target.split('/zoneinfo/', 1)[1]
+    except OSError: pass
+    return 'UTC'
+
+
+def schedule_from_form(form):
+    if form.get('schedule_on') != '1': return ''
+    days = sorted({int(x) for x in form.getlist('schedule_day') if str(x) in '0123456' and len(str(x)) == 1})
+    return {'days': days, 'from': str(form.get('schedule_from', '')).strip()[:5], 'to': str(form.get('schedule_to', '')).strip()[:5],
+            'tz': str(form.get('schedule_tz', 'UTC')).strip()[:40]}
+
+
+def schedule_text(raw, lang):
+    """Mon-Fri 07:00-22:00 (Europe/Moscow)."""
+    try: rule = json.loads(raw) if isinstance(raw, str) else raw
+    except ValueError: return ''
+    if not rule: return ''
+    names = ('Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс') if lang == 'ru' else ('Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun')
+    days = sorted(rule.get('days') or [])
+    runs, start = [], None
+    for i, d in enumerate(days):
+        if start is None: start = d
+        if i + 1 == len(days) or days[i + 1] != d + 1:
+            runs.append(names[start] if start == d else f'{names[start]}–{names[d]}'); start = None
+    label = ('ежедневно' if lang == 'ru' else 'daily') if len(days) == 7 else ', '.join(runs)
+    return f"{label} {rule.get('from')}–{rule.get('to')} ({rule.get('tz')})"
+
+
+def schedule_fields(raw, t):
+    try: rule = json.loads(raw) if raw else {}
+    except ValueError: rule = {}
+    on = bool(rule)
+    days = set(rule.get('days') or [0, 1, 2, 3, 4, 5, 6])
+    zone = rule.get('tz') or server_zone()
+    zones = SCHEDULE_ZONES if zone in SCHEDULE_ZONES else (zone,) + SCHEDULE_ZONES
+    names = [t('sched_d' + str(i)) for i in range(7)]
+    day_boxes = ''.join(f'<label class="schedule-day"><input type="checkbox" name="schedule_day" value="{i}"{" checked" if i in days else ""}>'
+                        f'<span>{h(name)}</span></label>' for i, name in enumerate(names))
+    options = ''.join(f'<option value="{h(z)}"{" selected" if z == zone else ""}>{h(z)}</option>' for z in zones)
+    return (f'<fieldset class="schedule-field"><legend>{icon("clock",16)}{h(t("sched_title"))}</legend>'
+            f'<input type="hidden" name="schedule_present" value="1">'
+            f'<label class="check-field"><input type="checkbox" name="schedule_on" value="1"{" checked" if on else ""}>'
+            f'<span>{h(t("sched_on"))}</span></label>'
+            f'<div class="schedule-days" role="group" aria-label="{h(t("sched_days"))}">{day_boxes}</div>'
+            f'<div class="fields-grid schedule-times">'
+            f'<label class="field"><span>{h(t("sched_from"))}</span><input type="time" name="schedule_from" value="{h(rule.get("from", "07:00"))}"></label>'
+            f'<label class="field"><span>{h(t("sched_to"))}</span><input type="time" name="schedule_to" value="{h(rule.get("to", "22:00"))}"></label>'
+            f'<label class="field"><span>{h(t("sched_tz"))}</span><select name="schedule_tz">{options}</select></label></div>'
+            f'<small class="field-hint">{h(t("sched_hint"))}</small></fieldset>')
+
+
+TEXT['ru'].update({
+    'sched_title': 'Расписание доступа', 'sched_on': 'Доступ только по расписанию', 'sched_days': 'Дни',
+    'sched_from': 'С', 'sched_to': 'До', 'sched_tz': 'Часовой пояс',
+    'sched_hint': 'Вне этого времени клиент отключается сам и включается обратно, когда время наступит. Окно может переходить через полночь (например, 22:00–07:00): дни — те, в которые оно начинается.',
+    'sched_d0': 'Пн', 'sched_d1': 'Вт', 'sched_d2': 'Ср', 'sched_d3': 'Чт', 'sched_d4': 'Пт', 'sched_d5': 'Сб', 'sched_d6': 'Вс',
+    'schedule_off_note': 'Вне расписания', 'filter_schedule': 'С расписанием',
+})
+TEXT['en'].update({
+    'sched_title': 'Access schedule', 'sched_on': 'Access on a schedule only', 'sched_days': 'Days',
+    'sched_from': 'From', 'sched_to': 'To', 'sched_tz': 'Time zone',
+    'sched_hint': 'Outside this time the client switches off by itself and comes back when the time comes. A window may run over midnight (e.g. 22:00–07:00): the days are the days it starts on.',
+    'sched_d0': 'Mon', 'sched_d1': 'Tue', 'sched_d2': 'Wed', 'sched_d3': 'Thu', 'sched_d4': 'Fri', 'sched_d5': 'Sat', 'sched_d6': 'Sun',
+    'schedule_off_note': 'Outside its schedule', 'filter_schedule': 'With a schedule',
+})
+
+
+# ------------------------------------------------------------------ 0.28: access requests and messages to owners
+def telegram_extras(request, t, bot):
+    req = bot.get('requests') or {}
+    servers = server_list()
+    options = ''.join(f'<option value="{h(x["interface"])}"{" selected" if x["interface"] == req.get("server") else ""}>{h(x["interface"])}</option>'
+                      for x in servers)
+    checked = lambda flag: ' checked' if flag else ''
+    try: owners = ctl('owners', {}).get('owners') or []
+    except RuntimeError: owners = []
+    reach = sum(1 for o in owners if o.get('telegram_id'))
+    done = request.query_params.get('done', '')
+    notice = (f'<p class="tg-notice" role="status">{icon("check",16)}{h(t("tg_" + done))}</p>'
+              if done in ('requests_saved', 'broadcast_queued') else '')
+    requests_card = (
+        f'<section class="maint-form-panel" id="tg-requests"><h3>{icon("users",18)}{h(t("tg_requests"))}</h3>'
+        f'<p class="info-line">{h(t("tg_requests_hint"))}</p>'
+        f'<form method="post" action="/maintenance/telegram/requests">{csrf(request)}'
+        f'<div class="tg-row"><div class="tg-row-text"><strong>{h(t("tg_requests_on"))}</strong><small>{h(t("tg_requests_on_hint"))}</small></div>'
+        f'<div class="tg-row-control"><label class="tg-switch"><input type="checkbox" role="switch" name="enabled" value="1"{checked(req.get("enabled"))}'
+        f' aria-label="{h(t("tg_requests_on"))}"><span aria-hidden="true"></span></label></div></div>'
+        f'<div class="fields-grid">'
+        f'<label class="field"><span>{h(t("tg_requests_server"))}</span><select name="server">{options}</select></label>'
+        f'<label class="field"><span>{h(t("tg_requests_days"))}</span><input type="number" name="days" min="0" max="3650" value="{int(req.get("days") or 0)}"></label>'
+        f'<label class="field"><span>{h(t("tg_requests_quota"))}</span><input type="number" name="quota_gb" min="0" max="100000" value="{int(req.get("quota_gb") or 0)}"></label>'
+        f'<label class="field"><span>{h(t("tg_requests_speed"))}</span><input type="number" name="speed" min="0" max="10000" value="{int(req.get("speed") or 0)}"></label>'
+        f'</div><label class="check-field"><input type="checkbox" name="export" value="1"{checked(req.get("export", True))}><span>{h(t("tg_requests_export"))}</span></label>'
+        f'<div class="tg-actions"><button class="btn btn-primary" type="submit">{icon("check",16)}{h(t("tg_save"))}</button></div></form></section>')
+    broadcast_card = (
+        f'<section class="maint-form-panel" id="tg-broadcast"><h3>{icon("send",18)}{h(t("tg_broadcast"))}</h3>'
+        f'<p class="info-line">{h(t("tg_broadcast_hint").format(n=reach))}</p>'
+        f'<form method="post" action="/maintenance/telegram/broadcast" data-confirm="{h(t("tg_broadcast_confirm").format(n=reach))}">{csrf(request)}'
+        f'<label class="field"><span>{h(t("tg_broadcast_text"))}</span><textarea name="text" rows="4" maxlength="1000" required></textarea></label>'
+        f'<label class="check-field"><input type="checkbox" name="button" value="1" checked><span>{h(t("tg_broadcast_button"))}</span></label>'
+        f'<div class="tg-actions"><button class="btn btn-primary" type="submit"{"" if reach else " disabled"}>{icon("send",16)}{h(t("tg_broadcast_send"))}</button></div>'
+        f'</form></section>')
+    return notice + requests_card + broadcast_card
+
+
+@app.post('/maintenance/telegram/requests')
+async def telegram_requests_save(request: Request):
+    form = await request.form(); require_csrf(request, form.get('csrf', ''))
+    lang = lang_of(request)
+    try:
+        status = ctl('telegram-status', {})
+        ctl('telegram-set', {'enabled': bool(status.get('enabled')),
+                             'requests': {'enabled': form.get('enabled') == '1', 'server': str(form.get('server', '')),
+                                          'days': str(form.get('days', '0') or 0), 'quota_gb': str(form.get('quota_gb', '0') or 0),
+                                          'speed': str(form.get('speed', '0') or 0), 'export': form.get('export') == '1'}})
+    except RuntimeError as exc: return error_page(request, tr(lang, 'maintenance_error'), exc)
+    return RedirectResponse('/maintenance?tab=telegram&done=requests_saved#tg-requests', status_code=303)
+
+
+@app.post('/maintenance/telegram/broadcast')
+async def telegram_broadcast_send(request: Request):
+    form = await request.form(); require_csrf(request, form.get('csrf', ''))
+    try: ctl('telegram-broadcast', {'text': str(form.get('text', ''))[:1000], 'button': form.get('button') == '1'})
+    except RuntimeError as exc: return error_page(request, tr(lang_of(request), 'maintenance_error'), exc)
+    return RedirectResponse('/maintenance?tab=telegram&done=broadcast_queued#tg-broadcast', status_code=303)
+
+
+TEXT['ru'].update({
+    'tg_requests': 'Запросы доступа', 'tg_requests_hint': 'Незнакомый человек пишет боту и нажимает «Запросить доступ»; администраторы получают кнопки «Выдать» и «Отклонить». Выдача создаёт клиента по шаблону ниже и делает человека его владельцем.',
+    'tg_requests_on': 'Принимать запросы', 'tg_requests_on_hint': 'Выключено — бот, как и раньше, не отвечает незнакомым. Одновременно ждут не больше 20 заявок; после отказа новая — через неделю.',
+    'tg_requests_server': 'Сервер для новых клиентов', 'tg_requests_days': 'Срок, дней (0 — без срока)',
+    'tg_requests_quota': 'Лимит трафика, ГБ (0 — без лимита)', 'tg_requests_speed': 'Скорость, Мбит/с (0 — без ограничения)',
+    'tg_requests_export': 'Разрешить владельцу получить конфигурацию в боте',
+    'tg_requests_saved': 'Настройки запросов сохранены, бот перезапущен.',
+    'tg_broadcast': 'Сообщение владельцам', 'tg_broadcast_hint': 'Одно сообщение всем владельцам клиентов в Telegram (сейчас их {n}): например, о работах на сервере или о новой конфигурации. Бот отправит его в течение минуты.',
+    'tg_broadcast_text': 'Текст (до 1000 символов)', 'tg_broadcast_button': 'Добавить кнопку «Мои подключения» (там конфигурация, где выдача разрешена)',
+    'tg_broadcast_send': 'Отправить', 'tg_broadcast_confirm': 'Отправить сообщение {n} владельцам?',
+    'tg_broadcast_queued': 'Сообщение поставлено в очередь: бот отправит его в течение минуты и сообщит результат администраторам.',
+})
+TEXT['en'].update({
+    'tg_requests': 'Access requests', 'tg_requests_hint': 'A stranger writes to the bot and presses “Ask for access”; the administrators get Grant and Refuse buttons. Granting makes a client from the template below and makes the person its owner.',
+    'tg_requests_on': 'Accept requests', 'tg_requests_on_hint': 'Off: the bot keeps ignoring strangers as before. At most 20 requests wait at once; after a refusal a new one is possible in a week.',
+    'tg_requests_server': 'Server for new clients', 'tg_requests_days': 'Term, days (0: none)',
+    'tg_requests_quota': 'Traffic quota, GB (0: none)', 'tg_requests_speed': 'Speed, Mbit/s (0: no limit)',
+    'tg_requests_export': 'Let the owner get the configuration in the bot',
+    'tg_requests_saved': 'Request settings saved; the bot was restarted.',
+    'tg_broadcast': 'Message to owners', 'tg_broadcast_hint': 'One message to every client owner in Telegram ({n} now), e.g. about server work or a new configuration. The bot sends it within a minute.',
+    'tg_broadcast_text': 'Text (up to 1000 characters)', 'tg_broadcast_button': 'Add a “My connections” button (with the configuration where allowed)',
+    'tg_broadcast_send': 'Send', 'tg_broadcast_confirm': 'Send the message to {n} owners?',
+    'tg_broadcast_queued': 'The message is queued: the bot sends it within a minute and tells the administrators how it went.',
 })

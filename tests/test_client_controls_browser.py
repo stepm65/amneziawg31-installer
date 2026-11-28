@@ -188,7 +188,9 @@ def test_client_detail_alignment_and_visible_network_settings(page, width):
     assert max(box['height'] for box in input_bounds) - min(box['height'] for box in input_bounds) < 1
     if width == 1600:
         # The policy fields stand in a grid: a wide screen fits them in a couple of rows.
-        assert len({round(box['y']) for box in input_bounds}) <= 3
+        # (the access schedule is its own group below them)
+        main = page.locator('.client-policy form > .fields-grid input:not([type="hidden"]):not([type="checkbox"])')
+        assert len({round(field.bounding_box()['y']) for field in main.all()}) <= 3
 
 
 def test_template_blocks_go_in_with_their_own_comments(page):

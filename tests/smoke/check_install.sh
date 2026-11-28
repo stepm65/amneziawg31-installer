@@ -495,6 +495,20 @@ reply="$(PW="$panel_password" python3 -c 'import json,os; print(json.dumps({"ena
 panel_call metrics-set "$reply" | grep -q '^0 ' || fail 'metrics cannot be turned off'
 [[ "$(curl --noproxy '*' -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $metrics_token" http://127.0.0.1:18081/metrics)" == 404 ]] || fail 'metrics still answer when off'
 
+step '0.28: access schedule'
+# A window on another weekday (in UTC) is closed now: the sampler switches the client off, removing the schedule brings it back.
+other_day="$(python3 -c 'import datetime; print((datetime.datetime.now(datetime.timezone.utc).weekday()+3)%7)')"
+echo "{\"interface\":\"awg0\",\"name\":\"ci-client\",\"schedule\":{\"days\":[$other_day],\"from\":\"08:00\",\"to\":\"09:00\",\"tz\":\"Europe/Moscow\"}}" \
+  | "$MGR" client-policy >/dev/null || fail 'a schedule was not accepted'
+"$MGR" sample-all </dev/null >/dev/null
+"$MGR" list <<<'{"interface":"awg0"}' | python3 -c 'import json,sys; c={x["name"]:x for x in json.load(sys.stdin)["clients"]}["ci-client"]; assert not c["enabled"] and c["disabled_reason"]=="schedule", c' \
+  || fail 'the client was not switched off outside its schedule'
+echo '{"interface":"awg0","name":"ci-client","schedule":""}' | "$MGR" client-policy >/dev/null
+"$MGR" list <<<'{"interface":"awg0"}' | python3 -c 'import json,sys; c={x["name"]:x for x in json.load(sys.stdin)["clients"]}["ci-client"]; assert c["enabled"] and not c["schedule"], c' \
+  || fail 'the client did not come back when the schedule was removed'
+echo '{"interface":"awg0","name":"ci-client","schedule":{"days":[1],"from":"08:00","to":"09:00","tz":"Mars/Base"}}' | "$MGR" client-policy >/dev/null 2>&1 \
+  && fail 'an unknown time zone was accepted'
+
 step 'Backups are uploaded over SFTP'
 if systemctl is-active --quiet ssh || systemctl is-active --quiet sshd; then
     id awgbackup >/dev/null 2>&1 || useradd -m -s /bin/bash awgbackup
