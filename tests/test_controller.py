@@ -83,7 +83,7 @@ def test_init_and_clients_with_mock_commands(tmp_path,monkeypatch):
     # No dependency on the host's iproute2: the interface is reported as running.
     monkeypatch.setattr(ctl.subprocess,'run',lambda *a,**k: type('P',(),{'returncode':0,'stdout':'[]','stderr':''})())
     monkeypatch.delenv('AWG31_GENERATE_PARAMS',raising=False)
-    monkeypatch.setattr(sys,'stdin',StringIO('{"subnet":"10.77.10.0/29","port":443,"mtu":1280,"endpoint":"vpn.example.net","dns":"1.1.1.1","mode":"split","uplink":"ens3"}'))
+    monkeypatch.setattr(sys,'stdin',StringIO('{"subnet":"10.77.10.0/29","port":443,"mtu":1280,"endpoint":"203.0.113.9","endpoint_domain":"VPN.example.net","dns":"1.1.1.1","mode":"split","uplink":"ens3"}'))
     assert ctl.init()['ok'] is True
     assert (tmp_path/'awg0.conf').stat().st_mode & 0o777 == 0o600
     # The primary server must not get the static WireGuard-like H1-H4 = 1..4.
@@ -95,6 +95,8 @@ def test_init_and_clients_with_mock_commands(tmp_path,monkeypatch):
     item=ctl.clients_add(con)
     assert item['ip']=='10.77.10.2'
     assert 'HeaderProtectionKey' in item['config']
+    # A domain given at installation goes into the configurations at once (0.22.1).
+    assert 'Endpoint = vpn.example.net:443' in item['config'] and ctl.get_settings(con)['use_domain'] == 'on'
     assert con.execute('SELECT COUNT(*) FROM clients').fetchone()[0] == 1
     monkeypatch.setattr(sys,'stdin',StringIO('{"name":"phone"}'))
     assert ctl.clients_action(con,'disable')['ok']

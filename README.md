@@ -4,7 +4,7 @@
 
 An installer and a web console for running **AmneziaWG 3.1** on your own server: a kernel module built with DKMS, an interactive setup wizard and a bilingual (EN/RU) panel for servers, clients, traffic and backups. No Docker, no control plane in the cloud, nothing loaded from a CDN.
 
-Version **0.22.0** · MIT licence · not affiliated with the AmneziaVPN developers.
+Version **0.22.1** · MIT licence · not affiliated with the AmneziaVPN developers.
 
 ![Infrastructure overview](docs/screenshots/en-dashboard.png)
 
@@ -69,7 +69,7 @@ The installer builds the kernel module and tools, then starts the wizard. In a t
 Without whiptail (on Rocky Linux it is installed from the `newt` package by itself), without a terminal or with `AWG31_UI=text`, the wizard asks the same questions as plain text; every question has a default, so Enter is enough:
 
 1. VPN subnet (`/24`…`/29`, default `10.77.10.0/24`), UDP port, MTU.
-2. Public IPv4 or DNS name of the server, DNS for clients.
+2. Public IPv4 of the server, an optional **domain** for client configurations instead of the IP (a new IP then needs only a new A record; the wizard warns when the domain does not point to the server), DNS for clients.
 3. Traffic mode: **full** (all client IPv4 through the VPN, NAT on the server) or **split** (VPN subnet only).
 4. Local TCP port of the panel and the name of the first client.
 5. Reverse proxy: none, Nginx with a self-signed certificate, or Nginx with your certificate.
@@ -110,6 +110,7 @@ curl -Ls https://raw.githubusercontent.com/stepm65/amneziawg31-installer/main/in
 | `AWG31_PORT` | `51820` |
 | `AWG31_MTU` | `1280` |
 | `AWG31_ENDPOINT` | detected public IPv4 |
+| `AWG31_ENDPOINT_DOMAIN` | empty; the server domain that client configurations get instead of the IP |
 | `AWG31_DNS` | `1.1.1.1` |
 | `AWG31_MODE` | `full` |
 | `AWG31_UPLINK` | interface of the default route |

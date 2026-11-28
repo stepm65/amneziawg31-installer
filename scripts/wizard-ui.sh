@@ -25,7 +25,10 @@ declare -A T_ru=(
   [subnet_input]='Подсеть в формате CIDR, от /24 до /29, например 10.20.30.0/24'
   [port_text]='UDP-порт, на котором сервер ждёт клиентов (1–65535). Его нужно будет открыть в файрволе провайдера.'
   [port_random]='случайный'
-  [endpoint_text]='Публичный IPv4 или доменное имя сервера — оно попадёт в конфигурации клиентов.'
+  [endpoint_text]='Публичный IPv4 сервера (можно и DNS-имя). Если ниже задан домен, в конфигурации попадёт он, а этот адрес останется для проверки.'
+  [i_domain]='Домен в конфигурациях'
+  [domain_text]='Необязательно. Доменное имя сервера, например vpn.example.com: оно попадёт в конфигурации клиентов вместо IP, и при смене IP достаточно поправить A-запись. Пусто — в конфигурациях IP.'
+  [domain_warn_title]='Проверьте домен'
   [dns_text]='DNS-сервер, который получат клиенты.' [dns_custom]='Свой…' [dns_input]='IPv4-адрес DNS-сервера'
   [mode_text]='Что отправлять через VPN.' [mode_full]='Весь IPv4-трафик клиента (рекомендуется)' [mode_split]='Только VPN-подсеть'
   [uplink_text]='Интерфейс, через который клиенты выходят в интернет (NAT).'
@@ -68,7 +71,10 @@ declare -A T_en=(
   [subnet_input]='Subnet in CIDR notation, /24 to /29, e.g. 10.20.30.0/24'
   [port_text]='UDP port the server listens on (1–65535). Open it in the provider firewall too.'
   [port_random]='random'
-  [endpoint_text]='Public IPv4 or domain name of the server; it goes into the client configurations.'
+  [endpoint_text]='Public IPv4 of the server (a DNS name works too). When a domain is set below, the configurations get the domain and this address is kept for the check.'
+  [i_domain]='Domain in configurations'
+  [domain_text]='Optional. The server domain name, e.g. vpn.example.com: client configurations get it instead of the IP, so a new IP needs only a new A record. Empty: the IP.'
+  [domain_warn_title]='Check the domain'
   [dns_text]='DNS server the clients get.' [dns_custom]='Custom…' [dns_input]='IPv4 address of the DNS server'
   [mode_text]='What goes through the VPN.' [mode_full]='All IPv4 traffic of the client (recommended)' [mode_split]='The VPN subnet only'
   [uplink_text]='Interface the clients reach the internet through (NAT).'
@@ -156,7 +162,7 @@ ui_https_screen() {
               none "$(ui_t https_none)" self-signed "$(ui_t https_self)" existing "$(ui_t https_own)")" || return 0
     NGINX_MODE="$choice"
     [[ "$NGINX_MODE" == none ]] && return 0
-    value="$(ui_input "$(ui_t i_https)" "$(ui_t https_host)" "${NGINX_HOST:-$ENDPOINT}")" && NGINX_HOST="$value"
+    value="$(ui_input "$(ui_t i_https)" "$(ui_t https_host)" "${NGINX_HOST:-${ENDPOINT_DOMAIN:-$ENDPOINT}}")" && NGINX_HOST="$value"
     value="$(ui_input "$(ui_t i_https)" "$(ui_t https_port)" "$NGINX_HTTPS_PORT")" && NGINX_HTTPS_PORT="$value"
     if [[ "$NGINX_MODE" == existing ]]; then
         value="$(ui_input "$(ui_t i_https)" "$(ui_t https_cert)" "${NGINX_CERT:-/etc/letsencrypt/live/${NGINX_HOST}/fullchain.pem}")" && NGINX_CERT="$value"
@@ -170,6 +176,7 @@ ui_configure() {
     while :; do
         case "$NGINX_MODE" in none) label="$(ui_t v_none)";; self-signed) label="$(ui_t https_self)";; *) label="$(ui_t https_own)";; esac
         items=(subnet "$(ui_t i_subnet): $SUBNET" port "$(ui_t i_port): $PORT" endpoint "$(ui_t i_endpoint): $ENDPOINT"
+               domain "$(ui_t i_domain): ${ENDPOINT_DOMAIN:-$(ui_t v_none)}"
                dns "$(ui_t i_dns): $DNS" mode "$(ui_t i_mode): $([[ "$MODE" == full ]] && ui_t mode_full || ui_t mode_split)"
                uplink "$(ui_t i_uplink): $UPLINK" mtu "$(ui_t i_mtu): $MTU" panel "$(ui_t i_panel): $PANEL_PORT"
                client "$(ui_t i_client): ${FIRST_CLIENT:-$(ui_t v_none)}" https "$(ui_t i_https): $label"
@@ -191,6 +198,7 @@ ui_configure() {
                 esac ;;
             port) value="$(ui_input "$(ui_t i_port)" "$(ui_t port_text)" "$PORT")" && PORT="$value" ;;
             endpoint) value="$(ui_input "$(ui_t i_endpoint)" "$(ui_t endpoint_text)" "$ENDPOINT")" && ENDPOINT="$value" ;;
+            domain) value="$(ui_input "$(ui_t i_domain)" "$(ui_t domain_text)" "$ENDPOINT_DOMAIN")" && ENDPOINT_DOMAIN="${value,,}" ;;
             dns)
                 value="$(ui_choice "$(ui_t i_dns)" "$(ui_t dns_text)" "$DNS" 1.1.1.1 'Cloudflare  1.1.1.1' 8.8.8.8 'Google  8.8.8.8' \
                          9.9.9.9 'Quad9  9.9.9.9' 94.140.14.14 'AdGuard  94.140.14.14' custom "$(ui_t dns_custom)")" || continue

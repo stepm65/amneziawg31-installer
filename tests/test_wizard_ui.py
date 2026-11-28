@@ -32,7 +32,7 @@ def run(tmp_path, script, answers=(), env=None):
 source "{ROOT}/scripts/wizard-ui.sh"
 awg31_random_subnet() {{ echo 10.55.66.0/24; }}
 SUBNET=10.77.10.0/24 PORT=51820 MTU=1280 ENDPOINT=203.0.113.5 DNS=1.1.1.1 MODE=full UPLINK=eth0 PANEL_PORT=8080
-FIRST_CLIENT=test-client NGINX_MODE=none NGINX_HOST='' NGINX_HTTPS_PORT=443 NGINX_CERT='' NGINX_KEY='' WIZ_PASSWORD=''
+ENDPOINT_DOMAIN='' FIRST_CLIENT=test-client NGINX_MODE=none NGINX_HOST='' NGINX_HTTPS_PORT=443 NGINX_CERT='' NGINX_KEY='' WIZ_PASSWORD=''
 WIZ_FIREWALL='' AWG31_OPEN_FIREWALL=yes
 '''
     out = subprocess.run(['bash', '-c', prelude + script], capture_output=True, text=True, env=environment, timeout=30)
@@ -115,3 +115,18 @@ def test_the_wizard_picks_screens_only_with_a_terminal():
 def test_text_questions_still_work_unattended(tmp_path):
     out = subprocess.run(['bash', '-n', str(ROOT / 'scripts/setup-wizard.sh')], capture_output=True, text=True)
     assert out.returncode == 0, out.stderr
+
+
+def test_domain_item_and_https_default(tmp_path):
+    script = 'wizard_check() { :; }\nui_configure\n' + show(['ENDPOINT_DOMAIN', 'NGINX_HOST'])
+    out, calls = run(tmp_path, script, ['domain', 'VPN.Example.org', 'https', 'self-signed', 'vpn.example.org', '443', 'install'])
+    assert 'ENDPOINT_DOMAIN=vpn.example.org NGINX_HOST=vpn.example.org' in out.stdout
+    assert 'Домен в конфигурациях: нет' in calls and 'Домен в конфигурациях: vpn.example.org' in calls
+    assert '--inputbox Необязательно. Доменное имя сервера' in calls
+    assert 'vpn.example.org' in calls.split('Домен или IPv4 для HTTPS')[1].split('\n')[0]     # offered as the HTTPS host
+
+
+def test_wizard_passes_the_domain_on():
+    wizard = (ROOT / 'scripts/setup-wizard.sh').read_text()
+    assert wizard.count("'endpoint','endpoint_domain','dns','mode','uplink'") == 2      # checked and given to init
+    assert "ask ENDPOINT_DOMAIN" in wizard and 'domain_warning' in wizard and 'Домен:    $ENDPOINT_DOMAIN' in wizard

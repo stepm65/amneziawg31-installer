@@ -74,7 +74,7 @@ fi
 # Random subnet: every installation gets its own 10.x.y.0/24 instead of the same 10.77.10.0/24.
 RANDOM_SUBNET="${AWG31_RANDOM_SUBNET:-0}"
 if [[ "$UI" == whiptail ]]; then
-    SUBNET='10.77.10.0/24' PORT=51820 MTU=1280 ENDPOINT="$DEFAULT_IP" DNS=1.1.1.1 MODE=full UPLINK="${DEFAULT_UPLINK:-eth0}"
+    SUBNET='10.77.10.0/24' PORT=51820 MTU=1280 ENDPOINT="$DEFAULT_IP" ENDPOINT_DOMAIN="${AWG31_ENDPOINT_DOMAIN:-}" DNS=1.1.1.1 MODE=full UPLINK="${DEFAULT_UPLINK:-eth0}"
     PANEL_PORT=8080 FIRST_CLIENT=test-client NGINX_MODE=none NGINX_HOST='' NGINX_HTTPS_PORT=443 NGINX_CERT='' NGINX_KEY=''
     WIZ_PASSWORD='' WIZ_FIREWALL='' AWG31_OPEN_FIREWALL="${AWG31_OPEN_FIREWALL:-yes}"
     if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q '^Status: active'; then WIZ_FIREWALL=ufw
@@ -89,7 +89,8 @@ SUBNET_DEFAULT='10.77.10.0/24'
 ask SUBNET 'VPN-подсеть (CIDR, /24…/29)' "$SUBNET_DEFAULT"
 ask PORT 'UDP-порт AmneziaWG' '51820'
 ask MTU 'MTU туннеля (576…1420)' '1280'
-ask ENDPOINT 'Публичный IPv4 или DNS-имя (без порта)' "$DEFAULT_IP"
+ask ENDPOINT 'Публичный IPv4 сервера (или DNS-имя), без порта' "$DEFAULT_IP"
+ask ENDPOINT_DOMAIN 'Домен для конфигураций клиентов вместо IP, например vpn.example.com (необязательно; Enter — IP)' ''
 ask DNS 'DNS клиентов (IPv4; без локального DNS по умолчанию)' '1.1.1.1'
 ask MODE 'Трафик клиента: full (весь IPv4 через VPN; рекомендуется) или split (только VPN-подсеть)' 'full'
 ask UPLINK 'Внешний интерфейс для выхода клиентов в интернет (NAT в режиме full)' "${DEFAULT_UPLINK:-eth0}"
@@ -124,13 +125,13 @@ NGINX_HOST='' NGINX_HTTPS_PORT=443 NGINX_CERT='' NGINX_KEY=''
 fi
 # Pure validation; aborts before apt installation or writing any system files.
 validate_values() {
-export AWG31_SUBNET="$SUBNET" AWG31_PORT="$PORT" AWG31_MTU="$MTU" AWG31_ENDPOINT="$ENDPOINT" AWG31_DNS="$DNS" AWG31_MODE="$MODE" AWG31_UPLINK="$UPLINK" AWG31_PANEL_PORT="$PANEL_PORT" AWG31_FIRST_CLIENT="$FIRST_CLIENT"
+export AWG31_SUBNET="$SUBNET" AWG31_PORT="$PORT" AWG31_MTU="$MTU" AWG31_ENDPOINT="$ENDPOINT" AWG31_ENDPOINT_DOMAIN="$ENDPOINT_DOMAIN" AWG31_DNS="$DNS" AWG31_MODE="$MODE" AWG31_UPLINK="$UPLINK" AWG31_PANEL_PORT="$PANEL_PORT" AWG31_FIRST_CLIENT="$FIRST_CLIENT"
 python3 - "$DIR/src" <<'PY'
 import importlib.util,ipaddress,json,os,pathlib,subprocess,sys
 from importlib.machinery import SourceFileLoader
 loader=SourceFileLoader('awg31ctl',str(pathlib.Path(sys.argv[1])/'awg31ctl'))
 m=importlib.util.module_from_spec(importlib.util.spec_from_loader('awg31ctl',loader));loader.exec_module(m)
-d={k:os.environ[f'AWG31_{k.upper()}'] for k in ('subnet','port','mtu','endpoint','dns','mode','uplink')}
+d={k:os.environ[f'AWG31_{k.upper()}'] for k in ('subnet','port','mtu','endpoint','endpoint_domain','dns','mode','uplink')}
 setting=m.validate_settings(d,initial=True)
 port=int(os.environ['AWG31_PANEL_PORT'])
 assert 1<=port<=65535 and port!=setting['port'], 'Порт веб-панели некорректен или совпадает с UDP VPN'
@@ -150,6 +151,20 @@ for line in subprocess.run(['ip','-4','route','show'],capture_output=True,text=T
 if setting['mode']=='full':
     subprocess.run(['ip','link','show',setting['uplink']],check=True,capture_output=True)
 print('Параметры проверены: ',json.dumps(setting,ensure_ascii=False))
+PY
+}
+# A domain that does not lead to this server is a warning, not an error: the A record may come later.
+domain_warning() {
+    [[ -n "${ENDPOINT_DOMAIN:-}" ]] || return 0
+    AWG31_ENDPOINT="$ENDPOINT" AWG31_ENDPOINT_DOMAIN="$ENDPOINT_DOMAIN" python3 - "$DIR/src" <<'PY' || :
+import importlib.util,os,pathlib,sys
+from importlib.machinery import SourceFileLoader
+loader=SourceFileLoader('awg31ctl_dns',str(pathlib.Path(sys.argv[1])/'awg31ctl'))
+m=importlib.util.module_from_spec(importlib.util.spec_from_loader('awg31ctl_dns',loader));loader.exec_module(m)
+endpoint,domain=os.environ['AWG31_ENDPOINT'],os.environ['AWG31_ENDPOINT_DOMAIN'].lower()
+state=m.domain_check({'endpoint':endpoint,'endpoint_domain':domain,'use_domain':'on'})
+if state=='unresolved': print(f'Домен {domain} сейчас не находится в DNS: клиенты не подключатся, пока у него нет A-записи на {endpoint}.')
+elif state=='mismatch': print(f'Домен {domain} указывает не на {endpoint}: клиенты будут подключаться туда, куда он указывает. Проверьте A-запись.')
 PY
 }
 # Checks of everything chosen, before any package or file changes. The screens run them
@@ -181,6 +196,11 @@ if [[ "$UI" == whiptail ]]; then
     ui_welcome
     ui_configure
     PORT=$((10#$PORT)); MTU=$((10#$MTU)); PANEL_PORT=$((10#$PANEL_PORT)); NGINX_HTTPS_PORT=$((10#$NGINX_HTTPS_PORT))
+    warning="$(domain_warning)"
+    if [[ -n "$warning" ]]; then
+        ui_yesno "$(ui_t domain_warn_title)" "$warning"$'\n\n'"$([[ "$WIZ_LANG" == en ]] && echo 'Continue anyway?' || echo 'Всё равно продолжить?')" ||
+            die 'Установка отменена: исправьте A-запись домена или уберите домен'
+    fi
     if [[ "$NGINX_MODE" != none && "$(getenforce 2>/dev/null || :)" == Enforcing && "$AWG31_OS_FAMILY" == rpm ]]; then
         ui_yesno 'SELinux' "$(ui_t selinux_text)" || die 'Выбор отменён: без разрешения SELinux Nginx proxy не заработает'
         NGINX_SELINUX_ACK=yes
@@ -190,7 +210,7 @@ if [[ "$UI" == whiptail ]]; then
     fi
     export AWG31_OPEN_FIREWALL
 elif [[ "$NGINX_MODE" != none ]]; then
-    ask NGINX_HOST 'Домен или IPv4 для HTTPS Nginx (без схемы и порта)' "$ENDPOINT"
+    ask NGINX_HOST 'Домен или IPv4 для HTTPS Nginx (без схемы и порта)' "${ENDPOINT_DOMAIN:-$ENDPOINT}"
     ask NGINX_HTTPS_PORT 'Публичный HTTPS TCP-порт' '443'
     if [[ "$NGINX_MODE" == existing ]]; then
         ask NGINX_CERT 'Абсолютный путь к PEM сертификату (fullchain)' '/etc/letsencrypt/live/vpn.example.net/fullchain.pem'
@@ -214,6 +234,10 @@ elif [[ "$NGINX_MODE" != none ]]; then
 fi
 
 validate_values
+if [[ "$UI" != whiptail ]]; then
+    warning="$(domain_warning)"
+    if [[ -n "$warning" ]]; then say "ВНИМАНИЕ: $warning"; fi
+fi
 
 if [[ "$AWG31_OS_FAMILY" == rpm ]] && systemctl is-active --quiet firewalld 2>/dev/null; then
     say 'ВНИМАНИЕ: Rocky Linux использует firewalld. Для Full Tunnel может понадобиться отдельная настройка policy/masquerading; наши правила iptables не гарантируют обход политики firewalld.'
@@ -292,7 +316,7 @@ step 66 vpn 'Инициализация профиля AWG 3.1 и запуск a
 # created later from the panel. Never ship the static WireGuard-like defaults.
 python3 - <<'PY' | AWG31_GENERATE_PARAMS=1 /usr/local/sbin/awg31ctl init
 import json,os
-print(json.dumps({k:os.environ[f'AWG31_{k.upper()}'] for k in ('subnet','port','mtu','endpoint','dns','mode','uplink')}))
+print(json.dumps({k:os.environ[f'AWG31_{k.upper()}'] for k in ('subnet','port','mtu','endpoint','endpoint_domain','dns','mode','uplink')}))
 PY
 # If awg-quick cannot accept a 3.1 parameter, the controller stops here.
 awg show awg0 >/dev/null || die 'awg0 не отвечает после запуска'
@@ -490,6 +514,7 @@ echo "$LINE"
 echo "  AmneziaWG 3.1 Console $(cat "$DIR/VERSION" 2>/dev/null || :)"
 echo "$LINE"
 echo "  VPN:      UDP $PORT · подсеть $SUBNET · интерфейс awg0"
+if [[ -n "$ENDPOINT_DOMAIN" ]]; then echo "  Домен:    $ENDPOINT_DOMAIN (в конфигурациях клиентов вместо $ENDPOINT)"; fi
 echo "  Панель:   http://127.0.0.1:$PANEL_PORT (только с самого сервера)"
 case "$NGINX_RESULT" in
     ready)   echo "  HTTPS:    https://$NGINX_HOST:$NGINX_HTTPS_PORT" ;;

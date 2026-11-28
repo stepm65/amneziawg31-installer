@@ -923,7 +923,11 @@ def read_json():
 
 def init():
     if DB.exists() or CONF.exists(): raise RuntimeError('Сервер уже настроен; повторная инициализация запрещена')
-    data = validate_settings(read_json(), initial=True)
+    request = read_json()
+    data = validate_settings(request, initial=True)
+    # A domain given at installation is meant for the configurations right away.
+    if data['endpoint_domain']:
+        data['use_domain'] = 'on'
     data.update({'private_key': keygen(), 'header_key': keygen()})
     data['public_key'] = pubkey(data['private_key'])
     data.update({'Jc': 4, 'Jmin': 10, 'Jmax': 50, 'S1': 12, 'S2': 12, 'S3': 12, 'S4': 12, 'mss_clamp': 'on'})
