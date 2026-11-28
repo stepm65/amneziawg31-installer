@@ -34,6 +34,10 @@ A valid panel session is not enough for changes that outlive it. The panel passw
 - Handshake debug writes to `/sys/kernel/debug/dynamic_debug/control` and schedules a systemd timer that switches it off after 15 minutes, so it cannot be left on by accident.
 - The support report removes keys (`[key]`), Telegram tokens (`[token]`), `PrivateKey`/`PresharedKey`/`PublicKey`/`HeaderProtectionKey`/`Endpoint` lines and public addresses (always fully masked). It is generated on request and not stored on the server.
 
+## Release integrity (0.29)
+
+- Every release archive comes with its `.sha256` (checked by `install.sh` and `awg31 update` before unpacking) and, from 0.29, a GitHub build provenance attestation made by `actions/attest-build-provenance` in the release workflow (Sigstore-signed, tied to the repository, workflow and commit). The SHA256 file only protects against damage, since it comes from the same page; the attestation also shows who built the archive. Verify with `gh attestation verify awg31-console-vX.Y.Z.tar.gz --repo stepm65/amneziawg31-installer`, or install with `AWG31_ATTESTATION=require` so the installer refuses an archive whose attestation does not verify (the rolling `dev-latest` build has none and is refused in that mode).
+
 ## Access requests, messages to owners, schedules (0.28)
 
 - Access requests are off by default; while off, strangers get no reply at all, as before. When on, a stranger can only ask: the bot stores the request (name, @username, ID) in its own state, at most 20 waiting, one answer per person per 30 seconds, a week's pause after a refusal. Only administrators (not viewers) get Grant/Refuse, and granting goes through the bot's existing `add` permission with the administrator's template. Requests and decisions are audited.

@@ -18,15 +18,29 @@ title="$tag"
 old_title="AmneziaWG 3.1 Console ${tag#v}"
 notes="$(mktemp)"
 trap 'rm -f -- "$notes"' EXIT
-cat >"$notes" <<NOTES
-Install or update with one command (run as root):
+root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+{
+    # What is new: the section of this version from the changelogs, when there is one.
+    if english="$(python3 "$root/scripts/changelog-section.py" "$tag" "$root/CHANGELOG.md" 2>/dev/null)"; then
+        printf "## What's new\n\n%s\n\n" "$english"
+    fi
+    if russian="$(python3 "$root/scripts/changelog-section.py" "$tag" "$root/CHANGELOG.ru.md" 2>/dev/null)"; then
+        printf '## Что нового\n\n%s\n\n' "$russian"
+    fi
+    cat <<NOTES
+## Install or update
+
+Run as root:
 
 \`\`\`bash
 bash <(curl -Ls https://raw.githubusercontent.com/$repo/main/install.sh) $tag
 \`\`\`
 
 The installer verifies \`$asset\` against the \`.sha256\` file published here and aborts on a mismatch.
+The archive also has a GitHub build provenance attestation:
+\`gh attestation verify $asset --repo $repo\` (or install with \`AWG31_ATTESTATION=require\`).
 NOTES
+} >"$notes"
 
 if gh release view "$tag" >/dev/null 2>&1; then
     gh release upload "$tag" "$dist/$asset" "$dist/$asset.sha256" --clobber

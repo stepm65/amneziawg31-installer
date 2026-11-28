@@ -4,7 +4,7 @@
 
 An installer and a web console for running **AmneziaWG 3.1** on your own server: a kernel module built with DKMS, an interactive setup wizard and a bilingual (EN/RU) panel for servers, clients, traffic and backups. No Docker, no control plane in the cloud, nothing loaded from a CDN.
 
-Version **0.28.0** · MIT licence · not affiliated with the AmneziaVPN developers.
+Version **0.29.0** · MIT licence · not affiliated with the AmneziaVPN developers.
 
 ![Infrastructure overview](docs/screenshots/en-dashboard.png)
 
@@ -82,7 +82,7 @@ A generated password is written to `/root/awg31-initial-password.txt` (readable 
 
 After installation, run `sudo awg31` to see the management commands: status, update, backups, password reset, panel port, Nginx setup, uninstall and more.
 
-Every release is published with a `.sha256` sum next to the archive. Both `install.sh` and `awg31 update` verify the archive against that sum and abort on a mismatch, before anything is unpacked. The sum protects against a damaged or truncated download; it comes from the same release page as the archive. `dev-latest` is not a release and is not checksum-pinned.
+Every release is published with a `.sha256` sum next to the archive. Both `install.sh` and `awg31 update` verify the archive against that sum and abort on a mismatch, before anything is unpacked. The sum protects against a damaged or truncated download; it comes from the same release page as the archive. `dev-latest` is not a release and is not checksum-pinned. Since 0.29 the archive also has a **GitHub attestation** — signed proof that this repository's workflow built it from a given commit: `gh attestation verify awg31-console-vX.Y.Z.tar.gz --repo stepm65/amneziawg31-installer`. With `AWG31_ATTESTATION=require` the installer checks it itself (needs a signed-in `gh`) and installs nothing without it.
 
 Take a snapshot of the VPS before installing on a machine that already does something useful, and keep console access at hand. Then open the UDP port in your provider's firewall.
 
@@ -300,6 +300,8 @@ In the same settings section there is a **Blocking signal**. When two or more cl
 The **Check incoming packets (15 s)** button on the server page (and “📡 Packets 15 s” in the bot) listens on the server's UDP port for 15 seconds. Switch the VPN on at the client right after pressing. Not a single packet: traffic does not reach the server (cloud firewall or the provider's blocking). Packets arrive but the server does not answer: the client has other keys or obfuscation. Both: the network is fine, look at the client. Packet sizes and sender addresses are shown (masked as in the logs).
 
 ## Server console
+
+What to do when the panel does not open, a password is forgotten, the phone with codes is lost, the VPN did not come up after a kernel change or the IP got blocked: see [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md). What is new in each version: [CHANGELOG.md](CHANGELOG.md).
 
 ```text
 sudo awg31 status           panel and VPN instances

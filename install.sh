@@ -132,6 +132,7 @@ download_project(){
     WORK="$(mktemp -d /tmp/awg31-install.XXXXXXXX)"
     mkdir "$WORK/project"
     if [[ "$tag" == dev-latest ]]; then
+        [[ "${AWG31_ATTESTATION:-}" != require ]] || die 'The rolling build (dev-latest) has no attestation; choose a release'
         say "Downloading the rolling build from main (not a release, no checksum pinning)"
         fetch "https://github.com/$REPO/archive/refs/heads/main.tar.gz" "$WORK/main.tar.gz" 180 ||
             die 'Cannot download the main branch from GitHub'
@@ -146,6 +147,13 @@ download_project(){
         grep -Eq "^[0-9a-f]{64}  ${asset//./\\.}\$" "$WORK/$asset.sha256" || die 'Unexpected checksum format'
         (cd "$WORK" && sha256sum --check --status "$asset.sha256") || die 'SHA256 mismatch: the archive is damaged or was replaced. Nothing was installed.'
         say "SHA256 verified: $(cut -c1-16 "$WORK/$asset.sha256")…"
+        # Optional: the GitHub build provenance attestation (0.29+), checked with the GitHub CLI.
+        if [[ "${AWG31_ATTESTATION:-}" == require ]]; then
+            command -v gh >/dev/null 2>&1 || die 'AWG31_ATTESTATION=require needs the GitHub CLI (gh), signed in with gh auth login'
+            gh attestation verify "$WORK/$asset" --repo "$REPO" >/dev/null 2>&1 ||
+                die 'The build attestation of this archive could not be verified. Nothing was installed.'
+            say 'Build provenance attestation verified'
+        fi
         tar -xzf "$WORK/$asset" -C "$WORK/project" --strip-components=1 --no-same-owner --no-same-permissions
     fi
     PROJECT="$WORK/project"
