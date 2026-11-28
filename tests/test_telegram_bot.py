@@ -108,6 +108,16 @@ class FakeController:
             return {'ok': True}
         if command == 'audit-list':
             return {'entries': self.audit[-100:]}
+        if command == 'owners':
+            rows = getattr(self, 'owner_rows', [])
+            wanted = data.get('telegram_id')
+            return {'owners': [o for o in rows if not wanted or o.get('telegram_id') == wanted]}
+        if command == 'owner-device-add':
+            if not getattr(self, 'allow_device', False):
+                raise bot_module.BotError('Добавлять устройства самому не разрешено')
+            name = f"kid-{data['kind']}"
+            self.clients['awg0'][name] = {**self.new_client('10.8.0.20'), 'telegram_id': data['telegram_id'], 'owner_export': True}
+            return {'ok': True, 'interface': 'awg0', 'name': name, 'owner': 'Kid', 'config': '[Interface]\nPrivateKey = new\n'}
         raise AssertionError(command)
 
     def stamp(self):
@@ -145,7 +155,7 @@ def test_strangers_and_group_chats_get_no_answer_and_change_nothing(env):
     bot.handle_update(press('m', chat_type='supergroup'))
     assert api.calls == [] and api.files == []
     # The only cost of a stranger is one cached, read-only lookup of client owners.
-    assert controller.commands() in ([], ['servers', 'list'])
+    assert controller.commands() in ([], ['servers', 'list', 'owners'])
     assert 'alice' in controller.clients['awg0']
 
 
@@ -491,7 +501,7 @@ def test_owner_sees_only_their_own_clients_and_nothing_else(env):
                    press('ca:awg0:alice:conf', user=OWNER), press('cq:awg0:alice:0', user=OWNER), press('bky', user=OWNER)]:
         now[0] += 10
         bot.handle_update(update)
-    assert set(c for c, _ in controller.log[before:]) <= {'servers', 'list'}
+    assert set(c for c, _ in controller.log[before:]) <= {'servers', 'list', 'owners'}
     assert 'alice' in controller.clients['awg0'] and controller.running['awg0'] and api.files == []
     assert controller.clients['awg0']['alice']['traffic_limit_bytes'] == 10 * 1024 ** 3
     assert all(p.get('chat_id') == OWNER for m, p in api.calls if m in ('sendMessage', 'editMessageText'))

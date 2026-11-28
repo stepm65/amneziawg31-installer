@@ -299,6 +299,25 @@ echo "{\"interface\":\"awg1\",\"token\":\"$SUB\"}" | panel_mgr sub-fetch | grep 
   || fail 'the subscription does not follow the moved client'
 echo '{"interface":"awg1","name":"team-03","target":"awg0"}' | panel_mgr client-move >/dev/null || fail 'moving back failed'
 awg show awg0 peers | grep -qxF "$moving_key" || fail 'the client did not come back to awg0'
+# Owners (0.20): devices on two servers, a shared term and a device maximum.
+owner="$(echo '{"name":"Smoke owner","expires_at":"2020-01-01","max_devices":2}' | panel_mgr owner-set \
+  | python3 -c 'import json,sys; r=json.load(sys.stdin)["owner"]; assert r["blocked"]=="expired", r; print(r["id"])')"
+[[ "$(stat -c %a /var/lib/awg31-panel/owners.sqlite3)" == 600 ]] || fail 'the owners database is readable by others'
+echo "{\"interface\":\"awg0\",\"name\":\"own-a\",\"owner_id\":\"$owner\"}" | panel_mgr add >/dev/null
+echo "{\"interface\":\"awg1\",\"name\":\"own-b\",\"owner_id\":\"$owner\"}" | panel_mgr add >/dev/null
+if echo "{\"interface\":\"awg0\",\"name\":\"own-c\",\"owner_id\":\"$owner\"}" | panel_mgr add >/dev/null 2>&1; then
+    fail 'the device maximum of an owner was ignored'
+fi
+own_key="$("$MGR" list <<<'{"interface":"awg0"}' | python3 -c 'import json,sys; print({c["name"]:c["public_key"] for c in json.load(sys.stdin)["clients"]}["own-a"])')"
+"$MGR" sample-all </dev/null >/dev/null
+if awg show awg0 peers | grep -qxF "$own_key"; then fail 'a device of an expired owner still works'; fi
+"$MGR" list <<<'{"interface":"awg1"}' | python3 -c 'import json,sys; c={x["name"]:x for x in json.load(sys.stdin)["clients"]}["own-b"]; assert not c["enabled"] and c["disabled_reason"]=="owner_expired", c'
+echo "{\"id\":\"$owner\",\"expires_at\":\"\"}" | panel_mgr owner-set >/dev/null
+awg show awg0 peers | grep -qxF "$own_key" || fail 'the device did not come back when the owner was extended'
+panel_mgr owners </dev/null | python3 -c 'import json,sys; o=json.load(sys.stdin)["owners"]; assert o[0]["device_count"]==2 and o[0]["blocked"]=="", o'
+echo "{\"id\":\"$owner\"}" | panel_mgr owner-delete >/dev/null
+"$MGR" list <<<'{"interface":"awg0"}' | python3 -c 'import json,sys; c={x["name"]:x for x in json.load(sys.stdin)["clients"]}["own-a"]; assert c["owner_id"]=="" and c["enabled"], c'
+echo '{"interface":"awg0","name":"own-a"}' | "$MGR" delete >/dev/null
 echo "{\"interface\":\"awg2\",\"subnet\":\"\",\"random_subnet\":true,\"port\":\"51998\",\"mtu\":\"1280\",\"endpoint\":\"203.0.113.10\",\"dns\":\"1.1.1.1\",\"mode\":\"split\",\"uplink\":\"$uplink\"}" \
   | panel_mgr server-create >/dev/null || fail 'a server with a random subnet was not created'
 "$MGR" servers | python3 -c 'import json,sys,re; s={x["interface"]:x for x in json.load(sys.stdin)["servers"]}; assert re.fullmatch(r"10\.[0-9]+\.[0-9]+\.0/24", s["awg2"]["subnet"]) and s["awg2"]["subnet"] != "10.77.10.0/24", s'

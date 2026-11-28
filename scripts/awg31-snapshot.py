@@ -120,7 +120,7 @@ def create(reason, to='', protect=()):
     (target / 'code.tar').chmod(0o600)
     # Recovery material, as before: the databases and the server configurations.
     base = ROOT / 'var/lib/awg31-panel'
-    for source in [base / 'state.sqlite3', *sorted((base / 'servers').glob('awg*.sqlite3'))]:
+    for source in [base / 'state.sqlite3', base / 'owners.sqlite3', *sorted((base / 'servers').glob('awg*.sqlite3'))]:
         if source.is_file():
             dest = target / 'databases' / source.name
             dest.parent.mkdir(exist_ok=True)

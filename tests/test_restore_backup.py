@@ -13,7 +13,7 @@ spec=importlib.util.spec_from_file_location('restore_awg31',ROOT/'scripts/restor
 mod=importlib.util.module_from_spec(spec);spec.loader.exec_module(mod)
 
 
-def make_archive(tmp_path,*,invalid_checksum=False,extra_path=None):
+def make_archive(tmp_path,*,invalid_checksum=False,extra_path=None,owners=None):
     archive_name='awg31-20261113T010203Z-0123456789.tar.gz'
     db=tmp_path/'source.sqlite3'
     with sqlite3.connect(db) as con:
@@ -23,6 +23,7 @@ def make_archive(tmp_path,*,invalid_checksum=False,extra_path=None):
     raw={'auth/auth.json':json.dumps({'salt':'a','password_hash':'b','session_key':'c'}).encode(),
          'configs/awg0.conf':b'[Interface]\nPrivateKey = dummy\n',
          'databases/awg0.sqlite3':db.read_bytes()}
+    if owners is not None:raw['databases/owners.sqlite3']=owners
     manifest={'format':'awg31-backup-v1','created_at':'2026-11-13T01:02:03Z','interfaces':['awg0'],
               'files':{k:hashlib.sha256(v).hexdigest() for k,v in raw.items()}}
     if invalid_checksum:manifest['files']['configs/awg0.conf']='0'*64
@@ -77,3 +78,24 @@ def test_reject_corrupt_database(tmp_path,monkeypatch):
             info=tarfile.TarInfo(path);info.size=len(data);tar.addfile(info,io.BytesIO(data))
     with pytest.raises(sqlite3.DatabaseError):
         mod.validate(name)
+
+
+def owners_bytes(tmp_path, table='owners'):
+    db=tmp_path/'owners-src.sqlite3'
+    db.unlink(missing_ok=True)
+    with sqlite3.connect(db) as con:
+        con.execute(f'CREATE TABLE {table} (id TEXT PRIMARY KEY, name TEXT)')
+        con.execute(f"INSERT INTO {table} VALUES ('o0123456789','Anna')")
+    return db.read_bytes()
+
+
+def test_owners_database_is_optional_and_checked(tmp_path,monkeypatch):
+    monkeypatch.setattr(mod,'BACKUP_DIR',tmp_path)
+    _,contents=mod.validate(make_archive(tmp_path,owners=owners_bytes(tmp_path)))
+    assert b'Anna' in contents['databases/owners.sqlite3']
+    assert mod.target_files(['awg0'],True)['databases/owners.sqlite3']==mod.BASE/'owners.sqlite3'
+    assert 'databases/owners.sqlite3' not in mod.target_files(['awg0'])
+    other=tmp_path/'other';other.mkdir()
+    monkeypatch.setattr(mod,'BACKUP_DIR',other)
+    with pytest.raises(ValueError,match='schema'):
+        mod.validate(make_archive(other,owners=owners_bytes(other,'other')))

@@ -32,6 +32,8 @@ ONLINE_SECONDS = 180          # a handshake this recent means the client is conn
 if not re.fullmatch(r'awg(?:0|[1-9][0-9]?)', IFACE):
     raise ValueError('Invalid interface name')
 NAME_RE = re.compile(r'^[a-zA-Z0-9][a-zA-Z0-9_-]{0,31}$')
+OWNER_RE = re.compile(r'^o[0-9a-f]{10}$')          # an owner record of awg31admin (shared by all servers)
+OWNER_REASONS = {'quota': 'owner_quota', 'expired': 'owner_expired'}
 HOST_RE = re.compile(r'^[a-zA-Z0-9][a-zA-Z0-9.-]{0,251}[a-zA-Z0-9]$')
 UPLINK_RE = re.compile(r'^[a-zA-Z0-9_.:-]{1,15}$')
 
@@ -212,7 +214,9 @@ def get_conn(create=False):
                        # A free-form group ("office", "family") to filter and act on clients together.
                        'group_name': "TEXT NOT NULL DEFAULT ''",
                        # speed_limit_mbit caps the download (to the client), this one the upload.
-                       'speed_up_mbit': 'INTEGER NOT NULL DEFAULT 0'}
+                       'speed_up_mbit': 'INTEGER NOT NULL DEFAULT 0',
+                       # The owner whose shared limits apply to this client; telegram_id mirrors the owner's.
+                       'owner_id': "TEXT NOT NULL DEFAULT ''"}
         for name, definition in new_columns.items():
             if name not in columns:
                 con.execute(f'ALTER TABLE clients ADD COLUMN {name} {definition}')
@@ -990,8 +994,11 @@ def validate_policy(data, old=None):
     period = str(data.get('quota_period', old.get('quota_period', '')) or '').strip()
     if period not in ('', 'monthly'): raise ValueError('Период лимита: пусто или monthly')
     group = valid_group(data.get('group', old.get('group_name', '')))
+    owner = str(data.get('owner_id', old.get('owner_id', '')) or '')
+    if owner and not OWNER_RE.fullmatch(owner): raise ValueError('Неверный владелец')
     return {'comment':comment,'expires_at':expiry,'traffic_limit_bytes':limit,'telegram_id':telegram,
-            'owner_export':int(export),'speed_limit_mbit':speed,'speed_up_mbit':upload,'quota_period':period,'group_name':group}
+            'owner_export':int(export),'speed_limit_mbit':speed,'speed_up_mbit':upload,'quota_period':period,'group_name':group,
+            'owner_id':owner}
 
 
 def valid_group(raw):
@@ -1048,7 +1055,61 @@ def watch_set(con):
     return {'ok': True, 'minutes': minutes, 'rotate': rotate_on}
 
 
-def sample_usage(con, now=None):
+def owner_enforce(con, blocked, now=None):
+    '''Owner-wide limits: the devices of a blocked owner go off, and come back once the owner is free again.
+    blocked maps owner_id to "quota" or "expired"; None means the manager did not say, and nothing changes.'''
+    if blocked is None: return [], []
+    now = datetime.now(timezone.utc) if now is None else now
+    off, on = [], []
+    cfg = None
+    for row in peer_rows(con):
+        owner = row.get('owner_id') or ''
+        reason = OWNER_REASONS.get(blocked.get(owner, '')) if owner else None
+        if reason and row['enabled']:
+            con.execute('UPDATE clients SET enabled=0, disabled_reason=? WHERE name=?', (reason, row['name']))
+            off.append(row['name'])
+        elif reason and row['disabled_reason'] in OWNER_REASONS.values() and row['disabled_reason'] != reason:
+            con.execute('UPDATE clients SET disabled_reason=? WHERE name=?', (reason, row['name']))
+        elif not reason and not row['enabled'] and row['disabled_reason'] in OWNER_REASONS.values():
+            # The owner is free again; the client's own limits still apply.
+            if row['expires_at'] and datetime.fromisoformat(row['expires_at']) <= now: own = 'expired'
+            elif row['traffic_limit_bytes'] and int(row['used_bytes']) >= int(row['traffic_limit_bytes']): own = 'quota'
+            else:
+                own = ''
+                try: parse_routes(row['routed_subnets'], cfg or get_settings(con), con, owner=row['name'])
+                except ValueError: own = 'manual'
+            if own:
+                con.execute('UPDATE clients SET disabled_reason=? WHERE name=?', (own, row['name']))
+            else:
+                con.execute("UPDATE clients SET enabled=1, disabled_reason='' WHERE name=?", (row['name'],))
+                on.append(row['name'])
+    return off, on
+
+
+def owner_sync(con):
+    '''awg31mgr after an owner changed: links, the mirrored Telegram ID, removals and the shared limits.'''
+    data = read_json()
+    removed = [x for x in (data.get('removed') or []) if OWNER_RE.fullmatch(str(x))]
+    for owner in removed:
+        con.execute("UPDATE clients SET owner_id='', telegram_id='', owner_export=0 WHERE owner_id=?", (owner,))
+    for owner, telegram in (data.get('telegram') or {}).items():
+        telegram = str(telegram or '')
+        if not OWNER_RE.fullmatch(str(owner)) or (telegram and not re.fullmatch(r'[1-9][0-9]{2,14}', telegram)):
+            raise ValueError('Неверный владелец')
+        # A permission to fetch the configuration never passes to another person silently.
+        con.execute('UPDATE clients SET telegram_id=?, owner_export=0 WHERE owner_id=? AND telegram_id<>?', (telegram, owner, telegram))
+    linked = 0
+    for telegram, owner in (data.get('link') or {}).items():
+        if not OWNER_RE.fullmatch(str(owner)) or not re.fullmatch(r'[1-9][0-9]{2,14}', str(telegram)):
+            raise ValueError('Неверный владелец')
+        linked += con.execute("UPDATE clients SET owner_id=? WHERE telegram_id=? AND owner_id=''", (owner, str(telegram))).rowcount
+    off, on = owner_enforce(con, data.get('blocked'))
+    if off or on: apply(get_settings(con), con)
+    con.commit()
+    return {'ok': True, 'disabled': off, 'enabled': on, 'linked': linked}
+
+
+def sample_usage(con, now=None, owners_blocked=None):
     '''Persist deltas and enforce expiry/quota without needing an open browser.
 
     Receive/sent counters are kernel session counters, so a reset adds the new
@@ -1063,6 +1124,7 @@ def sample_usage(con, now=None):
     revived = []
     moved = {}
     month = now.strftime('%Y-%m')
+    owner_usage = {}
     for row in rows:
         if row.get('quota_period') == 'monthly' and row.get('quota_month') != month:
             # A new calendar month (UTC): the counter starts again, and a client
@@ -1091,6 +1153,8 @@ def sample_usage(con, now=None):
             con.execute('UPDATE clients SET last_rx=?, last_tx=?, used_bytes=used_bytes+?, last_handshake=? WHERE name=?',
                         (observed_r,observed_t,delta_r+delta_t,max(int(row['last_handshake']),int(live.get('handshake') or 0)),row['name']))
         moved[row['name']] = (moved[row['name']][0], delta_r, delta_t)
+        if row.get('owner_id') and delta_r + delta_t:
+            owner_usage[row['owner_id']] = owner_usage.get(row['owner_id'], 0) + delta_r + delta_t
         used = int(row['used_bytes']) + delta_r + delta_t
         rx_delta += delta_r; tx_delta += delta_t
         expiry = row.get('expires_at','')
@@ -1100,7 +1164,8 @@ def sample_usage(con, now=None):
             con.execute('UPDATE clients SET enabled=0, disabled_reason=? WHERE name=?',
                         ('expired' if expired else 'quota',row['name']))
             changed.append(row['name'])
-    if changed or revived: apply(get_settings(con),con)
+    owner_off, owner_on = owner_enforce(con, owners_blocked, now)
+    if changed or revived or owner_off or owner_on: apply(get_settings(con),con)
     rotated = None
     if rotation_due(get_settings(con), now):
         cfg = get_settings(con)
@@ -1115,7 +1180,8 @@ def sample_usage(con, now=None):
     con.execute('DELETE FROM traffic_samples WHERE measured_at<?',(instant-32*86400,))
     track_sessions(con, moved, instant)
     con.commit()
-    return {'ok':True,'rx_delta':rx_delta,'tx_delta':tx_delta,'disabled':changed,'enabled':revived,'rotated':rotated,'watch':watch}
+    return {'ok':True,'rx_delta':rx_delta,'tx_delta':tx_delta,'disabled':changed,'enabled':revived,'rotated':rotated,'watch':watch,
+            'owner_usage':owner_usage,'owner_disabled':owner_off,'owner_enabled':owner_on}
 
 
 def traffic_history(con, request):
@@ -1140,10 +1206,11 @@ def client_policy_update(con):
     if not row: raise ValueError('Клиент не найден')
     policy = validate_policy(data,dict(row))
     con.execute('''UPDATE clients SET comment=?,expires_at=?,traffic_limit_bytes=?,telegram_id=?,owner_export=?,
-                   speed_limit_mbit=?,speed_up_mbit=?,quota_period=?,quota_month=?,group_name=? WHERE name=?''',
+                   speed_limit_mbit=?,speed_up_mbit=?,quota_period=?,quota_month=?,group_name=?,owner_id=? WHERE name=?''',
                 (policy['comment'],policy['expires_at'],policy['traffic_limit_bytes'],policy['telegram_id'],
                  policy['owner_export'],policy['speed_limit_mbit'],policy['speed_up_mbit'],policy['quota_period'],
-                 datetime.now(timezone.utc).strftime('%Y-%m') if policy['quota_period'] else '',policy['group_name'],name))
+                 datetime.now(timezone.utc).strftime('%Y-%m') if policy['quota_period'] else '',policy['group_name'],
+                 policy['owner_id'],name))
     if (policy['speed_limit_mbit'], policy['speed_up_mbit']) != (int(row['speed_limit_mbit'] or 0), int(row['speed_up_mbit'] or 0)):
         apply(get_settings(con), con)        # rewrites the tc rules, sessions are not reset
     con.commit()
@@ -1161,13 +1228,13 @@ def insert_client(con, cfg, name, data, routes=''):
     con.execute('''INSERT INTO clients
         (name, ip, private_key, public_key, psk, enabled, created_at,
          routed_subnets, i_enabled, i1, i2, i3, i4, i5, comment, expires_at, traffic_limit_bytes, telegram_id, owner_export,
-         speed_limit_mbit, speed_up_mbit, quota_period, quota_month, group_name)
-         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
+         speed_limit_mbit, speed_up_mbit, quota_period, quota_month, group_name, owner_id)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
         (name,address,private,public,psk,1,datetime.now(timezone.utc).isoformat(),
          routes,cps['i_enabled'], *(cps[k] for k in I_KEYS),
          policy['comment'],policy['expires_at'],policy['traffic_limit_bytes'],policy['telegram_id'],policy['owner_export'],
          policy['speed_limit_mbit'],policy['speed_up_mbit'],policy['quota_period'],
-         datetime.now(timezone.utc).strftime('%Y-%m') if policy['quota_period'] else '', policy['group_name']))
+         datetime.now(timezone.utc).strftime('%Y-%m') if policy['quota_period'] else '', policy['group_name'], policy['owner_id']))
     return {'name':name,'private_key':private,'ip':address,'psk':psk,**cps}
 
 
@@ -1249,13 +1316,16 @@ def clients_action(con, which):
                 'subscription':{'active':bool(row['sub_hash']),'created':row['sub_created'],'last_fetch':row['sub_last_fetch'],
                                 'last_addr':row['sub_last_addr'],'fetches':row['sub_fetches']},
                 'speed_limit_mbit':row['speed_limit_mbit'], 'speed_up_mbit':row['speed_up_mbit'], 'quota_period':row['quota_period'],
-                'group_name':row['group_name'],
+                'group_name':row['group_name'], 'owner_id':row['owner_id'],
                 **{key:row[key] for key in I_KEYS}}
     if which == 'enable':
         if row['expires_at'] and datetime.fromisoformat(row['expires_at']) <= datetime.now(timezone.utc):
             raise ValueError('Срок действия клиента истёк')
         if row['traffic_limit_bytes'] and row['used_bytes'] >= row['traffic_limit_bytes']:
             raise ValueError('Достигнут лимит трафика; увеличьте лимит')
+        blocked = (request.get('owners_blocked') or {}).get(row['owner_id'] or '')
+        if blocked:
+            raise ValueError('У владельца исчерпан общий лимит трафика' if blocked == 'quota' else 'У владельца истёк общий срок действия')
         # A disabled peer can reserve a route while another peer is using it;
         # re-validate before enabling to prevent AllowedIPs collisions.
         parse_routes(row['routed_subnets'], cfg, con, owner=name)
@@ -1392,8 +1462,13 @@ def client_batch(con):
     data = read_json()
     names = read_names(data)
     action = str(data.get('action', ''))
-    if action not in ('enable', 'disable', 'extend', 'limit', 'group'):
-        raise ValueError('action: enable, disable, extend, limit или group')
+    if action not in ('enable', 'disable', 'extend', 'limit', 'group', 'owner'):
+        raise ValueError('action: enable, disable, extend, limit, group или owner')
+    blocked_owners = data.get('owners_blocked') or {}
+    owner = str(data.get('owner_id', '') or '')
+    owner_telegram = str(data.get('telegram_id', '') or '')
+    if action == 'owner' and ((owner and not OWNER_RE.fullmatch(owner)) or (owner_telegram and not owner_telegram.isdigit())):
+        raise ValueError('Неверный владелец')
     days = limit = 0
     group = valid_group(data.get('group', '')) if action == 'group' else ''
     if action == 'extend':
@@ -1421,6 +1496,7 @@ def client_batch(con):
     def try_enable(row):
         if expired(row): return 'expired'
         if over_quota(row): return 'quota'
+        if blocked_owners.get(row['owner_id'] or ''): return 'owner'
         try: parse_routes(row['routed_subnets'], cfg, con, owner=row['name'])
         except ValueError: return 'routes'
         con.execute("UPDATE clients SET enabled=1, disabled_reason='' WHERE name=?", (row['name'],))
@@ -1450,6 +1526,14 @@ def client_batch(con):
             changed.append(name)
             if not row['enabled'] and row['disabled_reason'] == 'expired' and not try_enable(row):
                 enabled.append(name)
+        elif action == 'owner':
+            if row['owner_id'] == owner:
+                skipped[name] = 'already'; continue
+            # A new owner never inherits the permission to fetch the configuration from the bot.
+            export = row['owner_export'] if row['telegram_id'] == owner_telegram else 0
+            con.execute('UPDATE clients SET owner_id=?, telegram_id=?, owner_export=? WHERE name=?',
+                        (owner, owner_telegram, int(bool(export and owner_telegram)), name))
+            changed.append(name)
         elif action == 'group':
             if row['group_name'] == group:
                 skipped[name] = 'already'; continue
@@ -1780,7 +1864,8 @@ def probe_port(cfg, data):
 MOVE_KEEP = ('name', 'private_key', 'public_key', 'psk', 'enabled', 'created_at', 'routed_subnets', 'i_enabled',
              *I_KEYS, 'extra_lines', 'comment', 'expires_at', 'traffic_limit_bytes', 'used_bytes', 'disabled_reason',
              'telegram_id', 'owner_export', 'speed_limit_mbit', 'speed_up_mbit', 'quota_period', 'quota_month',
-             'invite_hash', 'invite_expires', 'invite_export', 'group_name', 'sub_hash', 'sub_created', 'sub_last_fetch', 'sub_last_addr', 'sub_fetches')
+             'invite_hash', 'invite_expires', 'invite_export', 'group_name', 'sub_hash', 'sub_created', 'sub_last_fetch', 'sub_last_addr', 'sub_fetches',
+             'owner_id')
 
 
 def client_export_row(con):
@@ -2002,7 +2087,7 @@ def get_status(con, with_clients=False):
         stats = live_stats()
         peers = peer_rows(con)
         result['clients'] = [
-            {k:p[k] for k in ('name','ip','public_key','enabled','created_at','routed_subnets','i_enabled','comment','expires_at','traffic_limit_bytes','used_bytes','disabled_reason','last_handshake','telegram_id','owner_export','speed_limit_mbit','speed_up_mbit','quota_period','group_name')}
+            {k:p[k] for k in ('name','ip','public_key','enabled','created_at','routed_subnets','i_enabled','comment','expires_at','traffic_limit_bytes','used_bytes','disabled_reason','last_handshake','telegram_id','owner_export','speed_limit_mbit','speed_up_mbit','quota_period','group_name','owner_id')}
             | {'extra_lines': bool(p.get('extra_lines')), 'subscription': bool(p.get('sub_hash')),
                'sub_last_fetch': p.get('sub_last_fetch', ''),
                'stats': (stats.get(p['public_key']) or {'handshake':p['last_handshake'],'received':p['last_rx'],'sent':p['last_tx']}),
@@ -2017,7 +2102,7 @@ def main():
     if len(sys.argv) != 2 or sys.argv[1] not in ('init','status','list','add','download','enable','disable','delete','delete-batch','client-network','client-extra','client-policy','settings','sample','history','add-batch','sessions',
                                                     'client-rekey','client-batch','client-invite','invite-redeem',
                                                     'sub-token','sub-fetch','rotate','rotate-schedule','mask-apply','probe',
-                                                    'client-export','client-import','watch-set'):
+                                                    'client-export','client-import','watch-set','owner-sync'):
         raise ValueError('Неподдерживаемая команда')
     LOCK.parent.mkdir(parents=True, exist_ok=True)
     if sys.argv[1] == 'probe':
@@ -2056,7 +2141,11 @@ def main():
                 elif op == 'client-import': result = client_import_row(con)
                 elif op == 'watch-set': result = watch_set(con)
                 elif op == 'client-policy': result = client_policy_update(con)
-                elif op == 'sample': result = sample_usage(con)
+                elif op == 'sample':
+                    request = read_json()
+                    blocked = request.get('owners_blocked')
+                    result = sample_usage(con, owners_blocked=blocked if isinstance(blocked, dict) else None)
+                elif op == 'owner-sync': result = owner_sync(con)
                 elif op == 'history': result = traffic_history(con,read_json())
                 elif op == 'sessions': result = client_sessions(con)
                 elif op == 'settings': result = settings_update(con)

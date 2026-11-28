@@ -190,6 +190,7 @@ const awgChart = {
   for (const link of navLinks) {
     const selected = link.getAttribute('href') === current ||
       (current.startsWith('/maintenance') && link.dataset.navKey === 'maintenance') ||
+      (current.startsWith('/owners') && link.dataset.navKey === 'owners') ||
       (current.includes('/clients/') && link.dataset.navKey === 'clients');
     link.classList.toggle('side-active', selected);
     if (selected) link.setAttribute('aria-current','page');

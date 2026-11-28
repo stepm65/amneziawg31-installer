@@ -49,7 +49,7 @@ EVENTS = {
     'server_state': 'server', 'module': 'server', 'kernel': 'server', 'panel': 'server',
     'client_auto': 'clients', 'client_expiring': 'clients', 'client_quota': 'clients',
     'login': 'security', 'login_failed': 'security', 'password': 'security', 'owner_export': 'security',
-    'totp_recovery': 'security', 'invite': 'clients', 'update': 'server', 'rotation': 'server', 'blocking': 'server',
+    'totp_recovery': 'security', 'invite': 'clients', 'owner_limit': 'clients', 'update': 'server', 'rotation': 'server', 'blocking': 'server',
     'backup_created': 'backups', 'backup_failed': 'backups', 'upload_failed': 'backups',
     'cpu': 'system', 'memory': 'system', 'disk': 'system',
 }
@@ -155,6 +155,20 @@ TEXT = {
         'my': '<b>Ваш VPN</b>', 'my_client': ('<b>{name}</b>\nСостояние: {state}\nИспользовано: {used}{quota}\n'
                                               'Последнее соединение: {seen}\nДействует до: {expiry}'),
         'my_hint': 'По вопросам доступа обратитесь к администратору.',
+        'my_owner': '<b>{name}</b>: устройств {devices}\nОбщий трафик: {used}{quota}\nОбщий срок: {expiry}{state}',
+        'my_owner_quota': ' из {quota}', 'my_owner_month': ' (в месяц)', 'my_owner_blocked_quota': '\n⛔ Общий трафик исчерпан: устройства отключены.',
+        'my_owner_blocked_expired': '\n⛔ Общий срок истёк: устройства отключены.',
+        'b_add_device': '➕ Добавить устройство', 'ask_kind': 'Какое устройство добавить? Будет создана отдельная конфигурация.',
+        'kind_phone': '📱 Телефон', 'kind_laptop': '💻 Компьютер', 'kind_tablet': '📟 Планшет', 'kind_router': '📡 Роутер', 'kind_tv': '📺 Телевизор',
+        'device_added': '✅ Устройство <b>{name}</b> добавлено. Импортируйте конфигурацию в приложение AmneziaVPN или AmneziaWG.',
+        'device_refused': 'Не получилось добавить устройство: {reason}',
+        'n_device_added': '➕ {who} добавил(а) устройство <b>{name}</b> ({iface}) владельцу «{owner}».',
+        'n_owner_blocked': '⛔ Владелец «{name}»: {reason}, отключено устройств: {count}.',
+        'n_owner_unblocked': '▶️ Владелец «{name}»: лимит снова позволяет, включено устройств: {count}.',
+        'n_user_owner_blocked': '⛔ Ваш VPN отключён на всех устройствах: {reason}. Обратитесь к администратору.',
+        'n_user_owner_unblocked': '▶️ Ваш VPN снова работает на всех устройствах.',
+        'why_owner_quota': 'израсходован общий трафик', 'why_owner_expired': 'истёк общий срок',
+        'reason_owner_quota': ' (общий трафик владельца)', 'reason_owner_expired': ' (общий срок владельца)',
         'read_only': 'У вас доступ только для просмотра.',
         'n_next_kernel_bad': '⚠️ Установлено новое ядро <b>{version}</b>, но модуль AmneziaWG для него не собран. После перезагрузки VPN не запустится. До перезагрузки выполните на сервере: <code>sudo awg31 update</code>',
         'n_next_kernel_ok': '🟢 Модуль AmneziaWG для нового ядра собран: перезагружать сервер можно.',
@@ -282,6 +296,20 @@ TEXT = {
         'my': '<b>Your VPN</b>', 'my_client': ('<b>{name}</b>\nState: {state}\nUsed: {used}{quota}\n'
                                                'Last handshake: {seen}\nValid until: {expiry}'),
         'my_hint': 'For access questions contact the administrator.',
+        'my_owner': '<b>{name}</b>: {devices} devices\nShared traffic: {used}{quota}\nShared term: {expiry}{state}',
+        'my_owner_quota': ' of {quota}', 'my_owner_month': ' (a month)', 'my_owner_blocked_quota': '\n⛔ The shared traffic is used up: the devices are off.',
+        'my_owner_blocked_expired': '\n⛔ The shared term has ended: the devices are off.',
+        'b_add_device': '➕ Add a device', 'ask_kind': 'Which device to add? It gets a configuration of its own.',
+        'kind_phone': '📱 Phone', 'kind_laptop': '💻 Computer', 'kind_tablet': '📟 Tablet', 'kind_router': '📡 Router', 'kind_tv': '📺 TV',
+        'device_added': '✅ Device <b>{name}</b> added. Import the configuration into the AmneziaVPN or AmneziaWG app.',
+        'device_refused': 'The device was not added: {reason}',
+        'n_device_added': '➕ {who} added a device <b>{name}</b> ({iface}) for the owner “{owner}”.',
+        'n_owner_blocked': '⛔ Owner “{name}”: {reason}, devices switched off: {count}.',
+        'n_owner_unblocked': '▶️ Owner “{name}”: the limit allows again, devices switched on: {count}.',
+        'n_user_owner_blocked': '⛔ Your VPN is off on all your devices: {reason}. Contact the administrator.',
+        'n_user_owner_unblocked': '▶️ Your VPN works again on all your devices.',
+        'why_owner_quota': 'the shared traffic is used up', 'why_owner_expired': 'the shared term has ended',
+        'reason_owner_quota': ' (owner’s shared traffic)', 'reason_owner_expired': ' (owner’s shared term)',
         'read_only': 'You have read-only access.',
         'n_next_kernel_bad': '⚠️ A new kernel <b>{version}</b> is installed, but the AmneziaWG module is not built for it. After a reboot the VPN will not start. Before rebooting run on the server: <code>sudo awg31 update</code>',
         'n_next_kernel_ok': '🟢 The AmneziaWG module for the new kernel is built: the server can be rebooted.',
@@ -735,8 +763,56 @@ class Bot:
                 for c in self.clients(s['interface']):
                     if str(c.get('telegram_id') or '').isdigit():
                         found.setdefault(int(c['telegram_id']), []).append((s['interface'], c))
+            # An owner with no device yet may still add one themselves.
+            for owner in self.owner_records():
+                if str(owner.get('telegram_id') or '').isdigit() and owner.get('self_add'):
+                    found.setdefault(int(owner['telegram_id']), [])
             self.owners_map, self.owners_at = found, now
         return self.owners_map
+
+    def owner_records(self, telegram=None):
+        try:
+            result = self.ctl('owners', {'telegram_id': str(telegram)} if telegram else {})
+        except BotError:
+            return []
+        owners = result.get('owners') if isinstance(result, dict) else None
+        return [o for o in owners if isinstance(o, dict)] if isinstance(owners, list) else []
+
+    def owner_summary(self, owner):
+        limit = int(owner.get('traffic_limit_bytes') or 0)
+        devices = str(owner.get('device_count', 0)) + (f" / {owner['max_devices']}" if owner.get('max_devices') else '')
+        quota = (self.plain('my_owner_quota', quota=human_size(limit))
+                 + (self.plain('my_owner_month') if owner.get('quota_period') == 'monthly' else '')) if limit else ''
+        state = self.plain('my_owner_blocked_' + owner['blocked']) if owner.get('blocked') in ('quota', 'expired') else ''
+        return self.t('my_owner', name=owner.get('name', ''), devices=devices, used=human_size(owner.get('used_bytes') or 0),
+                      quota=quota, expiry=(owner.get('expires_at') or '')[:10] or self.plain('no_expiry'), state=state)
+
+    def can_self_add(self, owner):
+        return bool(owner and owner.get('self_add') and owner.get('max_devices') and not owner.get('blocked')
+                    and int(owner.get('device_count') or 0) < int(owner['max_devices']))
+
+    def self_add(self, user, sender, chat, kind):
+        try:
+            made = self.ctl('owner-device-add', {'telegram_id': str(user), 'kind': kind})
+        except BotError as exc:
+            self.show(chat, self.t('device_refused', reason=str(exc)[:200]))
+            return
+        self.owners_at = None
+        self.show(chat, self.t('device_added', name=made['name']))
+        for as_qr in (False, True):
+            try:
+                self.send_config(chat, made['interface'], made['name'], as_qr=as_qr, owner=True)
+            except BotError as exc:
+                log(f'cannot send the new device configuration: {exc}')
+        if self.on('invite'):
+            self.notify(self.t('n_device_added', who=self.person(sender, user), name=made['name'], iface=made['interface'],
+                               owner=made.get('owner', '')))
+
+    @staticmethod
+    def person(sender, user):
+        who = re.sub(r'[^\w .@-]', '', ' '.join(str((sender or {}).get(k) or '') for k in ('first_name', 'last_name')).strip())[:40]
+        handle = re.sub(r'[^A-Za-z0-9_]', '', str((sender or {}).get('username') or ''))[:32]
+        return f"{(who + (f' @{handle}' if handle else '')).strip() or user} (ID {user})"
 
     def serve_owner(self, user, chat, message_id=None, callback_id=None, data=''):
         """Answer a non-administrator; returns silently unless they own a client."""
@@ -755,10 +831,19 @@ class Bot:
                 except BotError:
                     pass
             self.owners_at = None                       # a known owner gets fresh numbers
-            mine = self.owners().get(user_id, [])
-            if not mine:
+            mine = self.owners().get(user_id)
+            if mine is None:
                 return
             wanted = data.split(':')
+            record = next(iter(self.owner_records(user_id)), None)
+            if wanted == ['ma'] and self.can_self_add(record):
+                kinds = [(self.t('kind_' + k), f'mk:{k}') for k in ('phone', 'laptop', 'tablet', 'router', 'tv')]
+                self.show(chat['id'], self.t('ask_kind'), [kinds[:3], kinds[3:], [(self.t('b_refresh'), 'me')]], message_id)
+                return
+            if (len(wanted) == 2 and wanted[0] == 'mk' and wanted[1] in ('phone', 'laptop', 'tablet', 'router', 'tv')
+                    and self.can_self_add(record)):
+                self.self_add(user_id, user, chat['id'], wanted[1])
+                return
             if len(wanted) == 3 and wanted[0] in ('mc', 'mq'):
                 # The request is checked against the fresh list: the client must be this
                 # person's, enabled, and the administrator must have allowed the export.
@@ -776,11 +861,13 @@ class Bot:
                         self.ask_renewal(chat['id'], user_id, iface, c)
                         return
             parts = [self.t('my')]
+            if record:
+                parts.append(self.owner_summary(record))
             rows = []
             for iface, c in mine:
                 enabled = bool(c.get('enabled'))
                 state = self.plain('enabled' if enabled else 'disabled')
-                if not enabled and c.get('disabled_reason') in ('expired', 'quota'):
+                if not enabled and c.get('disabled_reason') in ('expired', 'quota', 'owner_quota', 'owner_expired'):
                     state += self.plain('reason_' + c['disabled_reason'])
                 handshake = int((c.get('stats') or {}).get('handshake') or 0)
                 limit = int(c.get('traffic_limit_bytes') or 0)
@@ -794,6 +881,8 @@ class Bot:
                 if c.get('expires_at') and (enabled or c.get('disabled_reason') == 'expired'):
                     rows.append([(self.t('b_renew', name=c['name']), f"mr:{iface}:{c['name']}")])
             parts.append(self.t('my_hint'))
+            if self.can_self_add(record):
+                rows.append([(self.t('b_add_device'), 'ma')])
             self.show(chat['id'], '\n\n'.join(parts), rows + [[(self.t('b_refresh'), 'me')]], message_id)
         except BotError as exc:
             log(f'owner request failed: {exc}')
@@ -927,7 +1016,8 @@ class Bot:
         found = None
         try:
             for server in self.servers():
-                result = self.ctl('invite-redeem', {'interface': server['interface'], 'code': code, 'telegram_id': str(user)})
+                result = self.ctl('invite-redeem', {'interface': server['interface'], 'code': code, 'telegram_id': str(user),
+                                                    'owner_name': self.person(sender, user).rsplit(' (ID ', 1)[0][:40]})
                 if result.get('found'):
                     found = (server['interface'], result)
                     break
@@ -1313,6 +1403,8 @@ class Bot:
                 self.notify(self.t('n_silent' if event == 'server_silent' else 'n_back', target=html.escape(target)))
             elif event in ('server_rotated', 'server_rotate_failed') and self.on('rotation'):
                 self.notify(self.t('n_rotated' if event == 'server_rotated' else 'n_rotate_failed', target=html.escape(target or '?')))
+            elif event in ('owner_blocked', 'owner_unblocked'):
+                self.owner_limit_changed(event, target)
             elif event == 'totp_recovery_used' and self.on('totp_recovery'):
                 self.notify(self.t('n_totp_recovery', left=target.split()[0] if target else '?'))
             elif event == 'password_changed' and self.on('password'):
@@ -1340,6 +1432,22 @@ class Bot:
                 self.notify(self.t('n_backup_failed', target=target))
             elif event == 'backup_upload_failed' and self.on('upload_failed'):
                 self.notify(self.t('n_upload_failed', target=target))
+
+    def owner_limit_changed(self, event, target):
+        match = re.match(r'(.{1,40}) \((o[0-9a-f]{10})\): (quota|expired), ([0-9]+) devices', target)
+        if not match:
+            return
+        name, owner_id, reason, count = match.groups()
+        if self.on('owner_limit'):
+            if event == 'owner_blocked':
+                self.notify(self.t('n_owner_blocked', name=name, reason=self.plain('why_owner_' + reason), count=count))
+            else:
+                self.notify(self.t('n_owner_unblocked', name=name, count=count))
+        owner = next((o for o in self.owner_records() if o.get('id') == owner_id), None)
+        if owner and str(owner.get('telegram_id') or '').isdigit():
+            text = (self.t('n_user_owner_blocked', reason=self.plain('why_owner_' + reason)) if event == 'owner_blocked'
+                    else self.t('n_user_owner_unblocked'))
+            self.tell_owner({'telegram_id': owner['telegram_id'], 'name': name}, text)
 
     def check_servers(self):
         servers = self.servers()

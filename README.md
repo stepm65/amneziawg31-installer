@@ -4,7 +4,7 @@
 
 An installer and a web console for running **AmneziaWG 3.1** on your own server: a kernel module built with DKMS, an interactive setup wizard and a bilingual (EN/RU) panel for servers, clients, traffic and backups. No Docker, no control plane in the cloud, nothing loaded from a CDN.
 
-Version **0.19.8** · MIT licence · not affiliated with the AmneziaVPN developers.
+Version **0.20.0** · MIT licence · not affiliated with the AmneziaVPN developers.
 
 ![Infrastructure overview](docs/screenshots/en-dashboard.png)
 
@@ -26,6 +26,7 @@ Version **0.19.8** · MIT licence · not affiliated with the AmneziaVPN develope
 - **Optional Nginx** reverse proxy with a self-signed or your own certificate.
 - **Router subscriptions:** a permanent HTTPS link from which a router or container fetches its current `.conf` by itself (with `ETag` and a 304 answer when nothing changed), plus a ready script for MikroTik, OpenWrt, Docker and Linux.
 - **When the port gets blocked:** masking profiles (port plus a QUIC, STUN, DTLS or DNS shaped `I1`), a new port, obfuscation and server key in one press or on a schedule, and a 15-second incoming packet check in the panel and the bot.
+- **Owners:** one person, several devices on any server, with shared traffic (in all or a month), a shared term and a device maximum; the owner adds a device in the Telegram bot by themselves when allowed.
 - **Server domain:** in the server settings you can enter a domain (e.g. `vpn.example.com`) and switch “Server address in client configurations” to “Domain”: client `Endpoint` lines, the `vpn://` link, the QR code and the subscription then carry the domain instead of the IP. It is optional, the IP stays the default. With a domain the server’s IP can change without handing out configurations again: fix the A record. After saving, the panel checks that the domain resolves to the IP in the Endpoint field and warns when it does not; the bot sends owners their new configurations.
 - **Server networking:** TCP fitted to the tunnel MTU on the server (MSS clamping) and protective kernel settings (`rp_filter`, no ICMP redirects, SYN cookies).
 
@@ -211,6 +212,22 @@ A copy of the server settings is saved before every change. Changes go to the au
 
 After a parameter change, a masking profile, a client move, or server settings that change client configurations (address, port, DNS, MTU, obfuscation), the bot sends the new configuration (file and QR code) to every client owner allowed to get it. Owners without that permission are told to ask the administrator for a new one. Routers with a subscription and switched-off clients get no message.
 
+### Owners and shared limits
+
+The **Owners** section in the side menu. An owner is a person who may have several devices (clients) on any server. An owner has a name, an optional Telegram ID and shared limits:
+
+- **shared traffic** — for all devices together, in all or a month (reset on the first day, UTC);
+- **shared term** — one date for all devices;
+- **maximum devices** — how many clients they may have.
+
+When the traffic is used up or the term ends, all the owner's devices go off (the list says “Owner's shared limit”), and they cannot be switched on one by one. Once the limit allows again (a new month, more traffic, a longer term), the devices come back by themselves. A client's own limits keep applying: whichever comes first wins.
+
+The owner is picked in the new-client form, on the client page or for the selected clients with the **Owner** button; the owner's page shows all their devices and has an **Add device** button. The Telegram ID is set on the owner and goes to all their devices. Clients that had a Telegram ID before the update gather into owners named “Telegram <ID>” by themselves — rename them as you like. A bot invitation also makes the person an owner (named as in Telegram). Deleting an owner does not delete the devices, it only unlinks them.
+
+When the owner has a device maximum and **The owner may add devices in the bot** is on, the bot shows them **➕ Add a device**: they pick a type (phone, computer, tablet, router, TV) and get the `.conf` and QR code at once. The device is created on the server chosen for the owner, and the administrators are told. The owner also sees the shared balance in the bot: “Shared traffic: 38 GiB of 100 GiB (a month)”.
+
+Owners are kept in `/var/lib/awg31-panel/owners.sqlite3` and are part of the backups.
+
 ### Moving a client to another server
 
 On the client page, under “Move to another server”, choose the server and press **Move**. The client moves with the same keys, comment, owner, expiry, limits, traffic used, `I1–I5` packets, extra lines, subscription and pending invitation, and gets a free address in the new server's subnet. If the new server already has a client with that name or key, nothing moves. The client needs a new configuration: its subscription link keeps working and serves it from the new server, and the bot sends it to an owner allowed to get it.
@@ -288,7 +305,7 @@ When backup encryption is on (`sudo awg31 backup-encryption on`) and **backups a
 
 The easiest way is an **invitation**. On the client page, in the block “Access: invitation and key” (or with the **Invite** button of the client in the bot), create a one-time link like `https://t.me/<bot>?start=<code>` and forward it to the person. They open it, press **Start** and become the owner of the client at once; there is no need to learn their ID. The link is valid for 1, 7 or 30 days and only once, a new link for the same client cancels the previous one, and a valid one can be revoked. The panel keeps only a fingerprint of the code, so the link is shown only when it is created. You can allow the owner to get the configuration in the bot right there. The administrators are told who used the invitation (event “Invitation used”), and the audit log keeps a record. Guessing is limited to five attempts in ten minutes per person.
 
-A client can also carry, set by hand, the numeric Telegram ID of the person who uses it: the field **Owner’s Telegram ID** in the new-client form and on the client page, or the **Telegram ID** button in the bot. That person writes to the same bot and sees a single read-only screen with their own clients: enabled or disabled (and why), traffic used and the quota, last handshake, expiry date. They get a message three days before the expiry date. One ID may be set on several clients, also on different servers.
+A client can also get an owner by hand (see “Owners” above) with a Telegram ID, or with the **Telegram ID** button in the bot — the owner with that ID is then found or created. That person writes to the same bot and sees a single read-only screen with their own clients: enabled or disabled (and why), traffic used and the quota, last handshake, expiry date. They get a message three days before the expiry date. One ID may be set on several clients, also on different servers.
 
 An owner cannot change anything or see other clients, servers and addresses. By default they cannot download the configuration either. The switch **The owner may get the configuration and QR code from the Telegram bot** (next to the ID field; in the bot — the button under the client) allows it for that one client: the owner then gets **Config** and **QR** buttons while the client is enabled. Each download is written to the audit log and reported to the administrators (group `security`). The switch turns off by itself when the owner's ID is changed or removed.
 
@@ -334,7 +351,7 @@ sudo bash amneziawg31-installer/scripts/resume-panel.sh
 | Path | Contents |
 |---|---|
 | `/etc/amnezia/amneziawg/awgN.conf` | server configurations (private keys) |
-| `/var/lib/awg31-panel/` | client databases, host metrics |
+| `/var/lib/awg31-panel/` | client databases, owners (`owners.sqlite3`), host metrics |
 | `/etc/awg31-panel/auth.json` | password hash and session key |
 | `/var/backups/awg31-panel/` | backups and pre-change snapshots |
 | `/var/log/awg31-panel/audit.jsonl` | audit log |

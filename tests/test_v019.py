@@ -159,7 +159,7 @@ def test_group_field_in_forms_and_csv(ui):
     assert [d for op, d in calls if op == 'client-policy'][-1]['group'] == 'office'
     exported = client.get('/servers/awg0/export/clients.csv')
     table = list(csv.reader(io.StringIO(exported.text.lstrip('﻿'))))
-    assert table[0][-1] == 'group' and table[1][-1] == 'office'
+    assert table[0][-2] == 'group' and table[1][-2] == 'office'
 
 
 def test_blocking_signal_in_settings_and_overview(ui):

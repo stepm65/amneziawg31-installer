@@ -1450,3 +1450,26 @@ tr:hover .extra-dot {box-shadow:0 0 0 2px #1e2228}
 .chart-tip[hidden] {display:none}
 .graph-live-values small {display:inline-flex;align-items:center;gap:7px}
 .graph-live-values small i {width:13px;height:3px;border-radius:3px;display:inline-block}
+
+/* 0.20: owners */
+.owner-chip {display:inline-flex;align-items:center;gap:4px;margin-left:8px;padding:1px 8px;border:1px solid rgba(248,180,68,.35);border-radius:999px;background:rgba(248,180,68,.08);color:#f3cf8f;font-size:11.5px;font-weight:500;vertical-align:middle;white-space:nowrap;text-decoration:none}
+.owner-chip:hover {border-color:rgba(248,180,68,.6)}
+.owner-chip .icon {width:12px;height:12px}
+.owners-table td.client-name {display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.owners-table td.client-name small {flex-basis:100%;padding-left:24px}
+.owner-detail {display:grid;gap:16px}
+.owner-summary .section-title {display:flex;align-items:flex-start;justify-content:space-between;gap:12px}
+.owner-summary .section-overline a {color:inherit;text-decoration:none}
+.owner-numbers {grid-template-columns:repeat(4,minmax(0,1fr));margin-top:18px}
+.owner-meter {display:block;width:100%;height:6px;border:0;border-radius:999px;background:rgba(255,255,255,.08);overflow:hidden;appearance:none;-webkit-appearance:none}
+.owner-meter::-webkit-progress-bar {background:rgba(255,255,255,.08);border-radius:999px}
+.owner-meter::-webkit-progress-value {background:var(--amber,#f8b444);border-radius:999px}
+.owner-meter::-moz-progress-bar {background:var(--amber,#f8b444);border-radius:999px}
+.owner-edit .info-line {margin-bottom:18px}
+.owner-numbers strong {font-size:clamp(18px,1.7vw,24px)}
+.owner-devices h3 {display:flex;align-items:center;gap:8px;margin:22px 0 10px;font-size:15px}
+.owner-form .check-field,.owner-device-form .check-field {margin:10px 0}
+.owner-form .btn,.owner-device-form .btn {margin-top:8px}
+.owner-delete {margin-top:22px;padding-top:16px;border-top:1px solid var(--md-sys-color-outline-variant,#30343a)}
+.new-owner {margin-top:16px}
+@media (max-width:760px) {.owner-numbers {grid-template-columns:repeat(2,minmax(0,1fr))}}

@@ -22,6 +22,7 @@ BACKUP_DIR=Path(os.environ.get('AWG31_BACKUP_DIR','/var/backups/awg31-panel/full
 BASE=Path(os.environ.get('AWG31_ROOT','/var/lib/awg31-panel'))
 CONF=Path(os.environ.get('AWG31_CONFIG_DIR','/etc/amnezia/amneziawg'))
 AUTH=Path(os.environ.get('AWG31_AUTH','/etc/awg31-panel/auth.json'))
+OWNERS='databases/owners.sqlite3'                 # owners and their shared limits (0.20), optional
 VALID_NAME=re.compile(r'^awg31-[0-9]{8}T[0-9]{6}Z-[0-9a-f]{10}\.tar\.gz(?:\.gpg)?$')
 VALID_IFACE=re.compile(r'^awg(?:0|[1-9][0-9]?)$')
 MAX_ARCHIVE=20*1024*1024
@@ -60,7 +61,7 @@ def validate(name):
                     raise ValueError('Unsafe backup archive member')
                 if not (m.name=='manifest.json' or m.name=='auth/auth.json' or
                         re.fullmatch(r'configs/awg(?:0|[1-9][0-9]?)\.conf',m.name) or
-                        re.fullmatch(r'databases/awg(?:0|[1-9][0-9]?)\.sqlite3',m.name)):
+                        re.fullmatch(r'databases/awg(?:0|[1-9][0-9]?)\.sqlite3',m.name) or m.name==OWNERS):
                     raise ValueError('Unexpected backup path')
                 total_size+=m.size
                 if total_size>48*1024*1024:raise ValueError('Backup uncompressed size limit exceeded')
@@ -77,6 +78,8 @@ def validate(name):
         raise ValueError('Invalid server inventory')
     required={'auth/auth.json'}|{f'configs/{x}.conf' for x in ifaces}|{f'databases/{x}.sqlite3' for x in ifaces}
     digests=manifest.get('files')
+    # Owners (0.20) are optional: older archives have none.
+    if isinstance(digests,dict) and OWNERS in digests: required|={OWNERS}
     if not isinstance(digests,dict) or set(digests)!=required or set(raw)!=(required|{'manifest.json'}):
         raise ValueError('Backup manifest does not match files')
     for key in required:
@@ -86,6 +89,15 @@ def validate(name):
     if not isinstance(auth,dict) or not all(k in auth for k in ('salt','password_hash','session_key')):
         raise ValueError('Invalid backup authentication file')
     with tempfile.TemporaryDirectory(prefix='awg31-restore-verify-') as temp:
+        if OWNERS in raw:
+            db=Path(temp)/'owners.sqlite3'
+            db.write_bytes(raw[OWNERS])
+            con=sqlite3.connect(f'file:{db}?mode=ro',uri=True)
+            try:
+                if con.execute('PRAGMA integrity_check').fetchone()[0]!='ok':raise ValueError('Corrupt SQLite database')
+                if not con.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='owners'").fetchone():
+                    raise ValueError('Unsupported SQLite schema')
+            finally:con.close()
         for iface in ifaces:
             cfg=raw[f'configs/{iface}.conf']
             if b'[Interface]' not in cfg or b'PrivateKey' not in cfg:
@@ -101,8 +113,9 @@ def validate(name):
     return manifest,raw
 
 
-def target_files(ifaces):
+def target_files(ifaces, owners=False):
     result={'auth/auth.json':AUTH}
+    if owners: result[OWNERS]=BASE/'owners.sqlite3'
     for x in ifaces:
         result[f'configs/{x}.conf']=CONF/(x+'.conf')
         result[f'databases/{x}.sqlite3']=BASE/'state.sqlite3' if x=='awg0' else BASE/'servers'/(x+'.sqlite3')
@@ -124,7 +137,7 @@ def atomic_write(path,data,mode,owner=None):
 def apply(name):
     manifest,raw=validate(name)
     ifaces=manifest['interfaces']
-    desired=target_files(ifaces)
+    desired=target_files(ifaces,OWNERS in raw)
     # An old archive must not bring back an old administrator password or
     # session key: panel credentials are restored only when none exist.
     if AUTH.exists():
@@ -149,7 +162,7 @@ def apply(name):
     safe_copy=mod.create_backup(manager, enforce_limit=False)
     prior={}
     owners={}
-    for key,path in target_files(sorted(existing)).items():
+    for key,path in target_files(sorted(existing),True).items():
         if path.exists():
             prior[key]=path.read_bytes()
             stat=path.stat();owners[key]=(stat.st_uid,stat.st_gid,stat.st_mode & 0o777)

@@ -685,7 +685,7 @@ NOTIFY_GROUPS = ('server', 'clients', 'security', 'backups')
 # The Telegram notification cards: (group, icon, events). Same keys as awg31bot.EVENTS.
 TG_EVENT_GROUPS = (
     ('server', 'server', ('server_state', 'module', 'kernel', 'panel', 'update', 'rotation', 'blocking')),
-    ('clients', 'users', ('client_auto', 'client_expiring', 'client_quota', 'invite')),
+    ('clients', 'users', ('client_auto', 'client_expiring', 'client_quota', 'invite', 'owner_limit')),
     ('security', 'shield', ('login', 'login_failed', 'password', 'owner_export', 'totp_recovery')),
     ('backups', 'archive', ('backup_created', 'backup_failed', 'upload_failed')),
     ('system', 'cpu', ('cpu', 'memory', 'disk')),
@@ -693,7 +693,7 @@ TG_EVENT_GROUPS = (
 TG_THRESHOLD_EVENTS = ('cpu', 'memory', 'disk')
 TG_SCHEDULES = (('0 * * * *', 'tg_s_hourly'), ('0 */6 * * *', 'tg_s_6h'), ('0 */12 * * *', 'tg_s_12h'),
                 ('0 9 * * *', 'tg_s_daily9'), ('0 21 * * *', 'tg_s_daily21'), ('0 9 * * 1', 'tg_s_weekly'))
-READ_ONLY_OPS = frozenset({'servers', 'list', 'status', 'diagnostics', 'history', 'host-history', 'backup-list',
+READ_ONLY_OPS = frozenset({'servers', 'list', 'owners', 'status', 'diagnostics', 'history', 'host-history', 'backup-list',
                            'backup-policy', 'backup-encryption', 'backup-remote', 'telegram-status', 'audit-list',
                            'audit-search', 'logging-status', 'logs-read', 'sessions'})
 _REQUEST_CACHE = contextvars.ContextVar('awg31_ctl_cache', default=None)
@@ -921,7 +921,8 @@ def page(title, content, request):
                 f'rel="noopener noreferrer" title="{h(t("version_notes"))}">{icon("tag",15)}<span>v{h(version)}</span></a></div>')
     def nav_link(label, href, icon_name, nav_key):
         active = ((href == '/' and path == '/') or (href == '/servers' and path == '/servers')
-                  or (nav_key == 'maintenance' and path.startswith('/maintenance')))
+                  or (nav_key == 'maintenance' and path.startswith('/maintenance'))
+                  or (nav_key == 'owners' and path.startswith('/owners')))
         return (f'<a class="side-link{" side-active" if active else ""}" href="{h(href)}" '
                 f'data-nav-key="{h(nav_key)}" title="{h(label)}"'
                 f'{" aria-current=page" if active else ""}>'
@@ -943,7 +944,8 @@ def page(title, content, request):
                 active_metadata = server
                 break
         top_links=(nav_link(t('nav_overview'), '/', 'home','overview')+
-                   nav_link(t('all_servers'), '/servers', 'server', 'servers'))
+                   nav_link(t('all_servers'), '/servers', 'server', 'servers')+
+                   nav_link(t('owners'), '/owners', 'users', 'owners'))
         server_links=''.join(
             f'<a class="instance-nav-link{" instance-current" if scoped.startswith("/servers/"+item["interface"]) else ""}" '
             f'href="/servers/{h(item["interface"])}/overview" '
@@ -1963,6 +1965,8 @@ def server_content(request: Request, section: str = 'overview'):
         return (f'<th aria-sort="none" data-sort-column="{key}"><button type="button" class="sort-button" data-sort-key="{key}">'
                 f'<span>{h(label)}</span><svg class="sort-arrow" viewBox="0 0 12 12" aria-hidden="true"><path class="sort-up" d="M3 4.5 6 1.5l3 3"/><path class="sort-down" d="M3 7.5l3 3 3-3"/></svg></button></th>')
     rows = ''
+    owners_known = owners_all()
+    owner_names = {o['id']: o['name'] for o in owners_known}
     for c in state['clients']:
         st = c.get('stats', {})
         name = h(c['name'])
@@ -1977,7 +1981,8 @@ def server_content(request: Request, section: str = 'overview'):
         flag_on = dict((
             ('online', is_online),
             ('never', not hs), ('stale', bool(c.get('config_stale'))),
-            ('sub', bool(c.get('subscription'))), ('owner', bool(c.get('telegram_id'))),
+            ('sub', bool(c.get('subscription'))), ('owner', bool(c.get('owner_id') or c.get('telegram_id'))),
+            ('owner_limit', str(c.get('disabled_reason') or '').startswith('owner_')),
             ('expired', c.get('disabled_reason') == 'expired'), ('quota', c.get('disabled_reason') == 'quota'),
             ('expiring', bool(c.get('expires_at')) and active and c['expires_at'] <= soon)))
         flags = ' '.join(flag for flag, on in flag_on.items() if on)
@@ -1991,7 +1996,8 @@ def server_content(request: Request, section: str = 'overview'):
         presence_cell = (f'<td><span class="presence-state {"is-online" if is_online else "is-offline"}"><i aria-hidden="true"></i>'
                          f'{h(t("online_now" if is_online else "offline_now"))}</span>{last}</td>')
         reason = ('filter_expired' if flag_on['expired'] else 'filter_quota' if flag_on['quota']
-                  else 'filter_expiring' if flag_on['expiring'] else '')
+                  else 'owner_limit_note' if flag_on['owner_limit'] else 'filter_expiring' if flag_on['expiring'] else '')
+        owner_name = owner_names.get(c.get('owner_id') or '', '')
         access_cell = (f'<td><span class="access-pill {"is-on" if active else "is-off"}">{h(t("access_on" if active else "access_off"))}</span>'
                        + (f'<small class="access-note">{h(t(reason))}</small>' if reason else '')
                        + (f'<small class="config-stale" title="{h(t("config_stale_hint"))}">{icon("info",12)}{h(t("config_stale"))}</small>'
@@ -2009,14 +2015,16 @@ def server_content(request: Request, section: str = 'overview'):
                    f'<button class="is-danger" type="submit">{icon("trash",16)}{h(t("delete"))}</button></form>'
                    '</div></details></div>')
         rows += (f'<tr class="client-row" data-name="{h(c["name"].lower())}" data-ip="{h(c["ip"])}" data-enabled="{int(active)}" '
-                 f'data-group="{h(group)}" data-flags="{flags}" data-text="{h((group + " " + (c.get("comment") or "")).lower())}" '
+                 f'data-group="{h(group)}" data-flags="{flags}" data-text="{h(" ".join(x for x in (group, owner_name, c.get("comment") or "") if x).lower())}" '
                  f'data-handshake="{hs}" data-traffic="{traffic_total}" data-presence="{"online" if is_online else "offline"}"><td><input class="peer-select" type="checkbox" form="bulk-delete-form" name="names" value="{name}" aria-label="{name}"></td><td class="client-name">'
                  # A dot on the client icon marks extra [Interface] lines (variant B chosen by the author).
                  + (f'<span class="client-icon has-extra" title="{h(t("extra_badge_hint"))}">{icon("server",16)}'
                     f'<span class="extra-dot" aria-hidden="true"></span><span class="sr-only">{h(t("extra_badge_hint"))}</span></span>'
                     if c.get('extra_lines') is True else icon("server",16))
                  + f'<span>{h(c["name"])}</span>'
-                 + (f'<span class="group-chip">{h(group)}</span>' if group else '') + '</td>'
+                 + (f'<span class="group-chip">{h(group)}</span>' if group else '')
+                 + (f'<a class="owner-chip" href="/owners/{h(c["owner_id"])}" title="{h(t("owner"))}">{icon("users",12)}{h(owner_name)}</a>'
+                    if owner_name else '') + '</td>'
                  f'<td><code class="ip-pill">{h(c["ip"])}</code>'
                  f'<small class="peer-routes-compact">{h(c.get("routed_subnets", ""))}</small></td>'
                  + presence_cell + access_cell +
@@ -2064,6 +2072,7 @@ def server_content(request: Request, section: str = 'overview'):
         <button type="button" class="btn btn-secondary btn-small" data-modal-open="bulk-extend-modal" data-needs-selection disabled>{icon('calendar',15)}{h(t('bulk_extend'))}</button>
         <button type="button" class="btn btn-secondary btn-small" data-modal-open="bulk-limit-modal" data-needs-selection disabled>{icon('activity',15)}{h(t('bulk_limit'))}</button>
         <button type="button" class="btn btn-secondary btn-small" data-modal-open="bulk-group-modal" data-needs-selection disabled>{icon('tag',15)}{h(t('bulk_group'))}</button>
+        <button type="button" class="btn btn-secondary btn-small" data-modal-open="bulk-owner-modal" data-needs-selection disabled>{icon('users',15)}{h(t('owner'))}</button>
         <button id="bulk-extra-button" type="button" class="btn btn-secondary btn-small" data-modal-open="bulk-extra-modal" data-needs-selection disabled>{icon('file',16)}{h(t('extra_bulk'))}</button>
         <button id="bulk-delete-button" type="submit" class="btn btn-danger btn-small" disabled>{icon('trash',16)}{h(t('bulk_delete'))}</button>
         <button type="button" class="bulk-clear" id="bulk-clear" aria-label="{h(t('selected_clear'))}" title="{h(t('selected_clear'))}">{icon('x',18)}</button></div></form>
@@ -2089,7 +2098,7 @@ def server_content(request: Request, section: str = 'overview'):
               {form_field('comment','',t('comment'),required=False,field_id='new-comment')}
               {expiry_field('', 'new-expires', lang)}
               {form_field('quota_gib','0',t('quota'),required=False,field_id='new-quota')}
-              {form_field('telegram_id','',t('telegram_id'),t('telegram_id_hint'),required=False,field_id='new-telegram')}
+              {owner_select(owners_known, '', 'new-owner', lang)}
               {policy_extra_fields({'_lang':lang, '_groups':groups_all}, 'new')}
             </div>
             <label class="check-field"><input type="checkbox" name="owner_export" value="1"><span>{h(t('owner_export'))}</span></label>
@@ -2138,6 +2147,19 @@ def server_content(request: Request, section: str = 'overview'):
           <p class="bulk-extra-count mono" data-bulk-names-count></p>
           {group_field('', 'bulk', lang, groups_all)}
           <p class="info-line">{h(t('bulk_group_hint'))}</p>
+          <div class="modal-footer"><button class="btn btn-primary" type="submit">{icon('check',16)}{h(t('bulk_apply'))}</button></div>
+          </form></div>
+        </dialog>
+
+        <dialog id="bulk-owner-modal" class="awg-modal">
+          <div class="modal-header"><h2>{icon('users',20)}{h(t('bulk_owner_title'))}</h2>
+          <button type="button" class="icon-btn modal-close" aria-label="{h(t('close_window'))}">{icon('x',20)}</button></div>
+          <div class="modal-body">
+          <form class="add-client-form" method="post" action="/servers/{h(state['interface'])}/clients/bulk-action" data-bulk-names>{csrf(request)}
+          <input type="hidden" name="action" value="owner">
+          <p class="bulk-extra-count mono" data-bulk-names-count></p>
+          {owner_select(owners_known, '', 'bulk-owner', lang)}
+          <p class="info-line">{h(t('bulk_owner_hint'))}</p>
           <div class="modal-footer"><button class="btn btn-primary" type="submit">{icon('check',16)}{h(t('bulk_apply'))}</button></div>
           </form></div>
         </dialog>
@@ -2512,7 +2534,7 @@ async def create(request: Request, interface: str = ''):
                'comment':str(data.get('comment','')),
                'expires_at':str(data.get('expires_at','')),
                'traffic_limit_bytes':gib_bytes(data.get('quota_gib','0')),
-               'telegram_id':str(data.get('telegram_id','')).strip(),
+               **owner_choice(data),
                'owner_export':data.get('owner_export')=='1',
                **policy_extras(data),
                'routed_subnets':str(data.get('routed_subnets','')),
@@ -2654,7 +2676,7 @@ def detail(request: Request, name: str, interface: str = ''):
         {form_field('comment',obj.get('comment',''),t('comment'),required=False,field_id='policy-comment')}
         {expiry_field(obj.get('expires_at') or '', 'policy-expires', lang)}
         {form_field('quota_gib',gib_format(obj.get('traffic_limit_bytes',0)),t('quota'),required=False,field_id='policy-quota')}
-        {form_field('telegram_id',obj.get('telegram_id') or '',t('telegram_id'),t('telegram_id_hint'),required=False,field_id='policy-telegram')}
+        {owner_select(owners_all(), obj.get('owner_id') or '', 'policy-owner', lang)}
         {policy_extra_fields({**obj,'_lang':lang,'_groups':known_groups(request)}, 'policy')}
       </div><label class="check-field"><input type="checkbox" name="owner_export" value="1"{' checked' if obj.get('owner_export') else ''}><span>{h(t('owner_export'))}</span></label><button class="btn btn-primary" type="submit">{h(t('save_policy'))}</button>
       </form></section>'''
@@ -2697,7 +2719,7 @@ async def policy_update(request: Request, name: str, interface: str = ''):
     payload={'name':name,'comment':str(form.get('comment','')),
              'expires_at':str(form.get('expires_at','')),
              'traffic_limit_bytes':gib_bytes(form.get('quota_gib','0')),
-             'telegram_id':str(form.get('telegram_id','')).strip(),
+             **owner_choice(form),
              'owner_export':form.get('owner_export')=='1', **policy_extras(form)}
     try: control(request,'client-policy',payload)
     except RuntimeError as exc: return error_page(request,tr(lang_of(request),'error'),exc)
@@ -2918,7 +2940,7 @@ async def client_invite_create(request: Request, name: str, interface: str = '')
     return page(t('invite_ready'), body, request)
 
 
-BULK_ACTIONS = ('enable', 'disable', 'extend', 'limit', 'group')
+BULK_ACTIONS = ('enable', 'disable', 'extend', 'limit', 'group', 'owner')
 
 
 @app.post('/servers/{interface}/clients/bulk-action')
@@ -2936,6 +2958,8 @@ async def clients_bulk_action(request: Request, interface: str = ''):
         payload['traffic_limit_bytes'] = gib_bytes(form.get('quota_gib', '0'))
     if action == 'group':
         payload['group'] = ' '.join(str(form.get('group', '')).split())[:64]
+    if action == 'owner':
+        payload.update(owner_choice({'owner_id': form.get('owner_id', '')}))
     try: result = control(request, 'client-batch', payload)
     except RuntimeError as exc: return error_page(request, tr(lang_of(request), 'error'), exc)
     server = selected_server(request)
@@ -2957,7 +2981,7 @@ def bulk_notice(request, t):
     groups = {}
     for item in request.query_params.get('skipped', '').split(','):
         name, _, reason = item.partition(':')
-        if CLIENT_NAME_RE.fullmatch(name) and reason in ('already', 'expired', 'quota', 'routes', 'no_expiry'):
+        if CLIENT_NAME_RE.fullmatch(name) and reason in ('already', 'expired', 'quota', 'routes', 'no_expiry', 'owner'):
             groups.setdefault(reason, []).append(name)
     lines = ''.join(f'<li>{h(t("bulk_skip_" + reason))}: <span class="mono">{h(", ".join(names))}</span></li>'
                     for reason, names in groups.items())
@@ -2980,7 +3004,8 @@ def clients_csv(request: Request, interface: str = ''):
     writer = csv.writer(out)
     writer.writerow(['name', 'ip', 'enabled', 'disabled_reason', 'comment', 'created_at', 'expires_at',
                      'traffic_limit_gib', 'quota_period', 'used_gib', 'received_bytes', 'sent_bytes',
-                     'last_handshake_utc', 'speed_down_mbit', 'speed_up_mbit', 'telegram_id', 'owner_export', 'routed_subnets', 'config_stale', 'group'])
+                     'last_handshake_utc', 'speed_down_mbit', 'speed_up_mbit', 'telegram_id', 'owner_export', 'routed_subnets', 'config_stale', 'group', 'owner'])
+    owner_names = {o['id']: o['name'] for o in owners_all()}
     for c in state.get('clients', []):
         st = c.get('stats') or {}
         handshake = int(st.get('handshake') or c.get('last_handshake') or 0)
@@ -2991,7 +3016,8 @@ def clients_csv(request: Request, interface: str = ''):
             int(st.get('received', 0) or 0), int(st.get('sent', 0) or 0),
             datetime.fromtimestamp(handshake, timezone.utc).strftime('%Y-%m-%d %H:%M:%S') if handshake else '',
             int(c.get('speed_limit_mbit') or 0), int(c.get('speed_up_mbit') or 0), c.get('telegram_id', ''), int(bool(c.get('owner_export'))),
-            c.get('routed_subnets', ''), int(bool(c.get('config_stale'))), c.get('group_name', ''))])
+            c.get('routed_subnets', ''), int(bool(c.get('config_stale'))), c.get('group_name', ''),
+            owner_names.get(c.get('owner_id') or '', ''))])
     audit_event('clients_exported', f'{selected_server(request)} ({len(state.get("clients", []))})')
     stamp = datetime.now(timezone.utc).strftime('%Y%m%d-%H%M')
     # A BOM lets Excel open the Cyrillic comments as UTF-8.
@@ -4941,4 +4967,306 @@ TEXT['en'].update({
     'dom_warn_unresolved': 'The domain {d} does not resolve right now. Clients cannot connect until it has an A record.',
     'dom_warn_mismatch': 'The domain {d} does not point to {ip}. Clients connect wherever the domain points: check the A record.',
     'dom_in_configs': 'In configurations',
+})
+
+
+# ------------------------------------------------------------------ 0.20: owners with several devices
+OWNER_ID_RE = re.compile(r'^o[0-9a-f]{10}$')
+OWNER_KINDS = ('phone', 'laptop', 'tablet', 'router', 'tv')
+
+
+def owners_all():
+    try: result = ctl('owners', {})
+    except RuntimeError: return []
+    owners = result.get('owners') if isinstance(result, dict) else None
+    return [o for o in owners if isinstance(o, dict) and OWNER_ID_RE.fullmatch(str(o.get('id', '')))] if isinstance(owners, list) else []
+
+
+def owner_choice(form):
+    """The owner picked in a client form; a bare Telegram ID (older forms, scripts) still works."""
+    if 'owner_id' in form:
+        owner = str(form.get('owner_id', '')).strip()
+        if owner and not OWNER_ID_RE.fullmatch(owner): raise HTTPException(422, detail='Invalid owner')
+        return {'owner_id': owner}
+    if 'telegram_id' in form:
+        return {'telegram_id': str(form.get('telegram_id', '')).strip()}
+    return {}
+
+
+def owner_devices_text(o, lang):
+    count = int(o.get('device_count') or 0)
+    return f'{count} / {o["max_devices"]}' if o.get('max_devices') else str(count)
+
+
+def owner_select(owners, current, field_id, lang):
+    options = [f'<option value="">{h(tr(lang, "owner_none"))}</option>']
+    for o in owners:
+        label = o['name'] + (f' · {o["telegram_id"]}' if o.get('telegram_id') else '') + f' ({owner_devices_text(o, lang)})'
+        options.append(f'<option value="{h(o["id"])}"{" selected" if o["id"] == current else ""}>{h(label)}</option>')
+    return (f'<label class="field" for="{field_id}"><span>{h(tr(lang, "owner"))}</span>'
+            f'<select id="{field_id}" name="owner_id">{"".join(options)}</select>'
+            f'<small>{h(tr(lang, "owner_hint"))} <a href="/owners">{h(tr(lang, "owners_manage"))}</a></small></label>')
+
+
+def owner_state(o, lang):
+    blocked = o.get('blocked') or ''
+    key = {'quota': 'owner_state_quota', 'expired': 'owner_state_expired'}.get(blocked, 'owner_state_ok')
+    return f'<span class="access-pill {"is-off" if blocked else "is-on"}">{h(tr(lang, key))}</span>'
+
+
+def owner_traffic(o, lang, period=True):
+    used = human_size(o.get('used_bytes') or 0)
+    if not o.get('traffic_limit_bytes'):
+        return used
+    text = f'{used} / {human_size(o["traffic_limit_bytes"])}'
+    return text + (f' {tr(lang, "owner_per_month")}' if period and o.get('quota_period') == 'monthly' else '')
+
+
+def owner_form(request, o, servers, lang, action):
+    t = lambda key: tr(lang, key)
+    o = o or {}
+    homes = ''.join(f'<option value="{h(x)}"{" selected" if o.get("home_server") == x else ""}>{h(x)}</option>' for x in servers)
+    return f'''<form method="post" action="{h(action)}" class="owner-form">{csrf(request)}
+      <div class="fields-grid">
+        {form_field('name', o.get('name', ''), t('owner_name'), field_id=('owner-name-' + o.get('id', 'new')))}
+        {form_field('telegram_id', o.get('telegram_id', ''), t('telegram_id'), t('owner_telegram_hint'), required=False, field_id=('owner-telegram-' + o.get('id', 'new')))}
+        {form_field('quota_gib', gib_format(o.get('traffic_limit_bytes', 0)), t('owner_quota'), t('owner_quota_hint'), required=False, field_id=('owner-quota-' + o.get('id', 'new')))}
+        {expiry_field(o.get('expires_at') or '', 'owner-expires-' + o.get('id', 'new'), lang)}
+        {form_field('max_devices', str(int(o.get('max_devices') or 0)), t('owner_max'), t('owner_max_hint'), required=False, field_id=('owner-max-' + o.get('id', 'new')))}
+        <label class="field" for="owner-home-{h(o.get('id', 'new'))}"><span>{h(t('owner_home'))}</span>
+          <select id="owner-home-{h(o.get('id', 'new'))}" name="home_server"><option value="">{h(t('owner_home_first'))}</option>{homes}</select>
+          <small>{h(t('owner_home_hint'))}</small></label>
+        {form_field('comment', o.get('comment', ''), t('comment'), required=False, field_id=('owner-comment-' + o.get('id', 'new')))}
+      </div>
+      <label class="check-field"><input type="checkbox" name="quota_monthly" value="1"{' checked' if o.get('quota_period') == 'monthly' else ''}><span>{h(t('quota_monthly'))}</span></label>
+      <label class="check-field"><input type="checkbox" name="self_add" value="1"{' checked' if o.get('self_add') else ''}><span>{h(t('owner_self_add'))}</span></label>
+      {('<label class="check-field"><input type="checkbox" name="reset_used" value="1"><span>' + h(t('owner_reset')) + '</span></label>') if o.get('id') else ''}
+      <button class="btn btn-primary" type="submit">{icon('check', 16)}{h(t('owner_save' if o.get('id') else 'owner_create'))}</button>
+    </form>'''
+
+
+def owner_payload(form):
+    try: max_devices = int(str(form.get('max_devices', '0')).strip() or 0)
+    except ValueError: raise HTTPException(422, detail='Invalid device maximum') from None
+    return {'name': str(form.get('name', '')), 'telegram_id': str(form.get('telegram_id', '')).strip(),
+            'comment': str(form.get('comment', '')), 'traffic_limit_bytes': gib_bytes(form.get('quota_gib', '0') or '0'),
+            'quota_period': 'monthly' if form.get('quota_monthly') == '1' else '', 'expires_at': str(form.get('expires_at', '')),
+            'max_devices': max_devices, 'self_add': form.get('self_add') == '1',
+            'home_server': str(form.get('home_server', '')), 'reset_used': form.get('reset_used') == '1'}
+
+
+def server_names():
+    return [x['interface'] for x in server_list() if SERVER_RE.fullmatch(x.get('interface', ''))]
+
+
+@app.get('/owners')
+def owners_page(request: Request):
+    require_auth(request)
+    lang = lang_of(request); t = lambda key: tr(lang, key)
+    owners = owners_all()
+    rows = ''.join(
+        f'''<tr data-text="{h((o['name'] + ' ' + (o.get('telegram_id') or '') + ' ' + (o.get('comment') or '')).lower())}">
+          <td class="client-name">{icon('users', 16)}<a href="/owners/{h(o['id'])}"><strong>{h(o['name'])}</strong></a>
+            {('<small class="muted">' + h(o['comment']) + '</small>') if o.get('comment') else ''}</td>
+          <td>{('<code>' + h(o['telegram_id']) + '</code>') if o.get('telegram_id') else '<span class="muted">—</span>'}</td>
+          <td class="mono">{h(owner_devices_text(o, lang))}</td>
+          <td class="mono">{h(owner_traffic(o, lang))}</td>
+          <td class="mono">{h((o.get('expires_at') or '')[:10] or '—')}</td>
+          <td>{owner_state(o, lang)}</td>
+          <td class="actions-cell"><a class="btn btn-secondary btn-small" href="/owners/{h(o['id'])}">{h(t('owner_open'))}</a></td></tr>'''
+        for o in owners)
+    if not rows:
+        rows = (f'<tr><td colspan="7"><div class="empty-state">{icon("users", 26)}<strong>{h(t("owners_empty"))}</strong>'
+                f'<span>{h(t("owners_empty_hint"))}</span></div></td></tr>')
+    saved = request.query_params.get('deleted') == '1'
+    body = (f'<p class="bulk-notice" role="status">{icon("check", 16)}<span>{h(t("owner_deleted"))}</span></p>' if saved else '') + f'''
+    <section class="card owners-card" id="owners"><div class="section-title"><div>
+      <span class="section-overline">OWNERS</span><h2>{icon('users', 20)}{h(t('owners'))}</h2>
+      <p class="section-subtitle">{h(t('owners_hint'))}</p></div></div>
+      <div class="table-scroll"><table class="owners-table"><thead><tr><th>{h(t('owner'))}</th><th>Telegram</th>
+      <th>{h(t('owner_devices'))}</th><th>{h(t('traffic'))}</th><th>{h(t('expires'))}</th><th>{h(t('owner_state'))}</th><th></th></tr></thead>
+      <tbody>{rows}</tbody></table></div>
+      <details class="new-instance new-owner"><summary class="btn btn-primary">{icon('plus', 16)}{h(t('owner_new'))}</summary>
+      <p class="info-line">{h(t('owner_new_hint'))}</p>{owner_form(request, None, server_names(), lang, '/owners')}</details>
+    </section>'''
+    return page(t('owners'), body, request)
+
+
+@app.post('/owners')
+async def owner_create(request: Request):
+    form = await request.form()
+    require_csrf(request, form.get('csrf', ''))
+    try: result = ctl('owner-set', owner_payload(form))
+    except RuntimeError as exc: return error_page(request, tr(lang_of(request), 'error'), exc)
+    return RedirectResponse(f'/owners/{result["owner"]["id"]}?saved=1', status_code=303)
+
+
+def find_owner(owner_id):
+    if not OWNER_ID_RE.fullmatch(owner_id): raise HTTPException(404)
+    found = next((o for o in owners_all() if o['id'] == owner_id), None)
+    if not found: raise HTTPException(404)
+    return found
+
+
+@app.get('/owners/{owner_id}')
+def owner_page(request: Request, owner_id: str):
+    require_auth(request)
+    lang = lang_of(request); t = lambda key: tr(lang, key)
+    o = find_owner(owner_id)
+    servers = server_names()
+    now_ts = int(time.time())
+    devices = ''.join(
+        f'''<tr><td><code>{h(d['interface'])}</code></td>
+          <td class="client-name">{icon('server', 16)}<a href="/servers/{h(d['interface'])}/clients/{quote(d['name'], safe='')}">{h(d['name'])}</a></td>
+          <td><span class="access-pill {'is-on' if d.get('enabled') else 'is-off'}">{h(t('access_on' if d.get('enabled') else 'access_off'))}</span>
+            {('<small class="access-note">' + h(t('owner_limit_note')) + '</small>') if str(d.get('disabled_reason') or '').startswith('owner_') else ''}</td>
+          <td class="mono">{h(human_size(d.get('used_bytes') or 0))}</td>
+          <td><small class="handshake">{h(ago_text(lang, now_ts - int(d['last_handshake'])) if d.get('last_handshake') else t('never'))}</small></td></tr>'''
+        for d in o.get('devices', []))
+    if not devices:
+        devices = f'<tr><td colspan="5"><div class="empty-state"><span>{h(t("owner_no_devices"))}</span></div></td></tr>'
+    limit = int(o.get('traffic_limit_bytes') or 0)
+    share = min(100, round(100 * int(o.get('used_bytes') or 0) / limit)) if limit else 0
+    full = bool(o.get('max_devices')) and int(o.get('device_count') or 0) >= int(o['max_devices'])
+    kinds = ''.join(f'<option value="{k}">{h(t("kind_" + k))}</option>' for k in OWNER_KINDS)
+    homes = ''.join(f'<option value="{h(x)}"{" selected" if (o.get("home_server") or servers[0] if servers else "") == x else ""}>{h(x)}</option>' for x in servers)
+    add_device = (f'<p class="info-line">{icon("info", 14)}<span>{h(t("owner_full"))}</span></p>' if full else f'''
+      <form method="post" action="/owners/{h(o['id'])}/device" class="owner-device-form">{csrf(request)}
+      <div class="fields-grid">
+        <label class="field" for="device-server"><span>{h(t('owner_server'))}</span><select id="device-server" name="interface">{homes}</select></label>
+        <label class="field" for="device-kind"><span>{h(t('owner_kind'))}</span><select id="device-kind" name="kind">{kinds}</select></label>
+        <label class="field" for="device-name"><span>{h(t('client_name'))}</span>
+          <input id="device-name" name="name" pattern="[A-Za-z0-9][A-Za-z0-9_\\-]*" maxlength="32" placeholder="{h(t('owner_name_auto'))}"></label>
+      </div>
+      {('<label class="check-field"><input type="checkbox" name="owner_export" value="1" checked><span>' + h(t('owner_export')) + '</span></label>') if o.get('telegram_id') else ''}
+      <button class="btn btn-primary" type="submit">{icon('plus', 16)}{h(t('owner_add_device'))}</button></form>''')
+    notice = ''
+    if request.query_params.get('saved') == '1':
+        notice = f'<p class="bulk-notice" role="status">{icon("check", 16)}<span>{h(t("owner_saved"))}</span></p>'
+    body = notice + f'''<div class="owner-detail">
+    <section class="card owner-summary"><div class="section-title"><div>
+      <span class="section-overline"><a href="/owners">{h(t('owners'))}</a></span>
+      <h2>{icon('users', 20)}{h(o['name'])}</h2>
+      <p class="section-subtitle">{h(o.get('comment') or '')}</p></div>{owner_state(o, lang)}</div>
+      <div class="server-home-numbers owner-numbers">
+        <div><strong>{h(owner_devices_text(o, lang))}</strong><span>{h(t('owner_devices'))}</span></div>
+        <div><strong>{h(owner_traffic(o, lang, False))}</strong><span>{h(t('owner_traffic_month' if o.get('quota_period') == 'monthly' else 'owner_traffic_all'))}</span>
+          {('<progress class="owner-meter" max="100" value="' + str(share) + '" aria-label="' + h(t('owner_quota')) + '">' + str(share) + '%</progress>') if limit else ''}</div>
+        <div><strong>{h((o.get('expires_at') or '')[:10] or t('owner_no_term'))}</strong><span>{h(t('expires'))}</span></div>
+        <div><strong>{h(o.get('telegram_id') or '—')}</strong><span>Telegram{(' · ' + h(t('owner_self_add_on'))) if o.get('self_add') else ''}</span></div>
+      </div></section>
+    <section class="card owner-devices"><div class="section-title"><h2>{icon('server', 20)}{h(t('owner_devices'))}</h2></div>
+      <div class="table-scroll"><table><thead><tr><th>{h(t('owner_server'))}</th><th>{h(t('name'))}</th><th>{h(t('access'))}</th>
+      <th>{h(t('traffic'))}</th><th>{h(t('last_seen'))}</th></tr></thead><tbody>{devices}</tbody></table></div>
+      <h3>{icon('plus', 17)}{h(t('owner_add_device'))}</h3>{add_device}</section>
+    <section class="card owner-edit"><div class="section-title"><h2>{icon('settings', 20)}{h(t('owner_limits'))}</h2></div>
+      <p class="info-line">{h(t('owner_limits_hint'))}</p>
+      {owner_form(request, o, servers, lang, '/owners/' + o['id'])}
+      <form method="post" action="/owners/{h(o['id'])}/delete" class="owner-delete" data-confirm="{h(t('owner_delete_confirm'))}">{csrf(request)}
+      <button class="btn btn-danger" type="submit">{icon('trash', 16)}{h(t('owner_delete'))}</button></form></section></div>'''
+    return page(o['name'], body, request)
+
+
+@app.post('/owners/{owner_id}')
+async def owner_update(request: Request, owner_id: str):
+    form = await request.form()
+    require_csrf(request, form.get('csrf', ''))
+    if not OWNER_ID_RE.fullmatch(owner_id): raise HTTPException(404)
+    try: ctl('owner-set', {'id': owner_id, **owner_payload(form)})
+    except RuntimeError as exc: return error_page(request, tr(lang_of(request), 'error'), exc)
+    return RedirectResponse(f'/owners/{owner_id}?saved=1', status_code=303)
+
+
+@app.post('/owners/{owner_id}/delete')
+async def owner_remove(request: Request, owner_id: str):
+    form = await request.form()
+    require_csrf(request, form.get('csrf', ''))
+    if not OWNER_ID_RE.fullmatch(owner_id): raise HTTPException(404)
+    try: ctl('owner-delete', {'id': owner_id})
+    except RuntimeError as exc: return error_page(request, tr(lang_of(request), 'error'), exc)
+    return RedirectResponse('/owners?deleted=1', status_code=303)
+
+
+@app.post('/owners/{owner_id}/device')
+async def owner_device(request: Request, owner_id: str):
+    form = await request.form()
+    require_csrf(request, form.get('csrf', ''))
+    if not OWNER_ID_RE.fullmatch(owner_id): raise HTTPException(404)
+    iface = str(form.get('interface', ''))
+    kind = str(form.get('kind', 'phone'))
+    name = str(form.get('name', '')).strip()
+    if not SERVER_RE.fullmatch(iface) or kind not in OWNER_KINDS or (name and not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_-]{0,31}', name)):
+        raise HTTPException(422)
+    try:
+        made = ctl('owner-device-add', {'owner_id': owner_id, 'interface': iface, 'kind': kind, 'name': name,
+                                        'owner_export': form.get('owner_export') == '1'})
+    except RuntimeError as exc: return error_page(request, tr(lang_of(request), 'error'), exc)
+    return RedirectResponse(f'/servers/{made["interface"]}/clients/{quote(made["name"], safe="")}', status_code=303)
+
+
+TEXT['ru'].update({
+    'owners': 'Владельцы', 'owner': 'Владелец', 'owner_none': '— без владельца —',
+    'owner_hint': 'Человек, которому принадлежит устройство: его общие лимиты действуют вместе с лимитами клиента, Telegram берётся у владельца.',
+    'owners_manage': 'Владельцы…',
+    'owners_hint': 'Один человек — несколько устройств на любых серверах. Общий трафик, срок и число устройств задаются здесь.',
+    'owners_empty': 'Владельцев пока нет', 'owners_empty_hint': 'Создайте владельца и выберите его в карточке клиента.',
+    'owner_devices': 'Устройства', 'owner_state': 'Состояние', 'owner_open': 'Открыть',
+    'owner_state_ok': 'Работает', 'owner_state_quota': 'Общий трафик исчерпан', 'owner_state_expired': 'Общий срок истёк',
+    'owner_per_month': 'в месяц', 'owner_new': 'Новый владелец',
+    'owner_new_hint': 'Лимиты владельца общие для всех его устройств. Пусто или 0 — без ограничения.',
+    'owner_name': 'Имя владельца', 'owner_telegram_hint': 'Числовой ID. Владелец увидит в боте все свои устройства и общий остаток.',
+    'owner_quota': 'Общий трафик (ГиБ)', 'owner_quota_hint': 'На все устройства вместе; 0 — без ограничения.',
+    'owner_max': 'Максимум устройств', 'owner_max_hint': '0 — без ограничения. Нужен, чтобы владелец добавлял устройства сам.',
+    'owner_home': 'Сервер для новых устройств', 'owner_home_first': 'Первый сервер',
+    'owner_home_hint': 'Сюда бот добавит устройство, которое владелец создаст сам.',
+    'owner_self_add': 'Владелец может сам добавлять устройства в боте (в пределах максимума)',
+    'owner_self_add_on': 'добавляет сам', 'owner_reset': 'Обнулить израсходованный трафик',
+    'owner_save': 'Сохранить', 'owner_create': 'Создать владельца', 'owner_saved': 'Владелец сохранён.',
+    'owner_deleted': 'Владелец удалён; его устройства остались без владельца.',
+    'owner_no_devices': 'Устройств пока нет: добавьте здесь или выберите владельца в карточке клиента.',
+    'owner_kind': 'Тип устройства', 'owner_name_auto': 'необязательно — подберётся само',
+    'owner_add_device': 'Добавить устройство', 'owner_full': 'Достигнут максимум устройств: увеличьте его, чтобы добавить ещё.',
+    'owner_limits': 'Общие лимиты', 'owner_no_term': 'без срока',
+    'owner_limits_hint': 'Исчерпан трафик или истёк срок — отключаются все устройства владельца; включаются сами, когда лимит снова позволяет. Свои лимиты клиента продолжают действовать.',
+    'owner_delete': 'Удалить владельца', 'owner_delete_confirm': 'Удалить владельца? Устройства останутся, но без владельца и без связи с Telegram.',
+    'owner_limit_note': 'Общий лимит владельца', 'filter_owner_limit': 'Общий лимит владельца',
+    'kind_phone': 'Телефон', 'kind_laptop': 'Компьютер', 'kind_tablet': 'Планшет', 'kind_router': 'Роутер', 'kind_tv': 'Телевизор',
+    'tg_e_owner_limit': 'Общий лимит владельца', 'owner_server': 'Сервер',
+    'owner_traffic_month': 'Общий трафик за месяц', 'owner_traffic_all': 'Общий трафик',
+    'bulk_owner_title': 'Владелец для отмеченных', 'bulk_done_owner': 'Владелец задан клиентам: {n}',
+    'bulk_owner_hint': '«Без владельца» отвязывает клиентов. Максимум устройств владельца проверяется.',
+    'bulk_skip_owner': 'Не включены, у владельца исчерпан общий лимит',
+})
+TEXT['en'].update({
+    'owners': 'Owners', 'owner': 'Owner', 'owner_none': '— no owner —',
+    'owner_hint': 'The person the device belongs to: their shared limits apply together with the client’s own, and Telegram comes from the owner.',
+    'owners_manage': 'Owners…',
+    'owners_hint': 'One person, several devices on any server. Shared traffic, term and device count are set here.',
+    'owners_empty': 'No owners yet', 'owners_empty_hint': 'Create an owner and pick them on the client page.',
+    'owner_devices': 'Devices', 'owner_state': 'State', 'owner_open': 'Open',
+    'owner_state_ok': 'Active', 'owner_state_quota': 'Shared traffic used up', 'owner_state_expired': 'Shared term ended',
+    'owner_per_month': 'a month', 'owner_new': 'New owner',
+    'owner_new_hint': 'An owner’s limits are shared by all their devices. Empty or 0 means no limit.',
+    'owner_name': 'Owner name', 'owner_telegram_hint': 'Numeric ID. The owner sees all their devices and the shared balance in the bot.',
+    'owner_quota': 'Shared traffic (GiB)', 'owner_quota_hint': 'For all devices together; 0 means no limit.',
+    'owner_max': 'Maximum devices', 'owner_max_hint': '0 means no limit. Needed for the owner to add devices themselves.',
+    'owner_home': 'Server for new devices', 'owner_home_first': 'First server',
+    'owner_home_hint': 'Where the bot adds a device the owner creates.',
+    'owner_self_add': 'The owner may add devices in the bot (up to the maximum)',
+    'owner_self_add_on': 'adds devices', 'owner_reset': 'Reset the traffic used',
+    'owner_save': 'Save', 'owner_create': 'Create owner', 'owner_saved': 'Owner saved.',
+    'owner_deleted': 'Owner deleted; their devices stay, without an owner.',
+    'owner_no_devices': 'No devices yet: add one here or pick the owner on a client page.',
+    'owner_kind': 'Device type', 'owner_name_auto': 'optional, chosen for you',
+    'owner_add_device': 'Add device', 'owner_full': 'The device maximum is reached: raise it to add more.',
+    'owner_limits': 'Shared limits', 'owner_no_term': 'no term',
+    'owner_limits_hint': 'When the traffic is used up or the term ends, all the owner’s devices go off, and come back by themselves once the limit allows. The client’s own limits keep applying.',
+    'owner_delete': 'Delete owner', 'owner_delete_confirm': 'Delete the owner? The devices stay, without an owner and without the Telegram link.',
+    'owner_limit_note': 'Owner’s shared limit', 'filter_owner_limit': 'Owner’s shared limit',
+    'kind_phone': 'Phone', 'kind_laptop': 'Computer', 'kind_tablet': 'Tablet', 'kind_router': 'Router', 'kind_tv': 'TV',
+    'tg_e_owner_limit': 'Owner’s shared limit', 'owner_server': 'Server',
+    'owner_traffic_month': 'Shared traffic this month', 'owner_traffic_all': 'Shared traffic',
+    'bulk_owner_title': 'Owner for the selected clients', 'bulk_done_owner': 'Owner set for clients: {n}',
+    'bulk_owner_hint': '“No owner” unlinks the clients. The owner’s device maximum is checked.',
+    'bulk_skip_owner': 'Not enabled, the owner’s shared limit is reached',
 })

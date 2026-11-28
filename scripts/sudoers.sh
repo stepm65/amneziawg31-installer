@@ -12,7 +12,7 @@ AWG31_SUDO_COMMANDS=(
   servers server-create server-start server-stop server-restart server-delete
   status list add download enable disable delete delete-batch settings
   client-network client-extra client-rekey client-batch client-invite client-move sub-token sub-fetch rotate rotate-schedule mask-apply probe watch-set client-policy history sessions host-history diagnostics
-  profile-export profile-import
+  profile-export profile-import owners owner-set owner-delete owner-device-add
   backup-create backup-list backup-export backup-delete backup-policy
   backup-policy-set backup-check backup-restore
   audit audit-list password-change session-revoke obfuscation-generate
@@ -25,7 +25,7 @@ AWG31_SUDO_COMMANDS=(
 # a server, restore or download a backup, change settings or the panel password.
 AWG31_BOT_SUDO_COMMANDS=(
   servers server-start server-stop server-restart
-  list add download enable disable delete client-policy client-rekey client-invite invite-redeem probe rotate
+  list add download enable disable delete client-policy client-rekey client-invite invite-redeem probe rotate owners owner-device-add
   diagnostics backup-create backup-list backup-export-encrypted audit audit-list
 )
 

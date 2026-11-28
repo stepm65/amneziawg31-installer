@@ -33,7 +33,11 @@ ADMIN = {'servers', 'server-create', 'client-move', 'server-start', 'server-stop
          'telegram-status','telegram-connect','telegram-disconnect','telegram-set','telegram-test',
          'backup-encryption','backup-encryption-set','backup-export-encrypted',
          'backup-encryption-change','backup-remote','backup-remote-set','backup-remote-test',
-         'audit-search','logging-status','logging-set','logs-read','handshake-debug','support-report'}
+         'audit-search','logging-status','logging-set','logs-read','handshake-debug','support-report',
+         'owners','owner-set','owner-delete','owner-device-add'}
+# Ops that may give a client an owner, and ops that must know which owners are blocked.
+OWNER_OPS = {'add', 'client-policy', 'client-batch'}
+BLOCK_AWARE = {'enable', 'client-batch'}
 
 
 def load_source(name, path):
@@ -173,6 +177,11 @@ def main():
     if not isinstance(data,dict): raise ValueError('Expected JSON object')
     admin=load_source('awg31admin',Path(__file__).with_name('awg31admin.py'))
     if op=='servers': return {'servers':[info(x) for x in interfaces()]}
+    me=sys.modules[__name__]
+    if op=='owners': return admin.owners_list(me,data)
+    if op=='owner-set': return admin.owner_set(me,data)
+    if op=='owner-delete': return admin.owner_delete(me,data)
+    if op=='owner-device-add': return admin.owner_device_add(me,data)
     if op=='audit': return admin.audit(data)
     if op=='audit-list': return admin.audit_recent()
     if op=='audit-search': return admin.audit_list(data)
@@ -240,8 +249,14 @@ def main():
     if op=='host-history':return admin.host_metrics_history(data)
     if op=='sample-all':
         results={}
+        try: admin.owners_migrate(me)
+        except (OSError,ValueError,RuntimeError,sqlite3.Error) as exc: print(f'owner migration: {exc}',file=sys.stderr)
+        blocked=admin.owners_blocked()
+        usage={}
         for name in interfaces():
-            results[name]=child(name,'sample',{})
+            results[name]=child(name,'sample',{'owners_blocked':blocked})
+            for owner_id,amount in (results[name].get('owner_usage') or {}).items():
+                usage[owner_id]=usage.get(owner_id,0)+int(amount)
             for client_name in results[name].get('disabled',[]):
                 admin.audit({'event':'client_disabled','target':f'{name}/{client_name} (auto)'})
             for client_name in results[name].get('enabled',[]):
@@ -261,9 +276,16 @@ def main():
                     admin.audit({'event':'server_rotate_failed','target':f'{name}: {done.get("error","")}'})
             elif watch.get('event')=='back':
                 admin.audit({'event':'server_back','target':f'{name}: {watch["active"]} clients connected again'})
+        owners=admin.owners_sample(me,usage)
+        if owners['changed']:
+            synced=admin._sync_servers(me,{'blocked':owners['blocked']})
+            for change in owners['changed']:
+                count=sum(len(r.get('disabled' if change['to'] else 'enabled') or []) for r in synced.values())
+                admin.audit({'event':'owner_blocked' if change['to'] else 'owner_unblocked',
+                             'target':f'{change["name"]} ({change["id"]}): {change["to"] or change["from"]}, {count} devices'[:120]})
         try: host=admin.sample_host_metrics()
         except (OSError,ValueError,sqlite3.Error) as exc: host={'ok':False,'error':str(exc)[:150]}
-        return {'ok':True,'servers':results,'host':host}
+        return {'ok':True,'servers':results,'owners':owners['changed'],'host':host}
 
     iface=data.get('interface','awg0')
     if not isinstance(iface,str) or not VALID.fullmatch(iface):
@@ -314,6 +336,18 @@ def main():
             raise ValueError('Incomplete profile or unexpected fields')
         return child(iface,'settings',settings)
     if op in OPS:
+        if op in OWNER_OPS:
+            admin.owner_resolve(me,op,iface,payload)
+        if op in BLOCK_AWARE:
+            payload['owners_blocked']=admin.owners_blocked()
+        if op=='invite-redeem':
+            # The person who redeemed the invitation becomes the client's owner (made for them if new).
+            result=child(iface,op,{k:v for k,v in payload.items() if k!='owner_name'})
+            if result.get('found'):
+                owner=admin.owner_by_telegram(payload.get('telegram_id'),create_name=str(payload.get('owner_name') or '')[:40]
+                                              or f'Telegram {payload.get("telegram_id")}')
+                if owner: child(iface,'owner-sync',{'link':{owner['telegram_id']:owner['id']}})
+            return result
         if op=='settings' and 'port' in payload:
             proposed = int(payload['port'])
             if not 1 <= proposed <= 65535: raise ValueError('Invalid port')

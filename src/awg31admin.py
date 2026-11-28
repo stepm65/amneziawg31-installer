@@ -31,7 +31,8 @@ VALID_AUDIT = {'login_success', 'login_failed', 'password_changed', 'client_adde
                'totp_recovery_new', 'clients_exported', 'panel_update_started', 'panel_updated',
                'panel_update_failed', 'panel_rolled_back', 'server_rotated', 'server_rotate_failed',
                'mask_profile_applied', 'subscription_created', 'subscription_revoked', 'packet_probe',
-               'client_moved', 'server_silent', 'server_back'}
+               'client_moved', 'server_silent', 'server_back',
+               'owner_created', 'owner_changed', 'owner_deleted', 'owner_blocked', 'owner_unblocked'}
 
 
 def _host_uplink():
@@ -536,7 +537,7 @@ TELEGRAM_EVENTS={
     'server_state':'server','module':'server','kernel':'server','panel':'server',
     'client_auto':'clients','client_expiring':'clients','client_quota':'clients',
     'login':'security','login_failed':'security','password':'security','owner_export':'security',
-    'totp_recovery':'security','invite':'clients','update':'server','rotation':'server','blocking':'server',
+    'totp_recovery':'security','invite':'clients','owner_limit':'clients','update':'server','rotation':'server','blocking':'server',
     'backup_created':'backups','backup_failed':'backups','upload_failed':'backups',
     'cpu':'system','memory':'system','disk':'system',
 }
@@ -1280,6 +1281,15 @@ def create_backup(manager, *, enforce_limit=True):
                     key=f'databases/{iface}.sqlite3';content=temp.read_bytes()
                     _safe_add(tf,key,content)
                     manifest['files'][key]=hashlib.sha256(content).hexdigest()
+            if owners_db().is_file():
+                # Owners and their shared limits belong to all servers at once.
+                with tempfile.TemporaryDirectory(prefix='awg31-db-') as td:
+                    temp=Path(td)/'owners.sqlite3'
+                    with sqlite3.connect(owners_db()) as s, sqlite3.connect(temp) as d:
+                        s.backup(d)
+                    content=temp.read_bytes()
+                    _safe_add(tf,'databases/owners.sqlite3',content)
+                    manifest['files']['databases/owners.sqlite3']=hashlib.sha256(content).hexdigest()
             _safe_add(tf,'manifest.json',json.dumps(manifest,sort_keys=True).encode())
         if archive.stat().st_size>20*1024*1024: raise ValueError('Archive exceeds 20 MiB limit')
         if backup_key_file().is_file():
@@ -1707,3 +1717,395 @@ def update_start(data):
         raise RuntimeError('Could not start the update: '+(cp.stderr or '').strip()[:200])
     audit({'event':'panel_update_started','target':f'{action} {target}'})
     return {'ok':True,'action':action,'target':target}
+
+
+# ------------------------------------------------------------------ 0.20: owners with several devices
+# An owner is a person with clients ("devices") on any server. Their shared limits (traffic, term,
+# number of devices) live here, in one file for all servers; each client keeps only owner_id, and its
+# telegram_id mirrors the owner's so that the bot keeps finding people the way it always did.
+OWNER_ID=re.compile(r'^o[0-9a-f]{10}$')
+OWNER_TELEGRAM=re.compile(r'^[1-9][0-9]{2,14}$')
+OWNER_KINDS=('phone','laptop','tablet','router','tv')
+OWNER_MAX_DEVICES=100
+_OWNERS_SCHEMA="""CREATE TABLE IF NOT EXISTS owners (
+    id TEXT PRIMARY KEY, name TEXT NOT NULL, telegram_id TEXT NOT NULL DEFAULT '',
+    comment TEXT NOT NULL DEFAULT '', traffic_limit_bytes INTEGER NOT NULL DEFAULT 0,
+    quota_period TEXT NOT NULL DEFAULT '', quota_month TEXT NOT NULL DEFAULT '',
+    used_bytes INTEGER NOT NULL DEFAULT 0, expires_at TEXT NOT NULL DEFAULT '',
+    max_devices INTEGER NOT NULL DEFAULT 0, self_add INTEGER NOT NULL DEFAULT 0,
+    home_server TEXT NOT NULL DEFAULT '', blocked TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL)"""
+OWNER_COLUMNS=('id','name','telegram_id','comment','traffic_limit_bytes','quota_period','quota_month','used_bytes',
+               'expires_at','max_devices','self_add','home_server','blocked','created_at')
+
+
+def owners_db():
+    return base_dir()/'owners.sqlite3'
+
+
+def _owners_open():
+    path=owners_db()
+    fresh=not path.exists()
+    path.parent.mkdir(parents=True,exist_ok=True)
+    con=sqlite3.connect(path,timeout=20)
+    con.row_factory=sqlite3.Row
+    if fresh: os.chmod(path,0o600)
+    con.execute(_OWNERS_SCHEMA)
+    con.execute('CREATE UNIQUE INDEX IF NOT EXISTS owners_name ON owners(name COLLATE NOCASE)')
+    return con, fresh
+
+
+class _OwnersLock:
+    """Owner changes are read-check-write across several databases: one at a time."""
+    def __enter__(self):
+        base_dir().mkdir(parents=True,exist_ok=True)
+        self.handle=open(base_dir()/'owners.lock','a+')
+        fcntl.flock(self.handle.fileno(),fcntl.LOCK_EX)
+        return self
+    def __exit__(self,*exc):
+        self.handle.close()
+
+
+def _owner_name(raw):
+    name=' '.join(str(raw or '').split())
+    if not 1<=len(name)<=40 or any(ord(c)<32 or c in '<>"\'`;\\' for c in name):
+        raise ValueError('Имя владельца: от 1 до 40 символов, без < > " \' ` ; \\')
+    return name
+
+
+def _owner_expiry(raw):
+    text=str(raw or '').strip()
+    if not text: return ''
+    try:
+        if re.fullmatch(r'[0-9]{2}\.[0-9]{2}\.[0-9]{4}',text):
+            moment=datetime.strptime(text,'%d.%m.%Y').replace(hour=23,minute=59,second=59)
+        else:
+            moment=datetime.fromisoformat(text.replace('Z','+00:00'))
+            if re.fullmatch(r'[0-9]{4}-[0-9]{2}-[0-9]{2}',text): moment=moment.replace(hour=23,minute=59,second=59)
+        if moment.tzinfo is None: moment=moment.replace(tzinfo=timezone.utc)
+        return moment.astimezone(timezone.utc).isoformat()
+    except (ValueError,OverflowError):
+        raise ValueError('Срок владельца: дата ДД.ММ.ГГГГ или ГГГГ-ММ-ДД') from None
+
+
+def _owner_fields(data, old, manager):
+    old=old or {}
+    def number(key,low,high,label):
+        try: value=int(data.get(key,old.get(key,0)) or 0)
+        except (TypeError,ValueError): raise ValueError(f'{label}: целое число') from None
+        if not low<=value<=high: raise ValueError(f'{label}: от {low} до {high}')
+        return value
+    telegram=str(data.get('telegram_id',old.get('telegram_id','')) or '').strip()
+    if telegram=='0': telegram=''
+    if telegram and not OWNER_TELEGRAM.fullmatch(telegram):
+        raise ValueError('Telegram ID: только цифры (числовой ID пользователя, не @имя)')
+    comment=str(data.get('comment',old.get('comment','')) or '').strip()
+    if len(comment)>200 or any(ord(c)<32 for c in comment): raise ValueError('Комментарий: до 200 символов')
+    period=str(data.get('quota_period',old.get('quota_period','')) or '')
+    if period not in ('','monthly'): raise ValueError('Период лимита: пусто или monthly')
+    home=str(data.get('home_server',old.get('home_server','')) or '')
+    if home and home not in manager.interfaces(): raise ValueError('Сервер для новых устройств не найден')
+    self_add=data.get('self_add',old.get('self_add',0)) in (True,1,'1','on','true')
+    return {'name':_owner_name(data.get('name',old.get('name',''))),'telegram_id':telegram,'comment':comment,
+            'traffic_limit_bytes':number('traffic_limit_bytes',0,10**15,'Общий лимит трафика'),'quota_period':period,
+            'expires_at':_owner_expiry(data.get('expires_at',old.get('expires_at',''))),
+            'max_devices':number('max_devices',0,OWNER_MAX_DEVICES,'Максимум устройств'),
+            'self_add':int(self_add),'home_server':home}
+
+
+def owner_devices(manager):
+    """{owner_id: [device, ...]} read straight from every server's database (read only)."""
+    found={}
+    for iface in manager.interfaces():
+        try:
+            with sqlite3.connect(f'file:{manager.db_path(iface)}?mode=ro',uri=True,timeout=10) as con:
+                con.row_factory=sqlite3.Row
+                columns={row[1] for row in con.execute('PRAGMA table_info(clients)')}
+                if 'owner_id' not in columns: continue
+                for row in con.execute("SELECT name,enabled,disabled_reason,used_bytes,telegram_id,owner_id,last_handshake "
+                                       "FROM clients WHERE owner_id<>'' ORDER BY created_at,name"):
+                    found.setdefault(row['owner_id'],[]).append({'interface':iface,'name':row['name'],'enabled':bool(row['enabled']),
+                        'disabled_reason':row['disabled_reason'],'used_bytes':int(row['used_bytes'] or 0),
+                        'last_handshake':int(row['last_handshake'] or 0)})
+        except sqlite3.Error:
+            continue
+    return found
+
+
+def _owner_state(row, now=None):
+    """'' when the owner's devices may work, else 'quota' or 'expired'."""
+    now=now or datetime.now(timezone.utc)
+    if row['expires_at'] and datetime.fromisoformat(row['expires_at'])<=now: return 'expired'
+    if row['traffic_limit_bytes'] and int(row['used_bytes'])>=int(row['traffic_limit_bytes']): return 'quota'
+    return ''
+
+
+def owners_blocked():
+    """{owner_id: reason} for owners whose devices must stay off. Read by every sample and enable."""
+    if not owners_db().exists(): return {}
+    con,_=_owners_open()
+    try: return {row['id']:row['blocked'] for row in con.execute("SELECT id,blocked FROM owners WHERE blocked<>''")}
+    finally: con.close()
+
+
+def _owner_public(row, devices):
+    item={k:row[k] for k in OWNER_COLUMNS}
+    item['self_add']=bool(item['self_add'])
+    item['devices']=devices.get(row['id'],[])
+    item['device_count']=len(item['devices'])
+    return item
+
+
+def _sync_servers(manager, payload):
+    """Tell every server what changed; returns {iface: result}."""
+    results={}
+    for iface in manager.interfaces():
+        try: results[iface]=manager.child(iface,'owner-sync',payload)
+        except (RuntimeError,ValueError) as exc: results[iface]={'ok':False,'error':str(exc)[:200]}
+    return results
+
+
+def owners_migrate(manager, con=None):
+    """Clients that only have a Telegram ID (as before 0.20, or restored from an old backup) get an owner:
+    one per Telegram ID, named after it until the administrator renames it."""
+    own=con is None
+    if own: con,_=_owners_open()
+    try:
+        ids=set()
+        for iface in manager.interfaces():
+            try:
+                with sqlite3.connect(f'file:{manager.db_path(iface)}?mode=ro',uri=True,timeout=10) as db:
+                    columns={row[1] for row in db.execute('PRAGMA table_info(clients)')}
+                    query=("SELECT DISTINCT telegram_id FROM clients WHERE telegram_id<>''"
+                           +(" AND owner_id=''" if 'owner_id' in columns else ''))
+                    ids|={str(row[0]) for row in db.execute(query) if OWNER_TELEGRAM.fullmatch(str(row[0]))}
+            except sqlite3.Error:
+                continue
+        if not ids: return {}
+        link={}
+        for telegram in sorted(ids):
+            row=con.execute('SELECT id FROM owners WHERE telegram_id=?',(telegram,)).fetchone()
+            link[telegram]=row['id'] if row else _owner_insert(con,{'name':f'Telegram {telegram}','telegram_id':telegram})
+        con.commit()
+        _sync_servers(manager,{'link':link})
+        return link
+    finally:
+        if own: con.close()
+
+
+def _owner_insert(con, fields):
+    name=fields['name']
+    base,n=name,2
+    while con.execute('SELECT 1 FROM owners WHERE name=? COLLATE NOCASE',(name,)).fetchone():
+        name=f'{base[:36]} {n}';n+=1
+    owner_id='o'+secrets.token_hex(5)
+    values={'traffic_limit_bytes':0,'quota_period':'','quota_month':'','used_bytes':0,'expires_at':'','max_devices':0,
+            'self_add':0,'home_server':'','blocked':'','comment':'','telegram_id':'',**fields,'id':owner_id,'name':name,
+            'created_at':datetime.now(timezone.utc).isoformat(timespec='seconds')}
+    if values['quota_period']=='monthly' and not values['quota_month']:
+        values['quota_month']=datetime.now(timezone.utc).strftime('%Y-%m')
+    con.execute(f'INSERT INTO owners ({",".join(OWNER_COLUMNS)}) VALUES ({",".join("?"*len(OWNER_COLUMNS))})',
+                [values[c] for c in OWNER_COLUMNS])
+    return owner_id
+
+
+def owners_list(manager, data=None):
+    with _OwnersLock():
+        con,_=_owners_open()
+        try:
+            owners_migrate(manager,con)
+            devices=owner_devices(manager)
+            rows=[_owner_public(row,devices) for row in con.execute('SELECT * FROM owners ORDER BY name COLLATE NOCASE')]
+        finally: con.close()
+    wanted=str((data or {}).get('telegram_id','') or '')
+    if wanted: rows=[row for row in rows if row['telegram_id']==wanted]
+    return {'owners':rows,'kinds':list(OWNER_KINDS)}
+
+
+def owner_set(manager, data):
+    """Create (no id) or change an owner. Devices follow at once: Telegram ID, and on or off by the limits."""
+    owner_id=str(data.get('id','') or '')
+    if owner_id and not OWNER_ID.fullmatch(owner_id): raise ValueError('Неверный владелец')
+    with _OwnersLock():
+        con,_=_owners_open()
+        try:
+            old=dict(con.execute('SELECT * FROM owners WHERE id=?',(owner_id,)).fetchone() or {}) if owner_id else {}
+            if owner_id and not old: raise ValueError('Владелец не найден')
+            fields=_owner_fields(data,old,manager)
+            clash=con.execute('SELECT id FROM owners WHERE name=? COLLATE NOCASE AND id<>?',(fields['name'],owner_id)).fetchone()
+            if clash: raise ValueError('Владелец с таким именем уже есть')
+            if fields['telegram_id']:
+                clash=con.execute('SELECT name FROM owners WHERE telegram_id=? AND id<>?',(fields['telegram_id'],owner_id)).fetchone()
+                if clash: raise ValueError(f'Этот Telegram ID уже у владельца «{clash["name"]}»')
+            devices=owner_devices(manager)
+            if fields['max_devices'] and owner_id and len(devices.get(owner_id,[]))>fields['max_devices']:
+                raise ValueError(f'У владельца уже {len(devices[owner_id])} устройств: удалите лишние или увеличьте максимум')
+            if owner_id:
+                month=datetime.now(timezone.utc).strftime('%Y-%m')
+                if fields['quota_period']=='monthly' and old['quota_period']!='monthly': fields['quota_month']=month
+                con.execute('UPDATE owners SET '+','.join(f'{k}=?' for k in fields)+' WHERE id=?',[*fields.values(),owner_id])
+            else:
+                owner_id=_owner_insert(con,fields)
+            if data.get('reset_used') in (True,1,'1','on'):
+                con.execute('UPDATE owners SET used_bytes=0 WHERE id=?',(owner_id,))
+            row=con.execute('SELECT * FROM owners WHERE id=?',(owner_id,)).fetchone()
+            state=_owner_state(row)
+            con.execute('UPDATE owners SET blocked=? WHERE id=?',(state,owner_id))
+            con.commit()
+            blocked={r['id']:r['blocked'] for r in con.execute("SELECT id,blocked FROM owners WHERE blocked<>''")}
+            payload={'blocked':blocked}
+            if old and old.get('telegram_id','')!=fields['telegram_id']: payload['telegram']={owner_id:fields['telegram_id']}
+            results=_sync_servers(manager,payload)
+            row=con.execute('SELECT * FROM owners WHERE id=?',(owner_id,)).fetchone()
+            item=_owner_public(row,owner_devices(manager))
+        finally: con.close()
+    audit({'event':'owner_changed' if old else 'owner_created','target':f'{item["name"]} ({owner_id})'[:120]})
+    _owner_audit_changes(results)
+    return {'ok':True,'owner':item}
+
+
+def _owner_audit_changes(results):
+    for iface,result in results.items():
+        for name in result.get('disabled',[]) if isinstance(result,dict) else []:
+            audit({'event':'client_disabled','target':f'{iface}/{name} (owner limit)'})
+        for name in result.get('enabled',[]) if isinstance(result,dict) else []:
+            audit({'event':'client_enabled','target':f'{iface}/{name} (owner limit)'})
+
+
+def owner_delete(manager, data):
+    """The owner goes; their devices stay, without an owner (and without the Telegram link)."""
+    owner_id=str(data.get('id','') or '')
+    if not OWNER_ID.fullmatch(owner_id): raise ValueError('Неверный владелец')
+    with _OwnersLock():
+        con,_=_owners_open()
+        try:
+            row=con.execute('SELECT name FROM owners WHERE id=?',(owner_id,)).fetchone()
+            if not row: raise ValueError('Владелец не найден')
+            con.execute('DELETE FROM owners WHERE id=?',(owner_id,))
+            con.commit()
+            blocked={r['id']:r['blocked'] for r in con.execute("SELECT id,blocked FROM owners WHERE blocked<>''")}
+        finally: con.close()
+        results=_sync_servers(manager,{'removed':[owner_id],'blocked':blocked})
+    audit({'event':'owner_deleted','target':f'{row["name"]} ({owner_id})'[:120]})
+    _owner_audit_changes(results)
+    return {'ok':True,'id':owner_id}
+
+
+def owner_get(owner_id):
+    if not OWNER_ID.fullmatch(str(owner_id or '')) or not owners_db().exists(): return None
+    con,_=_owners_open()
+    try:
+        row=con.execute('SELECT * FROM owners WHERE id=?',(owner_id,)).fetchone()
+        return dict(row) if row else None
+    finally: con.close()
+
+
+def owner_by_telegram(telegram, *, create_name=None):
+    """The owner with this Telegram ID; with create_name a new one is made when there is none."""
+    if not OWNER_TELEGRAM.fullmatch(str(telegram or '')): return None
+    con,_=_owners_open()
+    try:
+        row=con.execute('SELECT * FROM owners WHERE telegram_id=?',(str(telegram),)).fetchone()
+        if row or not create_name: return dict(row) if row else None
+        owner_id=_owner_insert(con,{'name':_owner_name(create_name),'telegram_id':str(telegram)})
+        con.commit()
+        audit({'event':'owner_created','target':f'{create_name} ({owner_id})'[:120]})
+        return dict(con.execute('SELECT * FROM owners WHERE id=?',(owner_id,)).fetchone())
+    finally: con.close()
+
+
+def owner_resolve(manager, op, iface, payload):
+    """Before a client gets an owner (add, client-policy, client-batch owner): the owner must exist,
+    the device count must fit, and the client's telegram_id becomes the owner's. A bare telegram_id (the bot,
+    older forms) is turned into that person's owner, made on the spot when needed."""
+    if 'owner_id' in payload:
+        owner_id=str(payload.get('owner_id') or '')
+        owner=owner_get(owner_id) if owner_id else None
+        if owner_id and not owner: raise ValueError('Владелец не найден')
+    elif 'telegram_id' in payload:
+        telegram=str(payload.get('telegram_id') or '').strip()
+        if telegram in ('','0'):
+            owner=None
+        else:
+            if not OWNER_TELEGRAM.fullmatch(telegram):
+                raise ValueError('Telegram ID: только цифры (числовой ID пользователя, не @имя)')
+            owner=owner_by_telegram(telegram,create_name=f'Telegram {telegram}')
+    else:
+        return payload
+    payload['owner_id']=owner['id'] if owner else ''
+    payload['telegram_id']=owner['telegram_id'] if owner else ''
+    if not owner: return payload
+    if owner['max_devices']:
+        mine=owner_devices(manager).get(owner['id'],[])
+        here={d['name'] for d in mine if d['interface']==iface}
+        if op=='add': new=1
+        elif op=='client-batch': new=len([n for n in payload.get('names') or [] if n not in here])
+        else: new=0 if str(payload.get('name','')) in here else 1
+        if len(mine)+new>owner['max_devices']:
+            raise ValueError(f'У владельца «{owner["name"]}» уже {len(mine)} из {owner["max_devices"]} устройств')
+    return payload
+
+
+def owners_sample(manager, usage, now=None):
+    """After every sample: add the traffic, start a new month, and work out who is blocked now.
+    Returns the new blocked map and the owners whose state changed."""
+    if not owners_db().exists() and not usage: return {'blocked':{},'changed':[]}
+    now=now or datetime.now(timezone.utc)
+    month=now.strftime('%Y-%m')
+    with _OwnersLock():
+        con,_=_owners_open()
+        try:
+            for owner_id,amount in (usage or {}).items():
+                if OWNER_ID.fullmatch(str(owner_id)) and int(amount)>0:
+                    con.execute('UPDATE owners SET used_bytes=used_bytes+? WHERE id=?',(int(amount),owner_id))
+            changed=[]
+            for row in con.execute('SELECT * FROM owners').fetchall():
+                if row['quota_period']=='monthly' and row['quota_month']!=month:
+                    con.execute('UPDATE owners SET quota_month=?, used_bytes=? WHERE id=?',
+                                (month,0 if row['quota_month'] else row['used_bytes'],row['id']))
+                    row=con.execute('SELECT * FROM owners WHERE id=?',(row['id'],)).fetchone()
+                state=_owner_state(row,now)
+                if state!=row['blocked']:
+                    con.execute('UPDATE owners SET blocked=? WHERE id=?',(state,row['id']))
+                    changed.append({'id':row['id'],'name':row['name'],'telegram_id':row['telegram_id'],'from':row['blocked'],'to':state})
+            con.commit()
+            blocked={r['id']:r['blocked'] for r in con.execute("SELECT id,blocked FROM owners WHERE blocked<>''")}
+        finally: con.close()
+    return {'blocked':blocked,'changed':changed}
+
+
+def _device_name(owner, kind, taken):
+    slug=re.sub(r'[^a-z0-9]+','-',owner['name'].lower()).strip('-')[:16].strip('-')
+    if not slug or slug.startswith('telegram'): slug='user'
+    for n in range(1,1000):
+        name=f'{slug}-{kind}' if n==1 else f'{slug}-{kind}-{n}'
+        if name not in taken: return name
+    raise ValueError('Не удалось подобрать имя устройства')
+
+
+def owner_device_add(manager, data):
+    """A new device for an owner. From the bot (telegram_id of the person asking): only when the
+    administrator allowed it, within the maximum, and while the owner is not blocked."""
+    kind=str(data.get('kind','phone'))
+    if kind not in OWNER_KINDS: raise ValueError('Неверный тип устройства')
+    by_bot='telegram_id' in data
+    with _OwnersLock():
+        owner=owner_by_telegram(data.get('telegram_id')) if by_bot else owner_get(data.get('owner_id'))
+        if not owner: raise ValueError('Владелец не найден')
+        if by_bot and not owner['self_add']: raise ValueError('Добавлять устройства самому не разрешено')
+        if by_bot and not owner['max_devices']: raise ValueError('Для владельца не задан максимум устройств')
+        if owner['blocked']: raise ValueError('У владельца исчерпан общий лимит или истёк срок')
+        mine=owner_devices(manager).get(owner['id'],[])
+        if owner['max_devices'] and len(mine)>=owner['max_devices']:
+            raise ValueError(f'Уже {len(mine)} из {owner["max_devices"]} устройств')
+        servers=manager.interfaces()
+        iface=str(data.get('interface') or owner['home_server'] or (servers[0] if servers else ''))
+        if iface not in servers: raise ValueError('Сервер не найден')
+        with sqlite3.connect(f'file:{manager.db_path(iface)}?mode=ro',uri=True,timeout=10) as db:
+            taken={row[0] for row in db.execute('SELECT name FROM clients')}
+        name=str(data.get('name') or '') or _device_name(owner,kind,taken)
+        comment='Добавлено владельцем в Telegram' if by_bot else str(data.get('comment','') or '')
+        created=manager.child(iface,'add',{'name':name,'owner_id':owner['id'],'telegram_id':owner['telegram_id'],
+                                           'owner_export':bool(owner['telegram_id']) and (by_bot or bool(data.get('owner_export'))),
+                                           'comment':comment})
+    audit({'event':'client_added','target':f'{iface}/{name} (owner {owner["id"]}{", telegram" if by_bot else ""})'[:120]})
+    return {'ok':True,'interface':iface,'name':name,'owner':owner['name'],'config':created.get('config','')}

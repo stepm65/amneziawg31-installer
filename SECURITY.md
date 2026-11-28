@@ -34,6 +34,12 @@ A valid panel session is not enough for changes that outlive it. The panel passw
 - Handshake debug writes to `/sys/kernel/debug/dynamic_debug/control` and schedules a systemd timer that switches it off after 15 minutes, so it cannot be left on by accident.
 - The support report removes keys (`[key]`), Telegram tokens (`[token]`), `PrivateKey`/`PresharedKey`/`PublicKey`/`HeaderProtectionKey`/`Endpoint` lines and public addresses (always fully masked). It is generated on request and not stored on the server.
 
+## Owners with shared limits (0.20)
+
+- Owners live in `/var/lib/awg31-panel/owners.sqlite3` (root, mode 0600). Clients keep only an owner ID; the owner's Telegram ID is mirrored onto each device, and changing it switches off the configuration export of every device (a permission never passes to another person silently).
+- The panel may create, change and delete owners and add their devices; the bot may only list them and add a device. The bot asks for a device only for the Telegram user who pressed the button; the manager then checks that the administrator allowed self-service, that a device maximum is set and not reached, and that the owner is not blocked. Self-added devices are audited and reported to the administrators.
+- A blocked owner's devices are switched off on every server and cannot be switched on one by one until the owner's limit allows again. The internal `owner-sync` step that does this is in no sudo list.
+
 ## Moving clients and owner delivery (0.18)
 
 - `awg31mgr client-move` copies the whole client record, keys included, between two servers' databases as root. The two steps it uses (`client-export`, `client-import`) are in no sudo list; the panel may run only `client-move`, the bot not even that. If removing the client from the old server fails, it is removed from the new one again, so one key is never active on two servers.
