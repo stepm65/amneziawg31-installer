@@ -1538,3 +1538,14 @@ tr:hover .extra-dot {box-shadow:0 0 0 2px #1e2228}
 .passkey-add {margin-top:16px;display:flex;flex-direction:column;gap:12px;align-items:flex-start}
 .passkey-add .fields-grid {width:100%}
 .passkey-unsupported[hidden], .passkey-login[hidden], [data-passkey-status][hidden] {display:none !important}
+/* 0.27: backup checks, metrics */
+.backup-verify-card {margin:16px 0;padding:16px 18px;border:1px solid var(--md-sys-color-outline-variant);border-radius:16px}
+.backup-verify-head {display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:10px}
+.backup-verify-head h3 {margin:0}
+.backup-verify-state {display:flex;flex-direction:column;align-items:flex-end;gap:4px;text-align:right}
+.backup-verify-state small {color:var(--muted);font-size:12.5px}
+.tg-state.is-off {color:#f0a08a;border-color:rgba(240,160,138,.35)}
+.metrics-sample {max-height:none;white-space:pre}
+@media (max-width:640px){.backup-verify-state{align-items:flex-start;text-align:left}}
+.tg-state.is-off::before {background:#e07a5f}
+#databases .tg-actions {margin-top:14px}

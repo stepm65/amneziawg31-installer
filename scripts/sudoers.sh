@@ -16,7 +16,7 @@ AWG31_SUDO_COMMANDS=(
   backup-create backup-list backup-export backup-delete backup-policy
   backup-policy-set backup-check backup-restore
   audit audit-list password-change session-revoke obfuscation-generate
-  add-batch totp-enable totp-disable totp-recovery-new totp-recovery-use update-status update-start snapshot-delete account-set account-delete session-save passkey-add passkey-delete passkey-used telegram-status telegram-connect telegram-disconnect telegram-set telegram-test
+  add-batch totp-enable totp-disable totp-recovery-new totp-recovery-use update-status update-start snapshot-delete account-set account-delete session-save passkey-add passkey-delete passkey-used backup-verify db-status db-vacuum metrics metrics-set telegram-status telegram-connect telegram-disconnect telegram-set telegram-test
   backup-encryption backup-encryption-set backup-encryption-change backup-remote
   audit-search logging-status logging-set logs-read handshake-debug support-report
 )

@@ -239,6 +239,8 @@ def get_conn(create=False):
         con.execute('''CREATE TABLE IF NOT EXISTS client_traffic (
            client TEXT NOT NULL, hour INTEGER NOT NULL, rx INTEGER NOT NULL DEFAULT 0, tx INTEGER NOT NULL DEFAULT 0,
            PRIMARY KEY (client, hour))''')
+        # Housekeeping marks (0.27): when the file was last compacted.
+        con.execute('CREATE TABLE IF NOT EXISTS maintenance (key TEXT PRIMARY KEY, value TEXT NOT NULL)')
         con.commit()
     return con
 
@@ -1190,7 +1192,8 @@ def sample_usage(con, now=None, owners_blocked=None):
     watch = silence_watch(con, stats, rows, now)
     con.execute('INSERT INTO traffic_samples(measured_at,rx_delta,tx_delta) VALUES(?,?,?)',
                 (instant,rx_delta,tx_delta))
-    con.execute('DELETE FROM traffic_samples WHERE measured_at<?',(instant-32*86400,))
+    keep = logging_settings()
+    con.execute('DELETE FROM traffic_samples WHERE measured_at<?',(instant-keep['traffic_days']*86400,))
     track_sessions(con, moved, instant)
     hour = instant - instant % 3600
     for name, (_, delta_r, delta_t) in moved.items():
@@ -1199,8 +1202,9 @@ def sample_usage(con, now=None, owners_blocked=None):
                            ON CONFLICT(client, hour) DO UPDATE SET rx=rx+excluded.rx, tx=tx+excluded.tx''',
                         (name, hour, delta_r, delta_t))
     if instant % 3600 < 120:                              # about once an hour is enough
-        con.execute('DELETE FROM client_traffic WHERE hour<?', (hour - CLIENT_TRAFFIC_DAYS * 86400,))
+        con.execute('DELETE FROM client_traffic WHERE hour<?', (hour - keep['client_traffic_days'] * 86400,))
     con.commit()
+    vacuum_due(con, instant)
     return {'ok':True,'rx_delta':rx_delta,'tx_delta':tx_delta,'disabled':changed,'enabled':revived,'rotated':rotated,'watch':watch,
             'owner_usage':owner_usage,'owner_disabled':owner_off,'owner_enabled':owner_on}
 
@@ -2143,11 +2147,15 @@ def settings_update(con):
 def logging_settings():
     try: data = json.loads(LOGGING.read_text())
     except (OSError, ValueError): data = {}
-    result = {'history': False, 'retention_days': 30, 'masking': 'partial'}
+    result = {'history': False, 'retention_days': 30, 'masking': 'partial',
+              'traffic_days': TRAFFIC_DAYS, 'client_traffic_days': CLIENT_TRAFFIC_DAYS}
     if isinstance(data, dict):
         result['history'] = bool(data.get('history', False))
         try: result['retention_days'] = min(365, max(1, int(data.get('retention_days', 30))))
         except (TypeError, ValueError): pass
+        for key in ('traffic_days', 'client_traffic_days'):
+            try: result[key] = min(RETENTION_MAX, max(RETENTION_MIN, int(data.get(key, result[key]))))
+            except (TypeError, ValueError): pass
         if data.get('masking') in ('none', 'partial', 'full'): result['masking'] = data['masking']
     return result
 
@@ -2201,6 +2209,73 @@ def track_sessions(con, moved, instant):
 
 
 CLIENT_TRAFFIC_DAYS = 62
+TRAFFIC_DAYS = 32                  # the server graph, one point a minute
+RETENTION_MIN, RETENTION_MAX = 7, 730
+VACUUM_EVERY = 7 * 86400
+
+
+def file_size(path):
+    try: return Path(path).stat().st_size
+    except OSError: return 0
+
+
+def vacuum(con, instant=None):
+    """Give the space of deleted history back to the disk. VACUUM cannot run inside a transaction."""
+    instant = int(instant or _time.time())
+    before = file_size(DB)
+    con.commit()
+    level, con.isolation_level = con.isolation_level, None
+    try:
+        con.execute('PRAGMA optimize')
+        con.execute('VACUUM')
+    finally:
+        con.isolation_level = level
+    con.execute('INSERT INTO maintenance(key, value) VALUES(?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value',
+                ('vacuumed_at', str(instant)))
+    con.commit()
+    return {'ok': True, 'before': before, 'after': file_size(DB), 'vacuumed_at': instant}
+
+
+def vacuumed_at(con):
+    row = con.execute("SELECT value FROM maintenance WHERE key='vacuumed_at'").fetchone()
+    try: return int(row[0]) if row else 0
+    except (TypeError, ValueError): return 0
+
+
+def vacuum_due(con, instant):
+    """Once a week, at a quiet minute (03:xx UTC) when one is reached, else after eight days."""
+    last = vacuumed_at(con)
+    if not last:
+        con.execute("INSERT OR IGNORE INTO maintenance(key, value) VALUES('vacuumed_at', ?)", (str(int(instant)),))
+        con.commit(); return None
+    age = instant - last
+    if age >= VACUUM_EVERY and (_time.gmtime(instant).tm_hour == 3 or age >= VACUUM_EVERY + 86400):
+        try: return vacuum(con, instant)
+        except sqlite3.Error: return None
+    return None
+
+
+def metrics_snapshot(con):
+    """What /metrics shows (0.27): cheap numbers only, no keys and no configurations."""
+    cfg = get_settings(con)
+    stats = live_stats()
+    clients = []
+    for p in peer_rows(con):
+        live = stats.get(p['public_key']) or {'handshake': p['last_handshake'], 'received': p['last_rx'], 'sent': p['last_tx']}
+        clients.append({'name': p['name'], 'enabled': bool(p['enabled']), 'used': int(p.get('used_bytes') or 0),
+                        'limit': int(p.get('traffic_limit_bytes') or 0), 'handshake': int(live.get('handshake') or 0),
+                        'received': int(live.get('received') or 0), 'sent': int(live.get('sent') or 0),
+                        'group': p.get('group_name') or ''})
+    running = subprocess.run(['ip', 'link', 'show', IFACE], capture_output=True).returncode == 0
+    return {'interface': IFACE, 'running': running, 'port': int(cfg['port']), 'clients': clients}
+
+
+def db_maintain(con):
+    request = read_json()
+    if request.get('vacuum'): return vacuum(con)
+    counts = {table: con.execute(f'SELECT COUNT(*) FROM {table}').fetchone()[0]
+              for table in ('traffic_samples', 'client_traffic', 'sessions')}
+    return {'ok': True, 'size': file_size(DB), 'vacuumed_at': vacuumed_at(con), 'rows': counts}
 CLIENT_WINDOWS = {'24h': (24 * 3600, 3600), '7d': (7 * 86400, 6 * 3600), '30d': (30 * 86400, 86400)}
 
 
@@ -2294,7 +2369,7 @@ def main():
                                                     'client-rekey','client-batch','client-invite','invite-redeem',
                                                     'sub-token','sub-fetch','rotate','rotate-schedule','mask-apply','probe',
                                                     'client-export','client-import','watch-set','owner-sync','import-batch','client-history',
-                                                    'once-link','once-fetch'):
+                                                    'once-link','once-fetch','db-maintain','metrics'):
         raise ValueError('Неподдерживаемая команда')
     LOCK.parent.mkdir(parents=True, exist_ok=True)
     if sys.argv[1] == 'probe':
@@ -2344,6 +2419,8 @@ def main():
                 elif op == 'client-history': result = client_history(con)
                 elif op == 'once-link': result = once_link(con)
                 elif op == 'once-fetch': result = once_fetch(con)
+                elif op == 'db-maintain': result = db_maintain(con)
+                elif op == 'metrics': result = metrics_snapshot(con)
                 elif op == 'settings': result = settings_update(con)
                 elif op == 'delete-batch': result = clients_delete_batch(con)
                 else: result = clients_action(con, op)

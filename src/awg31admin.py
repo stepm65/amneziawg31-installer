@@ -13,6 +13,7 @@ import shutil
 import pwd
 import sqlite3
 import subprocess
+import sys
 import tarfile
 import tempfile
 import time
@@ -34,7 +35,8 @@ VALID_AUDIT = {'login_success', 'login_failed', 'password_changed', 'client_adde
                'client_moved', 'server_silent', 'server_back',
                'owner_created', 'owner_changed', 'owner_deleted', 'owner_blocked', 'owner_unblocked', 'clients_imported',
                'snapshot_deleted', 'account_created', 'account_changed', 'account_deleted', 'session_ended',
-               'passkey_added', 'passkey_deleted'}
+               'passkey_added', 'passkey_deleted', 'backup_verified', 'backup_verify_failed', 'databases_compacted',
+               'metrics_changed'}
 ACCOUNT_RE=re.compile(r'^[a-z][a-z0-9_.-]{1,31}$')
 ROLES=('admin','viewer')
 MAX_ACCOUNTS=20
@@ -194,7 +196,9 @@ def auth_file():
     return Path(os.environ.get('AWG31_AUTH', '/etc/awg31-panel/auth.json'))
 
 
-BACKUP_POLICY_DEFAULT = {'frequency': 'off', 'hour': 3, 'minute': 0, 'weekday': 0, 'retention_days': 30, 'max_copies': 20}
+BACKUP_POLICY_DEFAULT = {'frequency': 'off', 'hour': 3, 'minute': 0, 'weekday': 0, 'retention_days': 30, 'max_copies': 20,
+                         'verify': 'weekly'}
+BACKUP_LIMIT = 20 * 1024 * 1024
 
 
 def policy_path():
@@ -207,9 +211,12 @@ def timer_path():
 
 def _policy_values(data):
     allowed = set(BACKUP_POLICY_DEFAULT)
+    data = {'verify': BACKUP_POLICY_DEFAULT['verify'], **data}      # policies saved before 0.27 have no 'verify'
     if set(data) != allowed: raise ValueError('Invalid backup policy fields')
     frequency = str(data['frequency'])
     if frequency not in ('off', 'daily', 'weekly'): raise ValueError('Invalid backup frequency')
+    verify = str(data['verify'])
+    if verify not in VERIFY_MODES: raise ValueError('Invalid backup check mode')
     nums = {}
     for name, low, high in [('hour', 0, 23), ('minute', 0, 59), ('weekday', 0, 6),
                              ('retention_days', 1, 365), ('max_copies', 1, 30)]:
@@ -217,7 +224,7 @@ def _policy_values(data):
         if isinstance(value, bool) or not str(value).isdecimal(): raise ValueError(f'Invalid {name}')
         nums[name] = int(value)
         if not low <= nums[name] <= high: raise ValueError(f'Invalid {name}')
-    return {'frequency': frequency, **nums}
+    return {'frequency': frequency, **nums, 'verify': verify}
 
 
 def backup_policy():
@@ -754,7 +761,7 @@ TELEGRAM_EVENTS={
     'client_auto':'clients','client_expiring':'clients','client_quota':'clients',
     'login':'security','login_failed':'security','password':'security','owner_export':'security',
     'totp_recovery':'security','invite':'clients','owner_limit':'clients','update':'server','rotation':'server','blocking':'server',
-    'backup_created':'backups','backup_failed':'backups','upload_failed':'backups',
+    'backup_created':'backups','backup_failed':'backups','upload_failed':'backups','verify_failed':'backups',
     'cpu':'system','memory':'system','disk':'system',
 }
 TELEGRAM_THRESHOLDS={'cpu':90,'memory':90,'disk':90}
@@ -1422,6 +1429,205 @@ def after_backup(result):
     return result
 
 
+# ------------------------------------------------------------------ database housekeeping (0.27)
+def db_status(manager):
+    """Size of every database and when it was last compacted."""
+    items=[]
+    for iface in manager.interfaces():
+        try: row=manager.child(iface,'db-maintain',{})
+        except (RuntimeError,ValueError,OSError) as exc: row={'error':str(exc)[:120]}
+        items.append({'name':iface,**{k:row.get(k) for k in ('size','vacuumed_at','rows','error') if k in row}})
+    path=owners_db()
+    if path.exists(): items.append({'name':'owners','size':path.stat().st_size,'vacuumed_at':_owners_vacuumed()})
+    return {'databases':items}
+
+
+def _owners_vacuumed():
+    stamp=base_dir()/'owners.vacuumed'
+    try: return int(stamp.read_text().strip() or 0)
+    except (OSError,ValueError): return 0
+
+
+def db_vacuum(manager):
+    """Compact every database now (the sampler also does it once a week by itself)."""
+    results=[]
+    for iface in manager.interfaces():
+        try: row=manager.child(iface,'db-maintain',{'vacuum':True})
+        except (RuntimeError,ValueError,OSError) as exc: row={'error':str(exc)[:120]}
+        results.append({'name':iface,**row})
+    path=owners_db()
+    if path.exists():
+        before=path.stat().st_size
+        with _OwnersLock():
+            con=sqlite3.connect(path,timeout=20,isolation_level=None)
+            try: con.execute('VACUUM')
+            finally: con.close()
+        now=int(time.time())
+        (base_dir()/'owners.vacuumed').write_text(str(now))
+        results.append({'name':'owners','before':before,'after':path.stat().st_size,'vacuumed_at':now})
+    freed=sum(max(0,int(r.get('before') or 0)-int(r.get('after') or 0)) for r in results)
+    audit({'event':'databases_compacted','target':f'{len(results)} files, {freed//1024} KiB freed'})
+    return {'ok':True,'databases':results,'freed':freed}
+
+
+# ------------------------------------------------------------------ backup verification (0.27)
+RESTORE_TOOL=Path(os.environ.get('AWG31_RESTORE_TOOL','/usr/local/libexec/awg31/scripts/restore-backup.py'))
+VERIFY_MODES=('off','weekly','each')
+
+
+def verify_file():
+    return Path(os.environ.get('AWG31_BACKUP_VERIFY',str(backup_dir().parent/'verify.json')))
+
+
+def verify_state():
+    try: data=json.loads(verify_file().read_text())
+    except (OSError,ValueError): return {}
+    return data if isinstance(data,dict) else {}
+
+
+def _s3_get(remote,name):
+    import urllib.error,urllib.parse,urllib.request
+    host=urllib.parse.urlsplit(remote['endpoint']).netloc
+    path='/'+remote['bucket']+'/'+urllib.parse.quote(remote.get('prefix','')+name,safe='/-_.~')
+    amz_date=datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')
+    payload_hash=hashlib.sha256(b'').hexdigest()
+    headers={'Host':host,'x-amz-content-sha256':payload_hash,'x-amz-date':amz_date}
+    headers['Authorization']=s3_authorization('GET',host,path,headers,payload_hash,remote['region'],
+                                              remote['access_key'],remote['secret_key'],amz_date)
+    request=urllib.request.Request(remote['endpoint']+path,method='GET',headers=headers)
+    try:
+        with urllib.request.urlopen(request,timeout=60) as reply:
+            body=reply.read(BACKUP_LIMIT+1)
+    except urllib.error.HTTPError as exc:
+        if exc.code==404: return None
+        raise ValueError(f'S3 answered {exc.code}') from None
+    except (urllib.error.URLError,OSError) as exc:
+        raise ValueError(f'S3 is unreachable: {getattr(exc,"reason",exc)}'[:150]) from None
+    if len(body)>BACKUP_LIMIT: raise ValueError('The stored copy is too large')
+    return body
+
+
+def _sftp_get(remote,name):
+    base=remote_file()
+    with tempfile.TemporaryDirectory(prefix='awg31-verify-') as tmp:
+        target=Path(tmp)/'copy'
+        batch=f'get "{remote["path"].rstrip("/")}/{name}" "{target}"\n'
+        cp=subprocess.run(['sftp','-q','-b','-','-i',str(base.with_name('backup-remote.key')),'-P',str(remote['port']),
+                           '-o','BatchMode=yes','-o','IdentitiesOnly=yes','-o','ConnectTimeout=15',
+                           '-o','StrictHostKeyChecking=accept-new','-o',f'UserKnownHostsFile={base.with_name("backup-remote.known_hosts")}',
+                           f'{remote["user"]}@{remote["host"]}'],input=batch,capture_output=True,text=True,timeout=75,check=False)
+        if cp.returncode:
+            text=(cp.stderr or cp.stdout)
+            if 'not found' in text.lower() or 'no such file' in text.lower(): return None
+            lines=[l for l in text.strip().splitlines() if l.strip()]
+            raise ValueError('SFTP failed: '+(lines[-1] if lines else 'unknown error')[:150])
+        if target.stat().st_size>BACKUP_LIMIT: raise ValueError('The stored copy is too large')
+        return target.read_bytes()
+
+
+def _remote_compare(name, local):
+    """Download the stored copy and compare it byte for byte: 'ok', 'missing', 'mismatch' or 'skipped'."""
+    remote=_remote()
+    if not remote or not name.endswith('.gpg'): return 'skipped'
+    body=_s3_get(remote,name) if remote['type']=='s3' else _sftp_get(remote,name)
+    if body is None: return 'missing'
+    return 'ok' if hashlib.sha256(body).digest()==hashlib.sha256(local.read_bytes()).digest() else 'mismatch'
+
+
+def verify_backup(data=None):
+    """Open the newest (or the named) backup like a restore would, and check the stored copy too."""
+    data=data or {}
+    name=str(data.get('name') or '')
+    if not name:
+        backups=list_backups().get('backups') or []
+        if not backups: raise ValueError('There is no backup to check')
+        name=backups[0]['name']
+    if not VALID_BACKUP.fullmatch(name): raise ValueError('Invalid backup name')
+    local=backup_dir()/name
+    state={'checked_at':int(time.time()),'name':name,'local':'failed','remote':'skipped','ok':False,'error':''}
+    try:
+        cp=subprocess.run([sys.executable,str(RESTORE_TOOL),'--check',name],capture_output=True,text=True,timeout=60,check=False)
+        if cp.returncode: raise ValueError((cp.stderr or cp.stdout).strip().replace('ERROR: ','')[-160:] or 'the check failed')
+        state['local']='ok'
+        state['remote']=_remote_compare(name,local)
+        if state['remote'] in ('missing','mismatch'): raise ValueError(f'the copy in the remote storage is {state["remote"]}')
+        state['ok']=True
+    except (ValueError,OSError,subprocess.TimeoutExpired) as exc:
+        state['error']=''.join(c for c in str(exc) if ord(c)>=32)[:160]
+    _atomic_private_file(verify_file(),json.dumps(state)+'\n',mode=0o644)
+    if state['ok']: audit({'event':'backup_verified','target':f"{name} (remote {state['remote']})"[:120]})
+    else: audit({'event':'backup_verify_failed','target':f"{name}: {state['error']}"[:120]})
+    return state
+
+
+def verify_after_backup(result):
+    """After a scheduled backup: check it, every time or once a week as the policy says. Never raises."""
+    mode=backup_policy().get('verify','weekly')
+    if mode=='off' or not result.get('name'): return result
+    last=int(verify_state().get('checked_at') or 0)
+    if mode=='weekly' and time.time()-last<6.5*86400: return result
+    try: result['verified']=verify_backup({'name':result['name']})
+    except (ValueError,OSError) as exc: result['verified']={'ok':False,'error':str(exc)[:120]}
+    return result
+
+
+# ------------------------------------------------------------------ Prometheus metrics (0.27)
+def metrics_file():
+    return Path(os.environ.get('AWG31_METRICS','/etc/awg31-panel/metrics.json'))
+
+
+def metrics_settings():
+    try: data=json.loads(metrics_file().read_text())
+    except (OSError,ValueError): data={}
+    if not isinstance(data,dict): data={}
+    return {'enabled':bool(data.get('enabled')),'per_client':data.get('per_client',True) is not False,
+            'token_hash':str(data.get('token_hash','')),'created':str(data.get('created',''))}
+
+
+def metrics_set(data):
+    """Turn /metrics on or off. The bearer token is shown once; only its hash is stored, readable by the panel."""
+    require_panel_password(data)
+    current=metrics_settings()
+    settings={'enabled':bool(data.get('enabled')),'per_client':bool(data.get('per_client',True)),
+              'token_hash':current['token_hash'],'created':current['created']}
+    token=''
+    if settings['enabled'] and (data.get('regenerate') or not settings['token_hash']):
+        token=secrets.token_urlsafe(32)
+        settings['token_hash']=hashlib.sha256(token.encode()).hexdigest()
+        settings['created']=datetime.now(timezone.utc).isoformat(timespec='seconds')
+    path=metrics_file()
+    _atomic_private_file(path,json.dumps(settings)+'\n',mode=0o640)
+    try:
+        owner=auth_file().stat()
+        os.chown(path,0,owner.st_gid)            # the same group as auth.json: the panel reads it
+    except OSError: pass
+    audit({'event':'metrics_changed','target':('on' if settings['enabled'] else 'off')+(', per client' if settings['per_client'] else '')
+           +(', new token' if token else '')})
+    return {'ok':True,'enabled':settings['enabled'],'per_client':settings['per_client'],'token':token}
+
+
+def metrics_collect(manager):
+    """Numbers for /metrics in one call: servers, clients, backups."""
+    settings=metrics_settings()
+    servers=[]
+    for iface in manager.interfaces():
+        try: snap=manager.child(iface,'metrics',{})
+        except (RuntimeError,ValueError,OSError):
+            snap={'interface':iface,'running':False,'error':True,'clients':[]}
+        if not settings['per_client']:
+            snap={**snap,'per_client':False}
+        servers.append(snap)
+    backups=list_backups().get('backups') or []
+    last=0
+    if backups:
+        try: last=int(datetime.strptime(backups[0]['created_at'],'%Y%m%dT%H%M%SZ').replace(tzinfo=timezone.utc).timestamp())
+        except ValueError: last=0
+    state=verify_state()
+    return {'servers':servers,'per_client':settings['per_client'],
+            'backups':{'count':len(backups),'last':last,'verified_at':int(state.get('checked_at') or 0),
+                       'verify_ok':bool(state.get('ok')) if state else None}}
+
+
 def _check_new_password(new):
     if len(new)<12 or len(new)>256: raise ValueError('Password must be 12-256 characters')
 
@@ -1586,7 +1792,8 @@ def next_kernel_state():
 
 # ------------------------------------------------------------------ logging: settings and IP masking
 # The same settings file and masking rules as in awg31ctl (a test keeps the two equal).
-LOGGING_DEFAULTS={'history':False,'retention_days':30,'masking':'partial'}
+LOGGING_DEFAULTS={'history':False,'retention_days':30,'masking':'partial','traffic_days':32,'client_traffic_days':62}
+RETENTION_RANGE=(7,730)
 MASK_MODES=('none','partial','full')
 _IPV4=re.compile(r'(?<![0-9.])(?:[0-9]{1,3}\.){3}[0-9]{1,3}(?![0-9.])')
 _IPV6=re.compile(r'(?<![0-9A-Fa-f:])(?:[0-9A-Fa-f]{0,4}:){2,7}[0-9A-Fa-f]{0,4}(?![0-9A-Fa-f:])')
@@ -1609,6 +1816,9 @@ def logging_settings():
         try: result['retention_days']=min(365,max(1,int(data.get('retention_days',30))))
         except (TypeError,ValueError): pass
         if data.get('masking') in MASK_MODES: result['masking']=data['masking']
+        for key in ('traffic_days','client_traffic_days'):
+            try: result[key]=min(RETENTION_RANGE[1],max(RETENTION_RANGE[0],int(data.get(key,result[key]))))
+            except (TypeError,ValueError): pass
     return result
 
 
@@ -1662,12 +1872,18 @@ def logging_set(data):
     if not 1<=retention<=365: raise ValueError('History: keep it from 1 to 365 days')
     masking=str(data.get('masking',current['masking']))
     if masking not in MASK_MODES: raise ValueError('Address masking: none, partial or full')
-    settings={'history':history,'retention_days':retention,'masking':masking}
+    keep={}
+    for key in ('traffic_days','client_traffic_days'):
+        try: keep[key]=int(data.get(key,current[key]))
+        except (TypeError,ValueError): raise ValueError('Traffic history: keep it from 7 to 730 days') from None
+        if not RETENTION_RANGE[0]<=keep[key]<=RETENTION_RANGE[1]: raise ValueError('Traffic history: keep it from 7 to 730 days')
+    settings={'history':history,'retention_days':retention,'masking':masking,**keep}
     path=logging_file(); path.parent.mkdir(parents=True,exist_ok=True)
     _atomic_private_file(path,json.dumps(settings,indent=1)+'\n',mode=0o644)
     if masking=='full': mask_key()
     if settings!=current:
-        audit({'event':'logging_changed','target':f"history {'on' if history else 'off'}, {retention}d, masking {masking}"})
+        audit({'event':'logging_changed','target':f"history {'on' if history else 'off'}, {retention}d, masking {masking}, "
+                                                 f"traffic {keep['traffic_days']}d/{keep['client_traffic_days']}d"})
     return {'ok':True,'settings':settings}
 
 

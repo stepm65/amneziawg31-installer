@@ -472,6 +472,29 @@ panel_call passkey-used '{"id": "'"$passkey_id"'", "count": 3}' | grep -q '^0 ' 
 panel_call passkey-delete '{"id": "'"$passkey_id"'"}' | grep -q '^0 ' || fail 'the panel cannot delete a passkey'
 [[ -f /opt/awg31-panel/awg31webauthn.py ]] || fail 'the passkey module is not installed'
 
+step '0.27: backup check, databases, metrics'
+panel_call backup-create '{}' | grep -q '^0 ' || fail 'the panel cannot make a backup'
+panel_call backup-verify '{}' | grep -q '"ok": true' || fail 'the newest backup does not pass its check'
+[[ -f /var/backups/awg31-panel/verify.json ]] || fail 'the backup check left no record'
+grep '"backup_verified"' /var/log/awg31-panel/audit.jsonl | grep -q . || fail 'the backup check is not audited'
+panel_call db-status '{}' | grep -q '"name": "awg0"' || fail 'database status is missing'
+panel_call db-vacuum '{}' | grep -q '^0 {"ok": true' || fail 'databases were not compacted'
+python3 -c 'import sqlite3; v=sqlite3.connect("/var/lib/awg31-panel/state.sqlite3").execute("SELECT value FROM maintenance WHERE key=?", ("vacuumed_at",)).fetchone(); assert v and v[0].isdigit()' || fail 'compaction time not stored'
+reply="$(PW="$panel_password" python3 -c 'import json,os; print(json.dumps({"enabled": True, "per_client": True, "password": os.environ["PW"], "_actor": "admin"}))')"
+metrics_token="$(panel_call metrics-set "$reply" | sed 's/^0 //' | python3 -c 'import json,sys; print(json.load(sys.stdin)["token"])')"
+[[ -n "$metrics_token" ]] || fail 'no metrics token'
+[[ "$(stat -c '%U:%G %a' /etc/awg31-panel/metrics.json)" == 'root:awgpanel 640' ]] || fail 'metrics settings have wrong owner or mode'
+if grep -qF "$metrics_token" /etc/awg31-panel/metrics.json; then fail 'the metrics token is stored in clear'; fi
+[[ "$(curl --noproxy '*' -s -o /dev/null -w '%{http_code}' http://127.0.0.1:18081/metrics)" == 401 ]] || fail 'metrics answer without a token'
+curl --noproxy '*' -fsS -H "Authorization: Bearer $metrics_token" http://127.0.0.1:18081/metrics >/tmp/awg31-metrics || fail 'metrics do not answer'
+grep -q '^awg31_server_up{server="awg0"} 1$' /tmp/awg31-metrics || fail 'awg0 is not up in the metrics'
+grep -q '^awg31_client_enabled{server="awg0",client=' /tmp/awg31-metrics || fail 'no per-client metrics'
+grep -q '^awg31_backup_verify_ok 1$' /tmp/awg31-metrics || fail 'the backup check is not in the metrics'
+if grep -q 'PrivateKey' /tmp/awg31-metrics; then fail 'a key leaked into the metrics'; fi
+reply="$(PW="$panel_password" python3 -c 'import json,os; print(json.dumps({"enabled": False, "password": os.environ["PW"], "_actor": "admin"}))')"
+panel_call metrics-set "$reply" | grep -q '^0 ' || fail 'metrics cannot be turned off'
+[[ "$(curl --noproxy '*' -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $metrics_token" http://127.0.0.1:18081/metrics)" == 404 ]] || fail 'metrics still answer when off'
+
 step 'Backups are uploaded over SFTP'
 if systemctl is-active --quiet ssh || systemctl is-active --quiet sshd; then
     id awgbackup >/dev/null 2>&1 || useradd -m -s /bin/bash awgbackup

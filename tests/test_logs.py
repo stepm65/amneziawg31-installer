@@ -57,17 +57,18 @@ def test_controller_and_admin_mask_the_same_way(logs, monkeypatch):
     assert ctl.mask_endpoint('', 'partial') == '' and ctl.mask_endpoint('(none)', 'full') == ''
     monkeypatch.setattr(ctl, 'LOGGING', tmp / 'etc/logging.json')
     module.logging_set({'history': True, 'retention_days': 7, 'masking': 'full'})
-    assert ctl.logging_settings() == module.logging_settings() == {'history': True, 'retention_days': 7, 'masking': 'full'}
+    assert ctl.logging_settings() == module.logging_settings() == {'history': True, 'retention_days': 7, 'masking': 'full',
+                                                                    'traffic_days': 32, 'client_traffic_days': 62}
 
 
 def test_logging_settings_are_checked_and_audited(logs):
     module, tmp = logs
-    assert module.logging_settings() == {'history': False, 'retention_days': 30, 'masking': 'partial'}
+    assert module.logging_settings() == {'history': False, 'retention_days': 30, 'masking': 'partial', 'traffic_days': 32, 'client_traffic_days': 62}
     for bad in ({'retention_days': 0}, {'retention_days': 400}, {'retention_days': 'x'}, {'masking': 'some'}):
         with pytest.raises(ValueError):
             module.logging_set(bad)
     module.logging_set({'history': True, 'retention_days': '14', 'masking': 'none'})
-    assert json.loads((tmp / 'etc/logging.json').read_text()) == {'history': True, 'retention_days': 14, 'masking': 'none'}
+    assert json.loads((tmp / 'etc/logging.json').read_text()) == {'history': True, 'retention_days': 14, 'masking': 'none', 'traffic_days': 32, 'client_traffic_days': 62}
     assert 'logging_changed' in (tmp / 'audit.jsonl').read_text()
 
 
@@ -327,7 +328,7 @@ def test_panel_logs_pages(monkeypatch, tmp_path):
     assert text.headers['content-type'].startswith('text/plain') and 'attachment; filename="awg31-kernel-' in text.headers['content-disposition']
     token = __import__('re').search(r'name="csrf" value="([^"]+)"', page.text).group(1)
     client.post('/maintenance/logs/settings', data={'csrf': token, 'history': '1', 'retention_days': '7', 'masking': 'full'})
-    assert ('logging-set', {'history': True, 'retention_days': '7', 'masking': 'full'}) in calls
+    assert ('logging-set', {'history': True, 'retention_days': '7', 'masking': 'full', 'traffic_days': '32', 'client_traffic_days': '62'}) in calls
     client.post('/maintenance/logs/debug', data={'csrf': token, 'enable': '1'})
     assert ('handshake-debug', {'enable': True}) in calls
     archive = client.post('/maintenance/logs/report', data={'csrf': token})

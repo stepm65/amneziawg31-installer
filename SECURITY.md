@@ -34,6 +34,12 @@ A valid panel session is not enough for changes that outlive it. The panel passw
 - Handshake debug writes to `/sys/kernel/debug/dynamic_debug/control` and schedules a systemd timer that switches it off after 15 minutes, so it cannot be left on by accident.
 - The support report removes keys (`[key]`), Telegram tokens (`[token]`), `PrivateKey`/`PresharedKey`/`PublicKey`/`HeaderProtectionKey`/`Endpoint` lines and public addresses (always fully masked). It is generated on request and not stored on the server.
 
+## Metrics and backup checks (0.27)
+
+- `/metrics` is off by default. When on, it needs `Authorization: Bearer <token>`; the 256-bit token is shown once and only its sha256 is kept in `/etc/awg31-panel/metrics.json` (root:awgpanel 640), compared in constant time. Off → 404, wrong token → 401 and the same per-address rate limit as subscriptions. Turning it on, off or regenerating the token needs the panel password and an administrator account, and is audited. The output has no keys, configurations or addresses; client names appear only with per-client metrics on.
+- A backup check runs the same validation as a restore (`restore-backup.py --check`) as root and, with a remote storage, downloads the copy and compares sha256 with the local file. The SFTP download uses the host key remembered at the first upload. Results go to `/var/backups/awg31-panel/verify.json` (no secrets) and the audit log; a failure is a Telegram event.
+- Database compaction (`VACUUM`) runs under the controller lock; it changes no data.
+
 ## Passkeys (0.25)
 
 - WebAuthn with user verification required (`uv`), resident keys, `none` attestation, ES256 and RS256. The panel checks the challenge (random 32 bytes, one use, 5 minutes, kept in the signed session cookie), the ceremony type, the origin (must equal the browser's `Origin`, HTTPS or `http://localhost`), the rpId hash (the host name the panel was opened with; IP addresses are refused), the user-presence and user-verification flags, the signature, and that the signature counter grows when the authenticator keeps one.

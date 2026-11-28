@@ -34,7 +34,8 @@ ADMIN = {'servers', 'server-create', 'client-move', 'server-start', 'server-stop
          'backup-encryption','backup-encryption-set','backup-export-encrypted',
          'backup-encryption-change','backup-remote','backup-remote-set','backup-remote-test',
          'audit-search','logging-status','logging-set','logs-read','handshake-debug','support-report',
-         'owners','owner-set','owner-delete','owner-device-add','clients-import','snapshot-delete','account-set','account-delete','session-save','passkey-add','passkey-delete','passkey-used'}
+         'owners','owner-set','owner-delete','owner-device-add','clients-import','snapshot-delete','account-set','account-delete','session-save','passkey-add','passkey-delete','passkey-used',
+         'backup-verify','db-status','db-vacuum','metrics','metrics-set'}
 # Ops that may give a client an owner, and ops that must know which owners are blocked.
 OWNER_OPS = {'add', 'client-policy', 'client-batch'}
 BLOCK_AWARE = {'enable', 'client-batch'}
@@ -234,14 +235,19 @@ def main():
     if op=='password-reset': return admin.password_reset(data)
     if op=='backup-create': return admin.after_backup(admin.create_backup(sys.modules[__name__]))
     if op=='backup-run':
-        try: return admin.after_backup(admin.scheduled_backup(sys.modules[__name__]))
+        try: return admin.verify_after_backup(admin.after_backup(admin.scheduled_backup(sys.modules[__name__])))
         except (OSError,RuntimeError,ValueError,sqlite3.Error) as exc:
             # The schedule runs unattended: leave a trace the panel and the bot can show.
             reason=''.join(c for c in str(exc) if ord(c)>=32)[:110]
             try: admin.audit({'event':'backup_failed','target':reason})
             except (OSError,ValueError): pass
             raise
-    if op=='backup-policy': return {'policy': admin.backup_policy()}
+    if op=='backup-policy': return {'policy': admin.backup_policy(), 'verify': admin.verify_state()}
+    if op=='backup-verify': return admin.verify_backup(data)
+    if op=='db-status': return admin.db_status(sys.modules[__name__])
+    if op=='db-vacuum': return admin.db_vacuum(sys.modules[__name__])
+    if op=='metrics': return admin.metrics_collect(sys.modules[__name__])
+    if op=='metrics-set': return admin.metrics_set(data)
     if op=='backup-policy-set': return admin.save_backup_policy(data)
     if op=='backup-delete': return admin.delete_backup(data)
     if op=='backup-list': return admin.list_backups()

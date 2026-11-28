@@ -120,7 +120,7 @@ def test_backup_selection_delete_schedule_and_csrf(ui):
     assert c.post('/maintenance/backup/delete',data={'csrf':good,'name':'../bad'}).status_code==400
     deletion=c.post('/maintenance/backup/delete',data={'csrf':good,'name':archive},follow_redirects=False)
     assert deletion.status_code==303 and ('backup-delete',{'name':archive}) in calls
-    policy_data={'csrf':good,'frequency':'weekly','hour':'4','minute':'30','weekday':'2','retention_days':'90','max_copies':'8'}
+    policy_data={'csrf':good,'frequency':'weekly','hour':'4','minute':'30','weekday':'2','retention_days':'90','max_copies':'8','verify':'each'}
     assert c.post('/maintenance/backup/policy',data=policy_data,follow_redirects=False).status_code==303
     assert ('backup-policy-set',{k:v for k,v in policy_data.items() if k!='csrf'}) in calls
     assert c.post('/maintenance/restore',data={'csrf':token(restore),'name':archive,'confirmation':'BAD'}).status_code==400
@@ -138,7 +138,7 @@ def test_admin_policy_and_safe_pruning(tmp_path,monkeypatch):
     monkeypatch.setenv('AWG31_BACKUP_POLICY',str(tmp_path/'policy.json'))
     monkeypatch.setenv('AWG31_BACKUP_TIMER',str(tmp_path/'awg31-backup.timer'))
     monkeypatch.setenv('AWG31_AUDIT',str(tmp_path/'audit.jsonl'))
-    before={'frequency':'weekly','hour':'3','minute':'15','weekday':'1','retention_days':'7','max_copies':'2'}
+    before={'frequency':'weekly','hour':'3','minute':'15','weekday':'1','retention_days':'7','max_copies':'2','verify':'weekly'}
     assert admin.save_backup_policy(before,apply=False)['ok']
     assert admin.backup_policy()=={**before,'hour':3,'minute':15,'weekday':1,'retention_days':7,'max_copies':2}
     assert 'Tue *-*-* 03:15:00 UTC' in (tmp_path/'awg31-backup.timer').read_text()
@@ -187,7 +187,7 @@ def test_policy_rolls_back_if_systemd_fails(tmp_path,monkeypatch):
     monkeypatch.setenv('AWG31_BACKUP_POLICY',str(tmp_path/'policy.json'))
     monkeypatch.setenv('AWG31_BACKUP_TIMER',str(tmp_path/'awg31-backup.timer'))
     monkeypatch.setenv('AWG31_AUDIT',str(tmp_path/'audit.jsonl'))
-    previous={'frequency':'off','hour':3,'minute':0,'weekday':0,'retention_days':30,'max_copies':20}
+    previous={'frequency':'off','hour':3,'minute':0,'weekday':0,'retention_days':30,'max_copies':20,'verify':'weekly'}
     admin.save_backup_policy(previous,apply=False)
     calls=[]
     def systemctl(args,**kwargs):

@@ -690,7 +690,7 @@ TG_EVENT_GROUPS = (
     ('server', 'server', ('server_state', 'module', 'kernel', 'panel', 'update', 'rotation', 'blocking')),
     ('clients', 'users', ('client_auto', 'client_expiring', 'client_quota', 'invite', 'owner_limit')),
     ('security', 'shield', ('login', 'login_failed', 'password', 'owner_export', 'totp_recovery')),
-    ('backups', 'archive', ('backup_created', 'backup_failed', 'upload_failed')),
+    ('backups', 'archive', ('backup_created', 'backup_failed', 'upload_failed', 'verify_failed')),
     ('system', 'cpu', ('cpu', 'memory', 'disk')),
 )
 TG_THRESHOLD_EVENTS = ('cpu', 'memory', 'disk')
@@ -698,7 +698,7 @@ TG_SCHEDULES = (('0 * * * *', 'tg_s_hourly'), ('0 */6 * * *', 'tg_s_6h'), ('0 */
                 ('0 9 * * *', 'tg_s_daily9'), ('0 21 * * *', 'tg_s_daily21'), ('0 9 * * 1', 'tg_s_weekly'))
 READ_ONLY_OPS = frozenset({'servers', 'list', 'owners', 'status', 'diagnostics', 'history', 'host-history', 'backup-list',
                            'backup-policy', 'backup-encryption', 'backup-remote', 'telegram-status', 'audit-list',
-                           'audit-search', 'logging-status', 'logs-read', 'sessions'})
+                           'audit-search', 'logging-status', 'logs-read', 'sessions', 'db-status', 'metrics'})
 _REQUEST_CACHE = contextvars.ContextVar('awg31_ctl_cache', default=None)
 
 
@@ -719,7 +719,7 @@ def ctl(command, data=None):
 
 
 def _ctl_call(command, data=None):
-    timeout = 200 if command == 'telegram-connect' else \
+    timeout = 200 if command in ('telegram-connect', 'backup-verify') else 120 if command == 'db-vacuum' else \
         90 if command in ('server-create','backup-create','backup-export','backup-restore','backup-check') else 35
     who = ACTOR.get()
     if who and isinstance(data, dict) and command not in READ_ONLY_OPS:
@@ -1837,6 +1837,7 @@ TEXT['ru'].update({
     'tg_e_client_quota':'Израсходовано 80% лимита', 'tg_e_login':'Вход в панель', 'tg_e_login_failed':'Неудачные попытки входа',
     'tg_e_password':'Смена пароля панели', 'tg_e_owner_export':'Владелец получил конфигурацию', 'tg_e_backup_created':'Копия создана',
     'tg_e_backup_failed':'Копия не создана', 'tg_e_upload_failed':'Не отправлена во внешнее хранилище',
+    'tg_e_verify_failed':'Проверка копии не пройдена',
     'tg_e_cpu':'Загрузка CPU выше', 'tg_e_memory':'Занятая память выше', 'tg_e_disk':'Заполнение диска выше',
     'tg_connect':'Подключить бота', 'tg_connect_hint':'Создайте бота у @BotFather и вставьте его токен.',
     'tg_admins_connect_hint':'Числовые Telegram ID через запятую (свой ID покажет @userinfobot). Оставьте пустым — тогда отправьте новому боту /start в личном чате, панель найдёт вас и попросит подтвердить.',
@@ -1915,6 +1916,7 @@ TEXT['en'].update({
     'tg_e_client_quota':'80% of the quota used', 'tg_e_login':'Sign-in to the panel', 'tg_e_login_failed':'Failed sign-in attempts',
     'tg_e_password':'Panel password changed', 'tg_e_owner_export':'Owner fetched the configuration', 'tg_e_backup_created':'Backup created',
     'tg_e_backup_failed':'Backup not created', 'tg_e_upload_failed':'Not sent to the remote storage',
+    'tg_e_verify_failed':'Backup check failed',
     'tg_e_cpu':'CPU load above', 'tg_e_memory':'Memory use above', 'tg_e_disk':'Disk use above',
     'tg_connect':'Connect the bot', 'tg_connect_hint':'Create a bot with @BotFather and paste its token.',
     'tg_admins_connect_hint':'Numeric Telegram IDs separated by commas (@userinfobot shows yours). Leave empty and send /start to the new bot in a private chat instead: the panel finds you and asks you to confirm.',
@@ -3952,6 +3954,7 @@ MAINTENANCE_TABS = (
     ('import', 'maint_import', 'users'),
     ('security', 'maint_security', 'lock'),
     ('accounts', 'maint_accounts', 'users'),
+    ('metrics', 'maint_metrics', 'activity'),
     ('telegram', 'maint_telegram', 'radio'),
     ('logs', 'maint_logs', 'logs'),
     ('audit', 'maint_audit', 'list'),
@@ -4009,7 +4012,7 @@ def maintenance(request: Request, tab: str = 'diagnostics'):
     info_key={
         'diagnostics':'maint_diagnostics_hint','backups':'maint_backups_hint','restore':'maint_restore_hint',
         'profiles':'maint_profile_hint','security':'maint_security_hint','audit':'maint_audit_hint','import':'maint_import_hint',
-        'accounts':'maint_accounts_hint',
+        'accounts':'maint_accounts_hint','metrics':'maint_metrics_hint',
         'telegram':'maint_telegram_hint','logs':'maint_logs_hint',
         'system':'maint_system_hint','update':'maint_update_hint'}
     section_title=next(t(label) for key,label,_ in MAINTENANCE_TABS if key==tab)
@@ -4056,7 +4059,8 @@ def maintenance(request: Request, tab: str = 'diagnostics'):
                 policy_reply=ctl('backup-policy',{})
                 remote=ctl('backup-remote',{})
                 policy=policy_reply.get('policy') or {'frequency':'off','hour':3,'minute':0,'weekday':0,
-                       'retention_days':30,'max_copies':20}
+                       'retention_days':30,'max_copies':20,'verify':'weekly'}
+                verify_card=backup_verify_card(request,t,policy_reply.get('verify') or {},bool(backups))
                 cards=''.join(f'''<article class="backup-item"><div class="backup-icon">{icon('archive',20)}</div>
                   <div class="backup-meta"><strong>{h(item['name'])}</strong><span>{h(item.get('created_at',''))} UTC · {h(human_size(item['size']))}</span></div>
                   <a class="btn btn-secondary btn-small" href="/maintenance/backup/{quote(item['name'],safe='')}">{icon('download',17)}{h(t('backup_download'))}</a>
@@ -4102,6 +4106,7 @@ def maintenance(request: Request, tab: str = 'diagnostics'):
                    </section>
 
                    <p class="info-line">{h(t('remote_on') + ' ' + str(remote.get('target','')) if remote.get('configured') else t('remote_off'))}</p>
+                  {verify_card}
                   <div class="backup-list">{cards or '<p class="empty-state">'+h(t('maint_no_backups'))+'</p>'}</div>
                   <section class="backup-policy-card"><div class="section-title"><h3>{icon('clock',20)}{h(t('backup_policy_title'))}</h3></div>
                    <p class="info-line">{h(t('backup_policy_note'))}</p>
@@ -4113,6 +4118,7 @@ def maintenance(request: Request, tab: str = 'diagnostics'):
                        <label class="field"><span>{h(t('backup_weekday'))}</span><select name="weekday">{weekday_opts}</select></label>
                        <label class="field"><span>{h(t('backup_keep_days'))}</span><input type="number" name="retention_days" min="1" max="365" value="{h(policy['retention_days'])}" required></label>
                        <label class="field"><span>{h(t('backup_keep_count'))}</span><input type="number" name="max_copies" min="1" max="30" value="{h(policy['max_copies'])}" required></label>
+                       <label class="field"><span>{h(t('bverify_mode'))}</span><select name="verify">{''.join(f'<option value="{x}"{" selected" if policy.get("verify","weekly")==x else ""}>{h(t("bverify_"+x))}</option>' for x in ('weekly','each','off'))}</select></label>
                      </div><button type="submit" class="btn btn-primary">{icon('check',16)}{h(t('backup_policy_save'))}</button>
                    </form></section>'''
             else:
@@ -4204,6 +4210,8 @@ def maintenance(request: Request, tab: str = 'diagnostics'):
             body+=passkeys_section(request,t,lang)+panel_sessions_section(request,t,lang)
         elif tab=='accounts':
             body+=accounts_tab(request,t,lang)
+        elif tab=='metrics':
+            body+=metrics_tab(request,t,lang)
         elif tab=='telegram':
             bot=ctl('telegram-status',{})
             sub='notify' if request.query_params.get('sub')=='notify' and bot.get('configured') else 'panel'
@@ -4349,7 +4357,7 @@ async def remove_backup(request: Request):
 @app.post('/maintenance/backup/policy')
 async def backup_schedule_update(request: Request):
     form=await request.form();require_csrf(request,form.get('csrf',''))
-    fields=('frequency','hour','minute','weekday','retention_days','max_copies')
+    fields=('frequency','hour','minute','weekday','retention_days','max_copies','verify')
     data={key: str(form.get(key,'')) for key in fields}
     try: ctl('backup-policy-set',data)
     except RuntimeError as exc: return error_page(request,tr(lang_of(request),'maintenance_error'),exc)
@@ -4653,6 +4661,10 @@ def logs_tab(request, t, lang):
           <div class="tg-row-control"><label class="tg-switch"><input type="checkbox" role="switch" name="history" value="1"{" checked" if settings.get('history') else ""} aria-label="{h(t('logs_history_on'))}"><span aria-hidden="true"></span></label></div></div>
         <div class="tg-row"><div class="tg-row-text"><strong>{h(t('logs_retention'))}</strong><small>{h(t('logs_retention_hint'))}</small></div>
           <div class="tg-row-control"><input type="number" name="retention_days" min="1" max="365" required value="{int(settings.get('retention_days', 30))}"></div></div>
+        <div class="tg-row"><div class="tg-row-text"><strong>{h(t('logs_traffic_days'))}</strong><small>{h(t('logs_traffic_days_hint'))}</small></div>
+          <div class="tg-row-control"><input type="number" name="traffic_days" min="7" max="730" required value="{int(settings.get('traffic_days', 32))}"></div></div>
+        <div class="tg-row"><div class="tg-row-text"><strong>{h(t('logs_client_days'))}</strong><small>{h(t('logs_client_days_hint'))}</small></div>
+          <div class="tg-row-control"><input type="number" name="client_traffic_days" min="7" max="730" required value="{int(settings.get('client_traffic_days', 62))}"></div></div>
         <div class="tg-row"><div class="tg-row-text"><strong>{h(t('logs_masking'))}</strong><small>{h(t('logs_masking_hint'))}</small></div>
           <div class="tg-row-control"><select name="masking">{options((('none', t('logs_mask_none')), ('partial', t('logs_mask_partial')), ('full', t('logs_mask_full'))), masking)}</select></div></div>
         <div class="tg-actions logs-save"><button class="btn btn-primary" type="submit">{icon('check', 16)}{h(t('logs_save'))}</button></div>
@@ -4678,7 +4690,7 @@ def logs_tab(request, t, lang):
       <form method="post" action="/maintenance/logs/report" class="tg-actions">{csrf(request)}
         <button class="btn btn-secondary" type="submit">{icon('download', 16)}{h(t('logs_report_button'))}</button></form>
     </section>'''
-    return f'<div class="logs-workspace">{viewer}{history_form}{debug_card}{report_card}</div>'
+    return f'<div class="logs-workspace">{viewer}{history_form}{database_card(request, t, lang)}{debug_card}{report_card}</div>'
 
 
 def audit_tab(request, t):
@@ -4969,7 +4981,9 @@ def logs_download(request: Request):
 async def logs_settings(request: Request):
     form = await request.form(); require_csrf(request, form.get('csrf', ''))
     try: ctl('logging-set', {'history': form.get('history') == '1', 'retention_days': str(form.get('retention_days', '30')),
-                             'masking': str(form.get('masking', 'partial'))})
+                             'masking': str(form.get('masking', 'partial')),
+                             'traffic_days': str(form.get('traffic_days', '32')),
+                             'client_traffic_days': str(form.get('client_traffic_days', '62'))})
     except RuntimeError as exc: return error_page(request, tr(lang_of(request), 'maintenance_error'), exc)
     return RedirectResponse('/maintenance?tab=logs', status_code=303)
 
@@ -6413,4 +6427,237 @@ TEXT['en'].update({
     'passkey_added': 'Added (UTC)', 'passkey_used': 'Last sign-in', 'passkey_never': 'not used yet',
     'passkey_delete': 'Delete', 'passkey_delete_confirm': 'Delete this passkey?', 'passkey_none': 'No passkeys.',
     'passkey_done_added': 'The passkey was added.', 'passkey_done_deleted': 'The passkey was deleted.',
+})
+
+
+# ------------------------------------------------------------------ 0.27: backup checks, databases, Prometheus metrics
+def backup_verify_card(request, t, state, has_backups):
+    if state.get('checked_at'):
+        when = utc_minute(int(state['checked_at']))
+        if state.get('ok'):
+            remote = {'ok': t('bverify_remote_ok'), 'skipped': t('bverify_remote_skipped')}.get(state.get('remote'), '')
+            line = (f'<span class="tg-state is-on">{h(t("bverify_ok").format(when=when))}</span>'
+                    f'<small>{h(state.get("name", ""))} · {h(remote)}</small>')
+        else:
+            line = (f'<span class="tg-state is-off">{h(t("bverify_failed").format(when=when))}</span>'
+                    f'<small>{h(state.get("name", ""))}: {h(state.get("error", ""))}</small>')
+    else:
+        line = f'<span class="tg-state">{h(t("bverify_never"))}</span>'
+    return (f'<section class="backup-verify-card"><div class="backup-verify-head"><h3>{icon("shield",18)}{h(t("bverify_title"))}</h3>'
+            f'<div class="backup-verify-state">{line}</div></div><p class="info-line">{h(t("bverify_hint"))}</p>'
+            f'<form method="post" action="/maintenance/backup/verify">{csrf(request)}'
+            f'<button class="btn btn-secondary" type="submit"{"" if has_backups else " disabled"}>{icon("check",16)}{h(t("bverify_now"))}</button>'
+            f'</form></section>')
+
+
+@app.post('/maintenance/backup/verify')
+async def backup_verify_now(request: Request):
+    form = await request.form(); require_csrf(request, form.get('csrf', ''))
+    try: ctl('backup-verify', {})
+    except RuntimeError as exc: return error_page(request, tr(lang_of(request), 'maintenance_error'), exc)
+    return RedirectResponse('/maintenance?tab=backups', status_code=303)
+
+
+def database_card(request, t, lang):
+    try: items = ctl('db-status', {}).get('databases') or []
+    except RuntimeError: items = []
+    rows = ''.join(
+        f'<tr><td class="mono">{h(item.get("name", ""))}</td><td>{h(human_size(int(item.get("size") or 0)))}</td>'
+        f'<td>{h(utc_minute(int(item["vacuumed_at"])) if item.get("vacuumed_at") else "—")}</td></tr>' for item in items)
+    done = request.query_params.get('compacted')
+    notice = (f'<p class="bulk-notice" role="status">{icon("check",16)}<span>{h(t("db_compacted").format(size=human_size(int(done))))}</span></p>'
+              if done and done.isdigit() else '')
+    return (f'<section class="logs-card" id="databases"><h3>{icon("archive", 18)}{h(t("db_title"))}</h3>{notice}'
+            f'<p class="info-line">{h(t("db_hint"))}</p>'
+            f'<div class="table-scroll"><table><thead><tr><th>{h(t("db_name"))}</th><th>{h(t("db_size"))}</th><th>{h(t("db_vacuumed"))}</th></tr></thead>'
+            f'<tbody>{rows}</tbody></table></div>'
+            f'<form method="post" action="/maintenance/databases/vacuum" class="tg-actions">{csrf(request)}'
+            f'<button class="btn btn-secondary" type="submit">{icon("restart", 16)}{h(t("db_vacuum"))}</button></form></section>')
+
+
+@app.post('/maintenance/databases/vacuum')
+async def databases_vacuum(request: Request):
+    form = await request.form(); require_csrf(request, form.get('csrf', ''))
+    try: result = ctl('db-vacuum', {})
+    except RuntimeError as exc: return error_page(request, tr(lang_of(request), 'maintenance_error'), exc)
+    return RedirectResponse(f'/maintenance?tab=logs&compacted={int(result.get("freed") or 0)}#databases', status_code=303)
+
+
+METRICS_FILE = AUTH_FILE.with_name('metrics.json')
+METRICS_CACHE = {'at': 0.0, 'body': ''}
+METRICS_TTL = 10
+
+
+def metrics_settings():
+    try: data = json.loads(METRICS_FILE.read_text())
+    except (OSError, ValueError): return {'enabled': False, 'per_client': True, 'token_hash': ''}
+    if not isinstance(data, dict): return {'enabled': False, 'per_client': True, 'token_hash': ''}
+    return {'enabled': bool(data.get('enabled')), 'per_client': data.get('per_client', True) is not False,
+            'token_hash': str(data.get('token_hash', '')), 'created': str(data.get('created', ''))}
+
+
+def prom_label(value):
+    return str(value).replace('\\', '\\\\').replace('\n', '\\n').replace('"', '\\"')
+
+
+def render_metrics(data):
+    """The Prometheus text format (version 0.0.4)."""
+    out = []
+    def metric(name, kind, text, samples):
+        out.append(f'# HELP {name} {text}')
+        out.append(f'# TYPE {name} {kind}')
+        for labels, value in samples:
+            tag = ','.join(f'{k}="{prom_label(v)}"' for k, v in labels.items())
+            out.append(f'{name}{{{tag}}} {value}' if tag else f'{name} {value}')
+    now = time.time()
+    servers = data.get('servers') or []
+    per_client = data.get('per_client', True)
+    metric('awg31_info', 'gauge', 'Console version.', [({'version': panel_version() or 'unknown'}, 1)])
+    metric('awg31_server_up', 'gauge', 'The VPN interface exists (1) or not (0).',
+           [({'server': s['interface']}, int(bool(s.get('running')))) for s in servers])
+    metric('awg31_server_listen_port', 'gauge', 'UDP port of the server.',
+           [({'server': s['interface']}, int(s.get('port') or 0)) for s in servers if s.get('port')])
+    clients_state, online, rx, tx = [], [], [], []
+    for s in servers:
+        rows = s.get('clients') or []
+        enabled = sum(1 for c in rows if c.get('enabled'))
+        clients_state += [({'server': s['interface'], 'state': 'enabled'}, enabled),
+                          ({'server': s['interface'], 'state': 'disabled'}, len(rows) - enabled)]
+        online.append(({'server': s['interface']}, sum(1 for c in rows if c.get('handshake') and now - int(c['handshake']) < 180)))
+        rx.append(({'server': s['interface']}, sum(int(c.get('received') or 0) for c in rows)))
+        tx.append(({'server': s['interface']}, sum(int(c.get('sent') or 0) for c in rows)))
+    metric('awg31_server_clients', 'gauge', 'Clients by state.', clients_state)
+    metric('awg31_server_clients_online', 'gauge', 'Clients with a handshake in the last 3 minutes.', online)
+    metric('awg31_server_receive_bytes_total', 'counter', 'Bytes received from clients (their upload); resets when the interface restarts.', rx)
+    metric('awg31_server_transmit_bytes_total', 'counter', 'Bytes sent to clients (their download); resets when the interface restarts.', tx)
+    if per_client:
+        def each(field, cast=int):
+            return [({'server': s['interface'], 'client': c['name']}, cast(c.get(field) or 0))
+                    for s in servers for c in (s.get('clients') or [])]
+        metric('awg31_client_enabled', 'gauge', 'The client is switched on.', each('enabled', lambda v: int(bool(v))))
+        metric('awg31_client_receive_bytes_total', 'counter', 'Bytes received from the client.', each('received'))
+        metric('awg31_client_transmit_bytes_total', 'counter', 'Bytes sent to the client.', each('sent'))
+        metric('awg31_client_used_bytes', 'gauge', 'Traffic counted against the client quota.', each('used'))
+        metric('awg31_client_limit_bytes', 'gauge', 'Traffic quota of the client (0: none).', each('limit'))
+        metric('awg31_client_last_handshake_timestamp_seconds', 'gauge', 'Unix time of the latest handshake (0: never).', each('handshake'))
+    backups = data.get('backups') or {}
+    metric('awg31_backups', 'gauge', 'Backups kept on the server.', [({}, int(backups.get('count') or 0))])
+    metric('awg31_backup_last_timestamp_seconds', 'gauge', 'Unix time of the newest backup (0: none).', [({}, int(backups.get('last') or 0))])
+    metric('awg31_backup_verify_timestamp_seconds', 'gauge', 'Unix time of the latest backup check (0: never).',
+           [({}, int(backups.get('verified_at') or 0))])
+    if backups.get('verify_ok') is not None:
+        metric('awg31_backup_verify_ok', 'gauge', 'The latest backup check passed.', [({}, int(bool(backups['verify_ok'])))])
+    metric('awg31_panel_sessions', 'gauge', 'Signed-in panel sessions.',
+           [({}, sum(1 for e in PANEL_SESSIONS.values() if now - e['seen'] < SESSION_IDLE))])
+    return '\n'.join(out) + '\n'
+
+
+@app.get('/metrics')
+def metrics_endpoint(request: Request):
+    settings = metrics_settings()
+    if not settings['enabled'] or not settings['token_hash']: raise HTTPException(404)
+    address = client_address(request)
+    if not sub_allowed(address): return Response('rate limited\n', status_code=429, media_type='text/plain')
+    header = request.headers.get('authorization', '')
+    supplied = header[7:].strip() if header.lower().startswith('bearer ') else ''
+    if not supplied or not hmac.compare_digest(hashlib.sha256(supplied.encode()).hexdigest(), settings['token_hash']):
+        _sub_failures.setdefault(address, []).append(time.monotonic())
+        return Response('unauthorized\n', status_code=401, media_type='text/plain', headers={'WWW-Authenticate': 'Bearer'})
+    if time.monotonic() - METRICS_CACHE['at'] > METRICS_TTL:
+        try: data = ctl('metrics', {})
+        except RuntimeError as exc:
+            return Response(f'# error: {str(exc)[:200]}\n', status_code=503, media_type='text/plain')
+        METRICS_CACHE.update(at=time.monotonic(), body=render_metrics(data))
+    return Response(METRICS_CACHE['body'], media_type='text/plain; version=0.0.4; charset=utf-8', headers={'Cache-Control': 'no-store'})
+
+
+def metrics_tab(request, t, lang):
+    settings = metrics_settings()
+    site = public_site()
+    url = f'{site["base"]}/metrics' if site else f'http://127.0.0.1:{request.url.port or 8080}/metrics'
+    target = urlsplit(url)
+    scrape = (f"scrape_configs:\n  - job_name: awg31\n    scheme: {target.scheme}\n    metrics_path: /metrics\n"
+              f"    authorization:\n      credentials: <{t('metrics_token')}>\n    static_configs:\n      - targets: ['{target.netloc}']\n")
+    if target.scheme == 'https' and site and site.get('cert'):
+        scrape += "    tls_config:\n      insecure_skip_verify: false   # " + t('metrics_selfsigned') + "\n"
+    state = (f'<span class="tg-state is-on">{h(t("metrics_on"))}</span>' if settings['enabled']
+             else f'<span class="tg-state">{h(t("metrics_off"))}</span>')
+    checked = lambda flag: ' checked' if flag else ''
+    return (f'<section class="maint-form-panel"><div class="logs-card-head"><h3>{icon("activity",19)}{h(t("maint_metrics"))}</h3>{state}</div>'
+            f'<p class="info-line">{h(t("metrics_hint"))}</p>'
+            f'<form method="post" action="/maintenance/metrics">{csrf(request)}'
+            f'<div class="tg-row"><div class="tg-row-text"><strong>{h(t("metrics_enable"))}</strong><small>{h(t("metrics_enable_hint"))}</small></div>'
+            f'<div class="tg-row-control"><label class="tg-switch"><input type="checkbox" role="switch" name="enabled" value="1"{checked(settings["enabled"])} aria-label="{h(t("metrics_enable"))}"><span aria-hidden="true"></span></label></div></div>'
+            f'<div class="tg-row"><div class="tg-row-text"><strong>{h(t("metrics_per_client"))}</strong><small>{h(t("metrics_per_client_hint"))}</small></div>'
+            f'<div class="tg-row-control"><label class="tg-switch"><input type="checkbox" role="switch" name="per_client" value="1"{checked(settings["per_client"])} aria-label="{h(t("metrics_per_client"))}"><span aria-hidden="true"></span></label></div></div>'
+            f'<div class="tg-row"><div class="tg-row-text"><strong>{h(t("metrics_regenerate"))}</strong><small>{h(t("metrics_regenerate_hint"))}</small></div>'
+            f'<div class="tg-row-control"><label class="tg-switch"><input type="checkbox" role="switch" name="regenerate" value="1" aria-label="{h(t("metrics_regenerate"))}"><span aria-hidden="true"></span></label></div></div>'
+            f'<div class="fields-grid"><label class="field"><span>{h(t("panel_password"))}</span><input type="password" name="password" required autocomplete="current-password"></label></div>'
+            f'<div class="tg-actions"><button class="btn btn-primary" type="submit">{icon("check",16)}{h(t("logs_save"))}</button></div></form></section>'
+            f'<section class="maint-form-panel"><h3>{icon("file",19)}{h(t("metrics_scrape"))}</h3>'
+            f'<p class="info-line">{h(t("metrics_scrape_hint").format(url=url))}</p>'
+            f'<pre class="log-view metrics-sample">{h(scrape)}</pre>'
+            f'<p class="info-line">{h(t("metrics_list"))}</p></section>')
+
+
+@app.post('/maintenance/metrics')
+async def metrics_change(request: Request):
+    form = await request.form(); require_csrf(request, form.get('csrf', ''))
+    lang = lang_of(request); t = lambda key: tr(lang, key)
+    try:
+        result = ctl('metrics-set', {'enabled': form.get('enabled') == '1', 'per_client': form.get('per_client') == '1',
+                                     'regenerate': form.get('regenerate') == '1', 'password': str(form.get('password', ''))})
+    except RuntimeError as exc: return error_page(request, t('maintenance_error'), exc)
+    METRICS_CACHE.update(at=0.0, body='')
+    if not result.get('token'): return RedirectResponse('/maintenance?tab=metrics', status_code=303)
+    body = f"""<section class="card detail-card invite-card">
+      <div class="section-title"><h2>{icon('activity',20)}{h(t('metrics_token'))}</h2></div>
+      <p class="info-line">{icon('info',14)}<span>{h(t('metrics_token_once'))}</span></p>
+      <label class="field" for="metrics-token"><span>{h(t('metrics_token'))}</span><input id="metrics-token" class="mono" readonly value="{h(result['token'])}"></label>
+      <div class="cfgx-actions"><button class="btn btn-primary" type="button" data-copy-target="metrics-token">{h(t('copy'))}</button>
+      <a class="btn btn-secondary" href="/maintenance?tab=metrics">{h(t('back'))}</a></div>
+      <p class="sr-only" aria-live="polite" id="copy-status" data-copy-ok="{h(t('copy_ok'))}" data-copy-failed="{h(t('copy_failed'))}"></p>
+    </section>"""
+    return page(t('metrics_token'), body, request)
+
+
+TEXT['ru'].update({
+    'bverify_title': 'Проверка резервных копий', 'bverify_now': 'Проверить последнюю копию',
+    'bverify_hint': 'Копия открывается так же, как при восстановлении: расшифровка, контрольные суммы, целостность баз. Если настроено внешнее хранилище, оттуда скачивается та же копия и сравнивается байт в байт. При ошибке приходит уведомление в Telegram.',
+    'bverify_ok': 'Пройдена {when} UTC', 'bverify_failed': 'Не пройдена {when} UTC', 'bverify_never': 'Ещё не проверялась',
+    'bverify_remote_ok': 'копия во внешнем хранилище совпадает', 'bverify_remote_skipped': 'внешнее хранилище не проверялось',
+    'bverify_mode': 'Проверять копии по расписанию', 'bverify_weekly': 'Раз в неделю', 'bverify_each': 'Каждую новую', 'bverify_off': 'Не проверять',
+    'logs_traffic_days': 'График трафика серверов', 'logs_traffic_days_hint': 'Сколько дней хранить поминутную историю трафика серверов (7–730).',
+    'logs_client_days': 'Трафик клиентов', 'logs_client_days_hint': 'Сколько дней хранить почасовой трафик каждого клиента для графика на его странице (7–730).',
+    'db_title': 'Базы данных', 'db_hint': 'Старая история удаляется сама, а раз в неделю базы сжимаются, чтобы файлы не росли. Сжать можно и сейчас.',
+    'db_name': 'База', 'db_size': 'Размер', 'db_vacuumed': 'Сжата (UTC)', 'db_vacuum': 'Сжать сейчас', 'db_compacted': 'Базы сжаты, освобождено {size}.',
+    'maint_metrics': 'Мониторинг', 'maint_metrics_hint': 'Метрики для Prometheus и Grafana: серверы, клиенты, резервные копии.',
+    'metrics_hint': 'Адрес /metrics отдаёт числа в формате Prometheus: состояние серверов, клиентов на связи, трафик, резервные копии. Ключей и конфигураций там нет. Доступ — только с токеном.',
+    'metrics_on': 'Включено', 'metrics_off': 'Выключено', 'metrics_enable': 'Отдавать метрики',
+    'metrics_enable_hint': 'Без токена адрес отвечает 404. Неверные токены ограничиваются по частоте, как подписка.',
+    'metrics_per_client': 'Метрики по каждому клиенту', 'metrics_per_client_hint': 'Имена клиентов попадут в Prometheus как метки. Выключите, если нужны только итоги по серверам.',
+    'metrics_regenerate': 'Новый токен', 'metrics_regenerate_hint': 'Прежний токен сразу перестанет работать. При первом включении токен создаётся сам.',
+    'metrics_token': 'Токен метрик', 'metrics_selfsigned': 'true для самоподписанного сертификата', 'metrics_token_once': 'Токен показывается один раз: сохраните его в настройках Prometheus. В панели хранится только его хеш.',
+    'metrics_scrape': 'Настройка Prometheus', 'metrics_scrape_hint': 'Адрес: {url}. Если для HTTPS задан список разрешённых адресов (sudo awg31 nginx), добавьте в него адрес Prometheus. Добавьте в prometheus.yml, подставив токен:',
+    'metrics_list': 'Основные метрики: awg31_server_up, awg31_server_clients_online, awg31_server_receive_bytes_total / transmit, awg31_client_* (по клиентам), awg31_backup_last_timestamp_seconds, awg31_backup_verify_ok.',
+})
+TEXT['en'].update({
+    'bverify_title': 'Backup checks', 'bverify_now': 'Check the newest backup',
+    'bverify_hint': 'A backup is opened as a restore would open it: decryption, checksums, database integrity. With a remote storage set up, the same copy is downloaded from it and compared byte for byte. A failure is reported to Telegram.',
+    'bverify_ok': 'Passed {when} UTC', 'bverify_failed': 'Failed {when} UTC', 'bverify_never': 'Not checked yet',
+    'bverify_remote_ok': 'the remote copy matches', 'bverify_remote_skipped': 'the remote storage was not checked',
+    'bverify_mode': 'Check backups on schedule', 'bverify_weekly': 'Once a week', 'bverify_each': 'Every new one', 'bverify_off': 'Do not check',
+    'logs_traffic_days': 'Server traffic graph', 'logs_traffic_days_hint': 'Days of per-minute server traffic history to keep (7–730).',
+    'logs_client_days': 'Client traffic', 'logs_client_days_hint': 'Days of hourly traffic per client to keep for the chart on its page (7–730).',
+    'db_title': 'Databases', 'db_hint': 'Old history is deleted by itself, and once a week the databases are compacted so the files do not grow. You can compact them now too.',
+    'db_name': 'Database', 'db_size': 'Size', 'db_vacuumed': 'Compacted (UTC)', 'db_vacuum': 'Compact now', 'db_compacted': 'Databases compacted, {size} freed.',
+    'maint_metrics': 'Monitoring', 'maint_metrics_hint': 'Metrics for Prometheus and Grafana: servers, clients, backups.',
+    'metrics_hint': 'The /metrics address gives numbers in the Prometheus format: server state, clients online, traffic, backups. No keys or configurations. Access needs a token.',
+    'metrics_on': 'On', 'metrics_off': 'Off', 'metrics_enable': 'Serve metrics',
+    'metrics_enable_hint': 'Without a token the address answers 404. Wrong tokens are rate limited like subscriptions.',
+    'metrics_per_client': 'Per-client metrics', 'metrics_per_client_hint': 'Client names become Prometheus labels. Turn off for server totals only.',
+    'metrics_regenerate': 'New token', 'metrics_regenerate_hint': 'The previous token stops working at once. The first time it is created by itself.',
+    'metrics_token': 'Metrics token', 'metrics_selfsigned': 'true for a self-signed certificate', 'metrics_token_once': 'The token is shown once: save it in the Prometheus settings. The panel keeps only its hash.',
+    'metrics_scrape': 'Prometheus setup', 'metrics_scrape_hint': 'Address: {url}. If the HTTPS site has an address allow list (sudo awg31 nginx), add the Prometheus address to it. Add to prometheus.yml with the token:',
+    'metrics_list': 'Main metrics: awg31_server_up, awg31_server_clients_online, awg31_server_receive_bytes_total / transmit, awg31_client_* (per client), awg31_backup_last_timestamp_seconds, awg31_backup_verify_ok.',
 })

@@ -50,7 +50,7 @@ EVENTS = {
     'client_auto': 'clients', 'client_expiring': 'clients', 'client_quota': 'clients',
     'login': 'security', 'login_failed': 'security', 'password': 'security', 'owner_export': 'security',
     'totp_recovery': 'security', 'invite': 'clients', 'owner_limit': 'clients', 'update': 'server', 'rotation': 'server', 'blocking': 'server',
-    'backup_created': 'backups', 'backup_failed': 'backups', 'upload_failed': 'backups',
+    'backup_created': 'backups', 'backup_failed': 'backups', 'upload_failed': 'backups', 'verify_failed': 'backups',
     'cpu': 'system', 'memory': 'system', 'disk': 'system',
 }
 THRESHOLDS = {'cpu': 90, 'memory': 90, 'disk': 90}     # percent; the panel lets each be changed
@@ -177,6 +177,7 @@ TEXT = {
         'n_next_kernel_bad': '⚠️ Установлено новое ядро <b>{version}</b>, но модуль AmneziaWG для него не собран. После перезагрузки VPN не запустится. До перезагрузки выполните на сервере: <code>sudo awg31 update</code>',
         'n_next_kernel_ok': '🟢 Модуль AmneziaWG для нового ядра собран: перезагружать сервер можно.',
         'n_upload_failed': '⚠️ Резервная копия не отправлена во внешнее хранилище: {target}',
+        'n_verify_failed': '⚠️ Проверка резервной копии не пройдена: {target}. Из такой копии восстановиться может не получиться.',
         'speed': '\nСкорость: до {n} Мбит/с', 'speed_split': '\nСкорость: ↓ {down} · ↑ {up} (Мбит/с)', 'monthly': ' в месяц', 'b_speed': '🚦 Скорость', 'b_nospeed': 'Без ограничения',
         'b_mbit': '{n} Мбит/с', 'ask_speed': 'Ограничение скорости <b>{name}</b> (в обе стороны).',
         'b_renew': '🙏 Продлить {name}', 'renew_sent': 'Запрос на продление <b>{name}</b> отправлен администратору.',
@@ -322,6 +323,7 @@ TEXT = {
         'n_next_kernel_bad': '⚠️ A new kernel <b>{version}</b> is installed, but the AmneziaWG module is not built for it. After a reboot the VPN will not start. Before rebooting run on the server: <code>sudo awg31 update</code>',
         'n_next_kernel_ok': '🟢 The AmneziaWG module for the new kernel is built: the server can be rebooted.',
         'n_upload_failed': '⚠️ The backup was not sent to the remote storage: {target}',
+        'n_verify_failed': '⚠️ A backup failed its check: {target}. A restore from it may not work.',
         'speed': '\nSpeed: up to {n} Mbit/s', 'speed_split': '\nSpeed: ↓ {down} · ↑ {up} (Mbit/s)', 'monthly': ' per month', 'b_speed': '🚦 Speed', 'b_nospeed': 'Unlimited',
         'b_mbit': '{n} Mbit/s', 'ask_speed': 'Speed limit of <b>{name}</b> (both directions).',
         'b_renew': '🙏 Extend {name}', 'renew_sent': 'The request to extend <b>{name}</b> was sent to the administrator.',
@@ -1444,6 +1446,8 @@ class Bot:
                 self.notify(self.t('n_backup_failed', target=target))
             elif event == 'backup_upload_failed' and self.on('upload_failed'):
                 self.notify(self.t('n_upload_failed', target=target))
+            elif event == 'backup_verify_failed' and self.on('verify_failed'):
+                self.notify(self.t('n_verify_failed', target=target))
 
     def owner_limit_changed(self, event, target):
         match = re.match(r'(.{1,40}) \((o[0-9a-f]{10})\): (quota|expired), ([0-9]+) devices', target)

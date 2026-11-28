@@ -29,6 +29,23 @@ case "${1:-menu}" in
   restore-check)
     [[ $# -eq 2 ]] || { echo 'Usage: awg31 restore-check BACKUP_NAME' >&2; exit 2; }
     python3 /usr/local/libexec/awg31/scripts/restore-backup.py --check "$2" ;;
+  backup-verify)
+    # The newest backup (or the named one), and the copy in the remote storage when there is one.
+    [[ $# -le 2 ]] || { echo 'Usage: awg31 backup-verify [BACKUP_NAME]' >&2; exit 2; }
+    NAME="${2:-}" python3 -c 'import json,os; print(json.dumps({"name": os.environ["NAME"]} if os.environ["NAME"] else {}))' \
+      | /usr/local/sbin/awg31mgr backup-verify | python3 -c '
+import json,sys
+r=json.load(sys.stdin)
+print(("OK" if r.get("ok") else "FAILED")+": "+r.get("name","")+" (local "+r.get("local","")+", remote "+r.get("remote","")+")"+(": "+r["error"] if r.get("error") else ""))
+sys.exit(0 if r.get("ok") else 1)' ;;
+  db-vacuum)
+    echo '{}' | /usr/local/sbin/awg31mgr db-vacuum | python3 -c '
+import json,sys
+r=json.load(sys.stdin)
+for d in r.get("databases",[]):
+    if "after" in d: print("%s: %d KiB -> %d KiB" % (d.get("name"), d.get("before",0)//1024, d.get("after",0)//1024))
+    else: print("%s: %s" % (d.get("name"), d.get("error","")))
+print("Freed %d KiB" % (r.get("freed",0)//1024))' ;;
   restore)
     [[ $# -eq 2 ]] || { echo 'Usage: awg31 restore BACKUP_NAME' >&2; exit 2; }
     python3 /usr/local/libexec/awg31/scripts/restore-backup.py --check "$2"
@@ -320,6 +337,8 @@ AmneziaWG 3.1 local management
   sudo awg31 backup-policy   Show current automated backup schedule
   sudo awg31 backup-delete NAME  Delete an archive after confirmation
   sudo awg31 restore-check NAME  Verify checksums and SQLite of a backup
+  sudo awg31 backup-verify [NAME]  Check the newest backup and its copy in the remote storage
+  sudo awg31 db-vacuum       Compact the databases now (done weekly by itself)
   sudo awg31 restore NAME    Restore after confirmation (VPN downtime)
   sudo awg31 import [--server awgN] [--new-keys] FILE...  Bring clients over from wg-easy, 3x-ui, AmneziaVPN or a .conf
   sudo awg31 doctor          Check kernel/DKMS and interface

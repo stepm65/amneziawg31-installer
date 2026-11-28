@@ -4,7 +4,7 @@
 
 An installer and a web console for running **AmneziaWG 3.1** on your own server: a kernel module built with DKMS, an interactive setup wizard and a bilingual (EN/RU) panel for servers, clients, traffic and backups. No Docker, no control plane in the cloud, nothing loaded from a CDN.
 
-Version **0.26.0** · MIT licence · not affiliated with the AmneziaVPN developers.
+Version **0.27.0** · MIT licence · not affiliated with the AmneziaVPN developers.
 
 ![Infrastructure overview](docs/screenshots/en-dashboard.png)
 
@@ -19,7 +19,8 @@ Version **0.26.0** · MIT licence · not affiliated with the AmneziaVPN develope
 - **I1–I5 packets:** a Generate button for each field and ready-made templates for `I1` (random bytes, DNS query, STUN binding request, QUIC-shaped packet). Enabling them with empty fields creates `I1` automatically.
 - **Extra [Interface] lines** for clients on a router, in a container or on a Linux gateway: `PostUp`, `PostDown`, `Table` and the like go into the `.conf`, its QR code and the bot, but not into the `vpn://` link. Ready-made templates and applying them to several clients at once.
 - **Monitoring:** host CPU, RAM, swap, disk and uplink traffic, per-server traffic charts, 30 days of history collected by a systemd timer.
-- **Backups:** full archives with checksums, download, schedule (daily or weekly), retention, restore with a safety snapshot; optional passphrase encryption (OpenPGP), after which the bot delivers every new backup to Telegram.
+- **Backups:** full archives with checksums, download, schedule (daily or weekly), retention, restore with a safety snapshot, scheduled checks (the remote copy too); optional passphrase encryption (OpenPGP), after which the bot delivers every new backup to Telegram.
+- **Monitoring:** token-protected Prometheus metrics — servers, clients, traffic, backups.
 - **Two-factor sign-in:** TOTP codes from any authenticator app in addition to the password, and 10 one-time recovery codes for a lost phone.
 - **Passkeys:** sign in with the device's fingerprint, face or PIN, without a password or code; a passkey does not work on a fake site.
 - **Several accounts:** administrators and viewers (read only, no keys or configurations), the account name in the audit log, and a list of active sessions where any of them can be ended.
@@ -157,8 +158,29 @@ AmneziaWG itself writes nothing about connections, and the panel runs without a 
 - **Address masking** of public IPs, as in 3x-ui: none (`203.0.113.45:51820`), partial (`203.0.113.x`, the default) or full (`IP-3f2a1c`, a label that cannot be turned back into the address). It applies to the connection history, the audit log (sign-in attempts), bot notifications and the journal viewer, and it applies when the data is written: with full masking the address is never stored. Tunnel and private addresses are left as they are.
 - **Handshake debug** turns on detailed AmneziaWG kernel messages for 15 minutes and switches them off by itself — for a client that cannot connect, for example after the obfuscation was changed.
 - **Support report:** one archive with diagnostics, versions, server settings and the latest journal lines. Keys, tokens, `Endpoint` lines and public addresses are replaced; look through it before you send it.
+- **Traffic retention and databases:** the per-minute server traffic history is kept 32 days and the hourly per-client traffic 62 days; both can be set from 7 to 730 days. Old rows are deleted by themselves, and once a week (03:xx UTC) the databases are compacted (`VACUUM`) so the files do not grow. The Databases card shows the size of each database and when it was compacted; **Compact now** does it at once (`sudo awg31 db-vacuum`).
 
 The **audit log** has pages, filters by event, dates and text, a CSV export, and reads the rotated files too.
+
+### Backup checks
+
+A backup you cannot restore from is worse than none. So after a scheduled backup the panel checks it — once a week (the default) or every time, as set in the backup schedule. The check opens the archive as a restore would: decryption, checksums, SQLite integrity. With a remote storage (S3 or SFTP) set up, the same copy is downloaded from it and compared byte for byte, which shows it really got there undamaged. The result is under **Maintenance → Backups** with a **Check the newest backup** button; a failure is reported by the bot (the “Backup check failed” event). From the console: `sudo awg31 backup-verify [NAME]`.
+
+### Monitoring: Prometheus metrics
+
+For those who already run Prometheus and Grafana. **Maintenance → Monitoring** turns on `/metrics` in the Prometheus format: servers (interface up, port), clients by state and online (a handshake within 3 minutes), traffic of each server and client, quota used, last handshake time, the number of backups, the time and result of the latest check, and panel sessions. No keys or configurations; per-client metrics (with client names as labels) can be turned off.
+
+Access needs a token, `Authorization: Bearer …`: it is shown once when metrics are turned on (the panel keeps only its hash) and can be regenerated. While off the address answers 404, with a wrong token 401, and such attempts are rate limited. Turning metrics on or off needs the panel password. Through HTTPS (`sudo awg31 nginx`) the metrics are reachable from outside — if the site has an address allow list, add the Prometheus address to it. The page shows a `prometheus.yml` example:
+
+```yaml
+scrape_configs:
+  - job_name: awg31
+    scheme: https
+    authorization:
+      credentials: <token>
+    static_configs:
+      - targets: ['vpn.example.com:8443']
+```
 
 ### I1–I5 templates
 
@@ -285,6 +307,8 @@ sudo awg31 doctor           kernel, DKMS and interface checks
 sudo awg31 backup           create a full backup
 sudo awg31 backups          list backups
 sudo awg31 restore-check N  verify a backup
+sudo awg31 backup-verify [N] check the newest (or the named) backup and its copy in the remote storage
+sudo awg31 db-vacuum        compact the databases now
 sudo awg31 restore N        restore a backup (VPN restarts)
 sudo awg31 reset-password   set a new panel password (and, if you like, the sign-in name)
 sudo awg31 totp-off         turn off two-factor sign-in (lost authenticator)
