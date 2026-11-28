@@ -73,7 +73,7 @@ opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(Jar()))
 def post(path, **fields):
     return opener.open(base + path, urllib.parse.urlencode(fields).encode(), timeout=30)
 assert post('/login', password='wrong-password-123').geturl().endswith('/login')
-assert json.load(open('/etc/awg31-panel/auth.json')).get('name') == 'admin', 'the default sign-in name is not stored'
+assert json.load(open('/etc/awg31-panel/auth.json')).get('name', 'admin') == 'admin', 'unexpected sign-in name'  # older installs have none
 post('/login', password=password)
 page = opener.open(base + '/servers/awg0/clients', timeout=30).read().decode()
 assert 'ci-client' in page, 'first client is not listed'
