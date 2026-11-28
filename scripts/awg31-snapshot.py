@@ -108,6 +108,18 @@ def prune(keep=KEEP, protect=()):
         shutil.rmtree(BACKUPS / item['name'], ignore_errors=True)
 
 
+def delete(name):
+    """Remove one snapshot (the administrator decides which ones are no longer needed)."""
+    if not NAME_RE.match(name):
+        raise SystemExit('Invalid snapshot name')
+    path = BACKUPS / name
+    if not path.is_dir() or path.is_symlink() or not any(item['name'] == name for item in snapshots()):
+        raise SystemExit('No such snapshot')
+    shutil.rmtree(path)
+    audit('snapshot_deleted', name)
+    return name
+
+
 def create(reason, to='', protect=()):
     BACKUPS.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')
@@ -295,6 +307,8 @@ def main(argv=None):
     r = sub.add_parser('restore')
     r.add_argument('name')
     r.add_argument('--no-snapshot', action='store_true')
+    d = sub.add_parser('delete')
+    d.add_argument('name')
     args = parser.parse_args(argv)
     if ROOT == Path('/') and os.geteuid() != 0:
         raise SystemExit('Run as root')
@@ -311,6 +325,8 @@ def main(argv=None):
                 label = f'v{item["version"]}' if item['version'] else 'older copy (partial)'
                 why = f'before the update to {item["to"]}' if item['reason'] == 'upgrade' and item['to'] else item['reason']
                 print(f'{item["name"]:52} {item["created"]:26} {label:12} {why}')
+    elif args.command == 'delete':
+        print(f'Deleted {delete(args.name)}')
     else:
         restore(args.name, take_snapshot=not args.no_snapshot)
 

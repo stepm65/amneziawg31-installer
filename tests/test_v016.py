@@ -284,7 +284,8 @@ def test_update_tab_offers_the_newer_release_and_the_snapshots(ui, monkeypatch):
     html = page.text
     assert 'Доступна v0.17.0' in html and 'Обновить до v0.17.0' in html and 'value="v0.17.0"' in html
     assert 'What changed\nFaster &lt;script&gt;' in html and '<script>alert' not in html
-    assert 'awg31-upgrade.20261120T100000Z-abcd' in html and 'Legacy01' not in html and 'до обновления на 0.16.0' in html
+    assert 'awg31-upgrade.20261120T100000Z-abcd' in html and 'value="awg31-upgrade.Legacy01" checked' not in html
+    assert 'type="radio" name="target" value="awg31-upgrade.Legacy01"' not in html and 'до обновления на 0.16.0' in html
     assert 'class="sidebar-update" href="/maintenance?tab=update"' in html
     started = client.post('/maintenance/update', data={'csrf': token(page), 'action': 'update', 'target': 'v0.17.0', 'password': 'pw'},
                           follow_redirects=False)

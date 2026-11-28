@@ -70,8 +70,10 @@ case "${1:-menu}" in
         case "$arg" in
             --yes|-y) yes=1 ;;
             list) python3 "$tool" list; exit 0 ;;
+            delete) [[ $# -eq 2 && "$2" == awg31-upgrade.* ]] || { echo 'Usage: awg31 rollback delete SNAPSHOT' >&2; exit 2; }
+                    exec python3 "$tool" delete "$2" ;;
             awg31-upgrade.*) name="$arg" ;;
-            *) echo 'Usage: awg31 rollback [list | SNAPSHOT] [--yes]' >&2; exit 2 ;;
+            *) echo 'Usage: awg31 rollback [list | SNAPSHOT | delete SNAPSHOT] [--yes]' >&2; exit 2 ;;
         esac
     done
     python3 "$tool" list

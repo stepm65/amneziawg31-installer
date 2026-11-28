@@ -2689,7 +2689,7 @@ def detail(request: Request, name: str, interface: str = ''):
     return page(t('client') + ' ' + name,
                 '<div class="client-detail">' + rekeyed + contents + network_form + policy_form
                 + access_card(request, name, obj, t)
-                + sessions_section(request, name, t, lang) + '</div>', request)
+                + client_traffic_section(request, name, t, lang) + sessions_section(request, name, t, lang) + '</div>', request)
 
 
 @app.post('/client/{name}/network')
@@ -2877,6 +2877,7 @@ def access_card(request, name, obj, t):
           <form method="post" action="/client/{name_url}/rekey" data-confirm="{h(t('rekey_confirm'))}">{csrf(request)}
           <button class="btn btn-danger" type="submit">{icon('restart',16)}{h(t('rekey_button'))}</button></form></div>
         {subscription_block(request, name, obj, t)}
+        {once_block(request, name, obj, t)}
         {move_block(request, name, t)}
       </div></section>'''
 
@@ -4563,6 +4564,8 @@ def update_tab(request, t, lang):
                   f'{h(t("update_checked_new").format(version=newer) if newer else t("update_checked_none"))}</span></p>')
     elif request.query_params.get('checked') == '0':
         notice = f'<p class="bulk-notice is-warn" role="status">{icon("alert",16)}<span>{h(t("update_check_failed"))}</span></p>'
+    elif request.query_params.get('snapshot') == 'deleted':
+        notice = f'<p class="bulk-notice" role="status">{icon("check",16)}<span>{h(t("update_snap_deleted"))}</span></p>'
     check = (f'<form method="post" action="/maintenance/update/check" class="inline">{csrf(request)}'
              f'<button class="btn btn-secondary btn-small" type="submit"{" disabled" if running else ""}>{icon("restart",15)}{h(t("update_check"))}</button></form>')
     known = _latest.get('tag') or ''
@@ -4607,25 +4610,54 @@ def update_tab(request, t, lang):
                     f'<p class="update-reload" hidden data-update-reload><a class="btn btn-primary" href="/maintenance?tab=update">{h(t("update_reload"))}</a></p>'
                     f'</section>')
     usable = [x for x in status.get('snapshots', []) if x.get('usable')]
+    # One small form per snapshot for deleting it; the buttons sit in the rows and point at them.
+    deletes = ''.join(f'<form method="post" action="/maintenance/update/snapshot-delete" id="snapdel-{n}" class="snapshot-delete-form" '
+                      f'data-confirm="{h(t("update_snap_delete_confirm").format(version=item.get("version") or "?"))}">{csrf(request)}'
+                      f'<input type="hidden" name="name" value="{h(item["name"])}"></form>'
+                      for n, item in enumerate(status.get('snapshots', [])))
+    partial = [(n, x) for n, x in enumerate(status.get('snapshots', [])) if not x.get('usable')]
     if usable:
         rows = ''
         for index, item in enumerate(usable):
+            n = status['snapshots'].index(item)
             why = (t('update_snap_before').format(version=item.get('to', '')) if item.get('reason') == 'upgrade' and item.get('to')
                    else t('update_snap_rollback') if str(item.get('reason', '')).startswith('before rollback') else item.get('reason', ''))
-            rows += (f'<label class="update-snapshot"><input type="radio" name="target" value="{h(item["name"])}"{" checked" if index == 0 else ""}>'
+            rows += (f'<div class="update-snapshot-row"><label class="update-snapshot"><input type="radio" name="target" value="{h(item["name"])}"{" checked" if index == 0 else ""}>'
                      f'<strong class="mono">v{h(item.get("version",""))}</strong><span>{h(why)}</span>'
-                     f'<small class="mono">{h(str(item.get("created",""))[:16].replace("T", " "))} UTC</small></label>')
+                     f'<small class="mono">{h(str(item.get("created",""))[:16].replace("T", " "))} UTC</small></label>'
+                     f'<button class="icon-btn snapshot-delete" type="submit" form="snapdel-{n}" title="{h(t("update_snap_delete"))}" '
+                     f'aria-label="{h(t("update_snap_delete"))}: v{h(item.get("version",""))}"{" disabled" if running else ""}>{icon("trash",16)}</button></div>')
+        rows += ''.join(f'<div class="update-snapshot-row is-partial"><span class="update-snapshot"><span>{h(t("update_snap_partial"))}</span>'
+                        f'<small class="mono">{h(str(item.get("created",""))[:16].replace("T", " "))} UTC</small></span>'
+                        f'<button class="icon-btn snapshot-delete" type="submit" form="snapdel-{n}" title="{h(t("update_snap_delete"))}" '
+                        f'aria-label="{h(t("update_snap_delete"))}"{" disabled" if running else ""}>{icon("trash",16)}</button></div>'
+                        for n, item in partial)
         rollback = (f'<section class="maint-form-panel update-rollback"><h3>{icon("restart",18)}{h(t("update_rollback_title"))}</h3>'
                     f'<p class="info-line">{h(t("update_rollback_hint"))}</p>'
                     f'<form method="post" action="/maintenance/update" data-confirm="{h(t("update_rollback_confirm"))}">{csrf(request)}'
                     f'<input type="hidden" name="action" value="rollback"><div class="update-snapshots">{rows}</div>'
                     f'<label class="field"><span>{h(t("password"))}</span><input type="password" name="password" required autocomplete="current-password"></label>'
                     f'<button class="btn btn-secondary" type="submit"{" disabled" if running else ""}>{icon("restart",16)}{h(t("update_rollback_button"))}</button>'
-                    f'</form></section>')
+                    f'</form>{deletes}<p class="info-line">{icon("info",14)}<span>{h(t("update_snap_delete_hint"))}</span></p></section>')
     else:
+        leftovers = ''.join(f'<div class="update-snapshot-row is-partial"><span class="update-snapshot"><span>{h(t("update_snap_partial"))}</span>'
+                            f'<small class="mono">{h(str(item.get("created",""))[:16].replace("T", " "))} UTC</small></span>'
+                            f'<button class="icon-btn snapshot-delete" type="submit" form="snapdel-{n}" title="{h(t("update_snap_delete"))}" '
+                            f'aria-label="{h(t("update_snap_delete"))}">{icon("trash",16)}</button></div>' for n, item in partial)
         rollback = (f'<section class="maint-form-panel update-rollback"><h3>{icon("restart",18)}{h(t("update_rollback_title"))}</h3>'
-                    f'<p class="info-line">{h(t("update_rollback_none"))}</p></section>')
+                    f'<p class="info-line">{h(t("update_rollback_none"))}</p>'
+                    + (f'<div class="update-snapshots">{leftovers}</div>{deletes}' if leftovers else '') + '</section>')
     return notice + head + progress + rollback
+
+
+@app.post('/maintenance/update/snapshot-delete')
+async def snapshot_delete_route(request: Request):
+    form = await request.form(); require_csrf(request, form.get('csrf', ''))
+    name = str(form.get('name', ''))
+    if not re.fullmatch(r'awg31-upgrade\.[A-Za-z0-9_.-]{4,64}', name): raise HTTPException(422)
+    try: ctl('snapshot-delete', {'name': name})
+    except RuntimeError as exc: return error_page(request, tr(lang_of(request), 'maintenance_error'), exc)
+    return RedirectResponse('/maintenance?tab=update&snapshot=deleted', status_code=303)
 
 
 @app.post('/maintenance/update/check')
@@ -4678,6 +4710,10 @@ TEXT['ru'].update({
     'update_rollback_title': 'Откат к версии до обновления',
     'update_rollback_hint': 'Перед каждым обновлением сохраняется снимок программы: панели, контроллера, скриптов и правил sudo. Откат возвращает программу из снимка. Клиенты, серверы и настройки, сделанные после обновления, остаются. Хранятся пять последних снимков.',
     'update_rollback_none': 'Снимков пока нет: первый появится при следующем обновлении.',
+    'update_snap_delete': 'Удалить снимок', 'update_snap_delete_confirm': 'Удалить снимок v{version}? Откатиться к этой версии будет нельзя.',
+    'update_snap_partial': 'Неполная копия от старой версии — откатиться к ней нельзя',
+    'update_snap_delete_hint': 'Снимки занимают место на диске: ненужные удаляйте кнопкой с корзиной. Пока идёт обновление или откат, удалять нельзя.',
+    'update_snap_deleted': 'Снимок удалён.',
     'update_rollback_button': 'Откатить',
     'update_rollback_confirm': 'Вернуть выбранную версию программы? Панель и бот перезапустятся, VPN продолжит работать. Текущая версия тоже сохранится, к ней можно будет вернуться.',
     'update_snap_before': 'до обновления на {version}', 'update_snap_rollback': 'перед откатом',
@@ -4701,6 +4737,10 @@ TEXT['en'].update({
     'update_rollback_title': 'Roll back to the version before an update',
     'update_rollback_hint': 'Before every update a snapshot of the program is saved: the panel, the controller, the scripts and the sudo rules. A rollback puts the program back from it. Clients, servers and settings made after the update stay. The five newest snapshots are kept.',
     'update_rollback_none': 'No snapshots yet: the first one is saved at the next update.',
+    'update_snap_delete': 'Delete snapshot', 'update_snap_delete_confirm': 'Delete the snapshot of v{version}? Rolling back to that version will no longer be possible.',
+    'update_snap_partial': 'Partial copy from an old version — no rollback to it',
+    'update_snap_delete_hint': 'Snapshots take disk space: delete the ones you do not need with the bin button. Not possible while an update or a rollback runs.',
+    'update_snap_deleted': 'Snapshot deleted.',
     'update_rollback_button': 'Roll back',
     'update_rollback_confirm': 'Bring back the selected version of the program? The panel and the bot restart, the VPN keeps running. The current version is saved too, so you can return to it.',
     'update_snap_before': 'before the update to {version}', 'update_snap_rollback': 'before a rollback',
@@ -5451,4 +5491,302 @@ TEXT['en'].update({
     'import_owners_made': 'Owners created: {n}.', 'import_skipped': 'Skipped',
     'import_skip_key_mismatch': 'the private and public keys do not match', 'import_skip_key_exists': 'a client with this key is already on the server',
     'import_skip_no_address': 'the server subnet has no free addresses', 'import_skip_invalid': 'invalid data (term, limit or Telegram ID)',
+})
+
+
+# ------------------------------------------------------------------ 0.23: traffic chart of one client
+CLIENT_WINDOWS = ('24h', '7d', '30d')
+
+
+def nice_bytes_max(value):
+    """A round top for the scale: 1, 2 or 5 times a power of 1024 units."""
+    value = max(int(value or 0), 1)
+    unit = 1
+    while value > unit * 1024 and unit < 1024 ** 4:
+        unit *= 1024
+    for step in (1, 2, 5, 10, 20, 50, 100, 200, 500, 1000):
+        if value <= step * unit:
+            return step * unit
+    return 1024 * unit
+
+
+def client_traffic_svg(points, bucket, lang, t):
+    width, height, left, top, bottom = 760, 210, 64, 12, 28
+    plot_w, plot_h = width - left - 8, height - top - bottom
+    peak = nice_bytes_max(max((p['rx'] + p['tx'] for p in points), default=0))
+    n = max(len(points), 1)
+    slot = plot_w / n
+    bar = max(1.0, slot * 0.72)
+    grid = ''.join(f'<line class="ct-grid" x1="{left}" x2="{width - 8}" y1="{top + plot_h * k / 4:.1f}" y2="{top + plot_h * k / 4:.1f}"/>'
+                   f'<text class="ct-tick" x="{left - 8}" y="{top + plot_h * k / 4 + 4:.1f}" text-anchor="end">{h(human_size(peak * (4 - k) / 4))}</text>'
+                   for k in range(5))
+    fmt = '%H:%M' if bucket < 86400 and len(points) <= 24 else '%d.%m'
+    bars = ''
+    for i, p in enumerate(points):
+        x = left + i * slot + (slot - bar) / 2
+        down = plot_h * p['tx'] / peak
+        up = plot_h * p['rx'] / peak
+        start = datetime.fromtimestamp(p['t'], timezone.utc)
+        finish = datetime.fromtimestamp(p['t'] + bucket, timezone.utc)
+        label = (f'{start.strftime("%d.%m %H:%M")}–{finish.strftime("%H:%M" if bucket < 86400 else "%d.%m %H:%M")} UTC: '
+                 f'↓ {human_size(p["tx"])} · ↑ {human_size(p["rx"])}')
+        bars += (f'<g><title>{h(label)}</title>'
+                 + (f'<rect class="ct-tx" x="{x:.1f}" y="{top + plot_h - down:.1f}" width="{bar:.1f}" height="{down:.1f}"/>' if down else '')
+                 + (f'<rect class="ct-rx" x="{x:.1f}" y="{top + plot_h - down - up:.1f}" width="{bar:.1f}" height="{up:.1f}"/>' if up else '')
+                 + f'<rect class="ct-hit" x="{left + i * slot:.1f}" y="{top}" width="{slot:.1f}" height="{plot_h}"/></g>')
+    labels = ''
+    for i in sorted({0, len(points) // 2, len(points) - 1}):
+        if 0 <= i < len(points):
+            x = left + i * slot + slot / 2
+            anchor = 'start' if i == 0 else 'end' if i == len(points) - 1 else 'middle'
+            labels += (f'<text class="ct-tick" x="{x:.1f}" y="{height - 8}" text-anchor="{anchor}">'
+                       f'{h(datetime.fromtimestamp(points[i]["t"], timezone.utc).strftime(fmt))}</text>')
+    return (f'<svg class="client-traffic-chart" viewBox="0 0 {width} {height}" role="img" '
+            f'aria-label="{h(t("client_traffic_title"))}">{grid}{bars}{labels}</svg>')
+
+
+def client_traffic_section(request, name, t, lang):
+    window = request.query_params.get('traffic', '24h')
+    if window not in CLIENT_WINDOWS: window = '24h'
+    try: data = control(request, 'client-history', {'name': name, 'window': window})
+    except RuntimeError: return ''
+    points = data.get('points') or []
+    base = request.url.path
+    tabs = ''.join(f'<a class="ct-tab{" is-active" if w == window else ""}" href="{h(base)}?traffic={w}#client-traffic"'
+                   f'{" aria-current=page" if w == window else ""}>{h(t("client_traffic_" + w))}</a>' for w in CLIENT_WINDOWS)
+    total_rx, total_tx = int(data.get('total_rx') or 0), int(data.get('total_tx') or 0)
+    body = (client_traffic_svg(points, int(data.get('bucket') or 3600), lang, t) if total_rx + total_tx
+            else f'<p class="info-line">{h(t("client_traffic_empty"))}</p>')
+    per = t('client_traffic_per_hour' if int(data.get('bucket') or 3600) == 3600 else
+            'client_traffic_per_6h' if int(data.get('bucket') or 0) == 21600 else 'client_traffic_per_day')
+    return f"""<section class="card detail-card client-traffic" id="client-traffic">
+      <div class="section-title"><h2>{icon('activity', 20)}{h(t('client_traffic_title'))}</h2><nav class="ct-tabs">{tabs}</nav></div>
+      <p class="ct-totals"><span><i class="legend-tx"></i>{h(t('client_traffic_down'))}: <strong>{h(human_size(total_tx))}</strong></span>
+        <span><i class="legend-rx"></i>{h(t('client_traffic_up'))}: <strong>{h(human_size(total_rx))}</strong></span>
+        <small>{h(per)}</small></p>
+      {body}</section>"""
+
+
+TEXT['ru'].update({
+    'client_traffic_title': 'Трафик клиента', 'client_traffic_24h': '24 часа', 'client_traffic_7d': '7 дней', 'client_traffic_30d': '30 дней',
+    'client_traffic_down': 'Скачивание (к клиенту)', 'client_traffic_up': 'Загрузка (от клиента)',
+    'client_traffic_per_hour': 'столбик — час', 'client_traffic_per_6h': 'столбик — 6 часов', 'client_traffic_per_day': 'столбик — сутки',
+    'client_traffic_empty': 'За этот период клиент ничего не передал. Учёт по часам ведётся с версии 0.23 и хранится 62 дня.',
+})
+TEXT['en'].update({
+    'client_traffic_title': 'Client traffic', 'client_traffic_24h': '24 hours', 'client_traffic_7d': '7 days', 'client_traffic_30d': '30 days',
+    'client_traffic_down': 'Download (to the client)', 'client_traffic_up': 'Upload (from the client)',
+    'client_traffic_per_hour': 'a bar is an hour', 'client_traffic_per_6h': 'a bar is 6 hours', 'client_traffic_per_day': 'a bar is a day',
+    'client_traffic_empty': 'Nothing in this period. Hourly counts are kept since version 0.23, for 62 days.',
+})
+
+
+# ------------------------------------------------------------------ 0.23: one-time configuration links
+ONCE_HOURS = (1, 24, 72, 168)
+
+
+def once_block(request, name, obj, t):
+    base = scoped_client(request, name)
+    site = public_site()
+    active = obj.get('once') or {}
+    if not site:
+        body = f'<p class="info-line">{icon("info",14)}<span>{h(t("once_no_https"))}</span></p>'
+    else:
+        warn = '' if site.get('sub_location') else f'<p class="info-line">{icon("alert",14)}<span>{h(t("sub_no_location"))}</span></p>'
+        state = ''
+        if active:
+            state = (f'<p class="access-state is-on">{icon("link",15)}'
+                     f'{h(t("once_active").format(when=str(active.get("expires",""))[:16].replace("T", " "), n=active.get("uses", 0)))}</p>'
+                     f'<form method="post" action="{h(base)}/once/revoke" class="inline">{csrf(request)}'
+                     f'<button class="btn btn-secondary btn-small" type="submit">{h(t("once_revoke"))}</button></form>')
+        hours = ''.join(f'<option value="{n}"{" selected" if n == 24 else ""}>{h(t("once_h" + str(n)))}</option>' for n in ONCE_HOURS)
+        body = (f'{warn}<div class="access-row">{state}</div>'
+                f'<form method="post" action="{h(base)}/once" class="access-form"'
+                + (f' data-confirm="{h(t("once_replace_confirm"))}"' if active else '') + f'>{csrf(request)}'
+                f'<label class="field"><span>{h(t("once_valid"))}</span><select name="hours">{hours}</select></label>'
+                f'<label class="field"><span>{h(t("once_uses"))}</span><select name="uses"><option value="1" selected>1</option>'
+                f'<option value="3">3</option></select></label>'
+                f'<button class="btn btn-primary" type="submit">{icon("link",16)}{h(t("once_create"))}</button></form>')
+    return (f'<div class="access-block"><h3>{icon("link",17)}{h(t("once_title"))}</h3>'
+            f'<p class="access-hint">{h(t("once_hint"))}</p>{body}</div>')
+
+
+@app.post('/client/{name}/once')
+@app.post('/servers/{interface}/clients/{name}/once')
+async def once_create(request: Request, name: str, interface: str = ''):
+    form = await request.form(); require_csrf(request, form.get('csrf', ''))
+    if not CLIENT_NAME_RE.fullmatch(name): raise HTTPException(404)
+    lang = lang_of(request); t = lambda key: tr(lang, key)
+    site = public_site()
+    if not site: return error_page(request, t('error'), RuntimeError(t('once_no_https')))
+    try: hours, uses = int(form.get('hours', 24)), int(form.get('uses', 1))
+    except (TypeError, ValueError): raise HTTPException(422) from None
+    if hours not in ONCE_HOURS or uses not in (1, 3): raise HTTPException(422)
+    try: result = control(request, 'once-link', {'name': name, 'hours': hours, 'uses': uses})
+    except RuntimeError as exc: return error_page(request, t('error'), exc)
+    server = selected_server(request)
+    audit_event('once_link_created', f'{server}/{name} ({hours} h, {uses})')
+    url = f'{site["base"]}/sub/once/{server}/{result["token"]}'
+    body = f"""<section class="card detail-card invite-card">
+      <div class="section-title"><h2>{icon('link',20)}{h(t('once_ready'))}: <span class="mono">{h(name)}</span></h2></div>
+      <p class="info-line">{icon('info',14)}<span>{h(t('once_ready_hint').format(when=str(result.get('expires',''))[:16].replace('T', ' '), n=uses))}</span></p>
+      <label class="field" for="once-link"><span>{h(t('once_link'))}</span><input id="once-link" class="mono" readonly value="{h(url)}"></label>
+      <div class="cfgx-actions"><button class="btn btn-primary" type="button" data-copy-target="once-link">{h(t('copy'))}</button>
+      <a class="btn btn-secondary" href="{h(scoped_client(request, name))}">{h(t('invite_back'))}</a></div>
+      <p class="access-hint">{h(t('invite_once'))}</p>
+      <p class="sr-only" aria-live="polite" id="copy-status" data-copy-ok="{h(t('copy_ok'))}" data-copy-failed="{h(t('copy_failed'))}"></p>
+    </section>"""
+    return page(t('once_ready'), body, request)
+
+
+@app.post('/client/{name}/once/revoke')
+@app.post('/servers/{interface}/clients/{name}/once/revoke')
+async def once_revoke(request: Request, name: str, interface: str = ''):
+    form = await request.form(); require_csrf(request, form.get('csrf', ''))
+    if not CLIENT_NAME_RE.fullmatch(name): raise HTTPException(404)
+    try: control(request, 'once-link', {'name': name, 'action': 'revoke'})
+    except RuntimeError as exc: return error_page(request, tr(lang_of(request), 'error'), exc)
+    audit_event('once_link_revoked', f'{selected_server(request)}/{name}')
+    return RedirectResponse(scoped_client(request, name), status_code=303)
+
+
+def _before_catch_all(*paths):
+    """Routes added late must come before the generic /client/{name}/{action} handler."""
+    routes = app.router.routes
+    moving = [r for r in routes if getattr(r, 'path', '') in paths]
+    rest = [r for r in routes if r not in moving]
+    generic = ('/client/{name}/{action}', '/servers/{interface}/clients/{name}/{action}')
+    at = next((i for i, r in enumerate(rest) if getattr(r, 'path', '') in generic), len(rest))
+    routes[:] = rest[:at] + moving + rest[at:]
+
+
+_before_catch_all('/client/{name}/once', '/servers/{interface}/clients/{name}/once')
+
+
+ONCE_STYLE = """body{margin:0;background:#111418;color:#e4e8ed;font:16px/1.5 system-ui,-apple-system,'Segoe UI',sans-serif}
+main{max-width:560px;margin:0 auto;padding:28px 18px}h1{font-size:22px;margin:0 0 6px}p{color:#aeb6bf}
+.box{background:#1b1f24;border:1px solid #2c3139;border-radius:16px;padding:20px;margin:16px 0}
+button,.btn{display:inline-block;background:#f3a51e;color:#1a1300;border:0;border-radius:999px;padding:12px 22px;font:600 16px system-ui,sans-serif;text-decoration:none;cursor:pointer}
+.btn.alt{background:#2a3038;color:#e4e8ed}img{display:block;width:100%;max-width:320px;height:auto;margin:0 auto;background:#fff;border-radius:12px;padding:10px;box-sizing:border-box}
+pre,textarea{width:100%;box-sizing:border-box;background:#0d1013;color:#cfd6de;border:1px solid #2c3139;border-radius:10px;padding:12px;font:12px/1.45 ui-monospace,monospace;white-space:pre-wrap;word-break:break-all}
+.row{display:flex;gap:10px;flex-wrap:wrap;margin:14px 0}small{color:#8a939d}.warn{color:#f0b46e}"""
+
+
+def once_page(lang, title, content, status=200):
+    nonce = secrets.token_urlsafe(16)
+    body = (f'<!doctype html><html lang="{lang}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">'
+            f'<meta name="robots" content="noindex"><title>{h(title)}</title><style nonce="{nonce}">{ONCE_STYLE}</style></head>'
+            f'<body><main>{content}</main></body></html>')
+    return HTMLResponse(body, status_code=status, headers={
+        'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'no-referrer', 'X-Frame-Options': 'DENY',
+        'X-Robots-Tag': 'noindex, nofollow',
+        'Content-Security-Policy': f"default-src 'none'; style-src 'nonce-{nonce}'; img-src data:; form-action 'self'; base-uri 'none'; frame-ancestors 'none'"})
+
+
+def once_lang(request):
+    wanted = request.headers.get('accept-language', '').lower()
+    return 'ru' if wanted.startswith('ru') or ',ru' in wanted else 'en' if wanted else 'ru'
+
+
+def once_lookup(interface, token, data):
+    """The link's client, also after the client moved to another server."""
+    order = [interface] + [s['interface'] for s in server_list() if s['interface'] != interface]
+    for server in order:
+        try: result = ctl('once-fetch', {'interface': server, 'token': token, **data})
+        except RuntimeError: continue
+        if result.get('found'):
+            return server, result
+    return interface, {}
+
+
+@app.get('/sub/once/{interface}/{token}')
+def once_open(request: Request, interface: str, token: str):
+    """The first screen only: link previews in messengers open links too, so nothing is used up here."""
+    lang = once_lang(request); t = lambda key: tr(lang, key)
+    address = client_address(request)
+    if not sub_allowed(address) or not SERVER_RE.fullmatch(interface) or not SUB_TOKEN_RE.fullmatch(token):
+        _sub_failures.setdefault(address, []).append(time.monotonic())
+        return once_page(lang, t('once_gone_title'), f'<h1>{h(t("once_gone_title"))}</h1><p>{h(t("once_gone"))}</p>', 404)
+    server, result = once_lookup(interface, token, {'peek': True})
+    if not result:
+        _sub_failures.setdefault(address, []).append(time.monotonic())
+        return once_page(lang, t('once_gone_title'), f'<h1>{h(t("once_gone_title"))}</h1><p>{h(t("once_gone"))}</p>', 404)
+    if not result.get('enabled'):
+        return once_page(lang, t('once_off_title'), f'<h1>{h(t("once_off_title"))}</h1><p>{h(t("once_off"))}</p>', 403)
+    content = (f'<h1>{h(t("once_public_title"))}</h1><p>{h(t("once_public_hint").format(n=result.get("uses", 1)))}</p>'
+               f'<form method="post" class="box"><p><strong>{h(result["name"])}</strong></p>'
+               f'<button type="submit">{h(t("once_show"))}</button></form>'
+               f'<p><small>{h(t("once_apps"))}</small></p>')
+    return once_page(lang, t('once_public_title'), content)
+
+
+@app.post('/sub/once/{interface}/{token}')
+def once_take(request: Request, interface: str, token: str):
+    lang = once_lang(request); t = lambda key: tr(lang, key)
+    address = client_address(request)
+    if not sub_allowed(address) or not SERVER_RE.fullmatch(interface) or not SUB_TOKEN_RE.fullmatch(token):
+        return once_page(lang, t('once_gone_title'), f'<h1>{h(t("once_gone_title"))}</h1><p>{h(t("once_gone"))}</p>', 404)
+    server, result = once_lookup(interface, token, {})
+    if not result or not result.get('enabled') or not result.get('config'):
+        _sub_failures.setdefault(address, []).append(time.monotonic())
+        return once_page(lang, t('once_gone_title'), f'<h1>{h(t("once_gone_title"))}</h1><p>{h(t("once_gone"))}</p>', 404)
+    name = result['name']
+    audit_event('once_link_used', f'{server}/{name} from {address} ({result.get("uses_left", 0)} left)'[:120])
+    config = result['config']
+    try:
+        pic = qrcode.make(config, error_correction=qrcode.constants.ERROR_CORRECT_L)
+        buffer = io.BytesIO(); pic.save(buffer, format='PNG')
+        qr_html = f'<img alt="QR" src="data:image/png;base64,{base64.b64encode(buffer.getvalue()).decode()}">'
+    except (qrcode.exceptions.DataOverflowError, ValueError):
+        qr_html = f'<p class="warn">{h(t("qr_overflow"))}</p>'
+    try: link = build_client_link(result, name)
+    except (ValueError, KeyError, TypeError): link = ''
+    conf_href = 'data:text/plain;charset=utf-8;base64,' + base64.b64encode(config.encode()).decode()
+    left = int(result.get('uses_left') or 0)
+    content = (f'<h1>{h(t("once_public_title"))}: {h(name)}</h1>'
+               f'<p class="warn">{h(t("once_taken_left").format(n=left) if left else t("once_taken_last"))}</p>'
+               f'<div class="box"><p>{h(t("once_step_qr"))}</p>{qr_html}</div>'
+               f'<div class="box"><p>{h(t("once_step_file"))}</p><div class="row">'
+               f'<a class="btn" href="{conf_href}" download="{h(name)}.conf">{h(t("once_download"))}</a></div>'
+               f'<pre>{h(config)}</pre></div>'
+               + (f'<div class="box"><p>{h(t("once_step_link"))}</p><textarea rows="4" readonly>{h(link)}</textarea></div>' if link else '')
+               + f'<p><small>{h(t("once_apps"))}</small></p>')
+    return once_page(lang, t('once_public_title'), content)
+
+
+TEXT['ru'].update({
+    'once_title': 'Одноразовая ссылка', 'once_hint': 'Для человека без Telegram: ссылка показывает конфигурацию и QR-код и перестаёт работать после открытия или по истечении срока.',
+    'once_no_https': 'Ссылки работают через HTTPS-адрес панели, а его нет. Настройте его командой sudo awg31 nginx.',
+    'once_active': 'Действует до {when} UTC, осталось открытий: {n}', 'once_revoke': 'Отозвать',
+    'once_valid': 'Срок', 'once_uses': 'Сколько раз открыть', 'once_create': 'Создать ссылку',
+    'once_h1': '1 час', 'once_h24': '24 часа', 'once_h72': '3 дня', 'once_h168': '7 дней',
+    'once_replace_confirm': 'Создать новую ссылку? Прежняя перестанет работать.',
+    'once_ready': 'Одноразовая ссылка', 'once_link': 'Ссылка',
+    'once_ready_hint': 'Отправьте ссылку человеку. Она действует до {when} UTC и откроется {n} раз(а); предпросмотр в мессенджере открытие не тратит.',
+    'once_public_title': 'Ваша конфигурация VPN', 'once_public_hint': 'Нажмите кнопку, когда будете готовы: конфигурацию можно показать {n} раз(а), потом ссылка перестанет работать.',
+    'once_show': 'Показать конфигурацию', 'once_gone_title': 'Ссылка не работает', 'once_gone': 'Срок ссылки истёк или её уже открыли. Попросите новую у того, кто её прислал.',
+    'once_off_title': 'Доступ отключён', 'once_off': 'Этот доступ сейчас отключён. Обратитесь к тому, кто прислал ссылку.',
+    'once_taken_last': 'Ссылка больше не откроется: сохраните конфигурацию сейчас.', 'once_taken_left': 'Ссылку можно открыть ещё {n} раз(а).',
+    'once_step_qr': 'На телефоне: в приложении AmneziaVPN или AmneziaWG выберите «Добавить» → «Сканировать QR-код».',
+    'once_step_file': 'На компьютере: скачайте файл и импортируйте его в AmneziaWG или AmneziaVPN.',
+    'once_step_link': 'Или скопируйте ссылку для AmneziaVPN и вставьте её в приложение.', 'once_download': 'Скачать .conf',
+    'once_apps': 'Приложения: AmneziaVPN или AmneziaWG — для Android, iOS, Windows, macOS и Linux.',
+})
+TEXT['en'].update({
+    'once_title': 'One-time link', 'once_hint': 'For somebody without Telegram: the link shows the configuration and QR code and stops working once opened or when it expires.',
+    'once_no_https': 'Links work through the panel’s HTTPS address, and there is none. Set it up with sudo awg31 nginx.',
+    'once_active': 'Valid until {when} UTC, opens left: {n}', 'once_revoke': 'Revoke',
+    'once_valid': 'Valid for', 'once_uses': 'Times it opens', 'once_create': 'Create link',
+    'once_h1': '1 hour', 'once_h24': '24 hours', 'once_h72': '3 days', 'once_h168': '7 days',
+    'once_replace_confirm': 'Create a new link? The previous one stops working.',
+    'once_ready': 'One-time link', 'once_link': 'Link',
+    'once_ready_hint': 'Send the link to the person. It is valid until {when} UTC and opens {n} time(s); a messenger preview does not use it up.',
+    'once_public_title': 'Your VPN configuration', 'once_public_hint': 'Press the button when you are ready: the configuration can be shown {n} time(s), then the link stops working.',
+    'once_show': 'Show the configuration', 'once_gone_title': 'The link does not work', 'once_gone': 'The link has expired or was already opened. Ask whoever sent it for a new one.',
+    'once_off_title': 'Access is off', 'once_off': 'This access is switched off right now. Contact whoever sent the link.',
+    'once_taken_last': 'The link will not open again: save the configuration now.', 'once_taken_left': 'The link opens {n} more time(s).',
+    'once_step_qr': 'On a phone: in the AmneziaVPN or AmneziaWG app choose Add → Scan QR code.',
+    'once_step_file': 'On a computer: download the file and import it into AmneziaWG or AmneziaVPN.',
+    'once_step_link': 'Or copy the link for AmneziaVPN and paste it into the app.', 'once_download': 'Download .conf',
+    'once_apps': 'Apps: AmneziaVPN or AmneziaWG — for Android, iOS, Windows, macOS and Linux.',
 })

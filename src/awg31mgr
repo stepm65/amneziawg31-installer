@@ -24,7 +24,7 @@ VALID = re.compile(r'^awg(?:0|[1-9][0-9]?)$')
 OPTIONAL_PROFILE = ('client_to_client', 'private_access', 'ipv6_block', 'host_access', 'mss_clamp', 'endpoint_domain', 'use_domain')
 OPS = {'status', 'list', 'add', 'add-batch', 'download', 'enable', 'disable', 'delete', 'delete-batch', 'settings', 'client-network', 'client-extra', 'client-policy', 'history', 'sessions',
        'client-rekey', 'client-batch', 'client-invite', 'invite-redeem',
-       'sub-token', 'sub-fetch', 'rotate', 'rotate-schedule', 'mask-apply', 'probe', 'watch-set'}
+       'sub-token', 'sub-fetch', 'rotate', 'rotate-schedule', 'mask-apply', 'probe', 'watch-set', 'client-history', 'once-link', 'once-fetch'}
 ADMIN = {'servers', 'server-create', 'client-move', 'server-start', 'server-stop', 'server-restart', 'server-delete',
          'sample-all','host-history','backup-create','backup-list','backup-export','backup-check','backup-restore','profile-export',
          'profile-import','audit','audit-list','password-change','diagnostics',
@@ -34,7 +34,7 @@ ADMIN = {'servers', 'server-create', 'client-move', 'server-start', 'server-stop
          'backup-encryption','backup-encryption-set','backup-export-encrypted',
          'backup-encryption-change','backup-remote','backup-remote-set','backup-remote-test',
          'audit-search','logging-status','logging-set','logs-read','handshake-debug','support-report',
-         'owners','owner-set','owner-delete','owner-device-add','clients-import'}
+         'owners','owner-set','owner-delete','owner-device-add','clients-import','snapshot-delete'}
 # Ops that may give a client an owner, and ops that must know which owners are blocked.
 OWNER_OPS = {'add', 'client-policy', 'client-batch'}
 BLOCK_AWARE = {'enable', 'client-batch'}
@@ -198,6 +198,7 @@ def main():
     if op=='totp-recovery-use': return admin.totp_recovery_use(data)
     if op=='update-status': return admin.update_status(data)
     if op=='update-start': return admin.update_start(data)
+    if op=='snapshot-delete': return admin.snapshot_delete(data)
     if op=='telegram-status': return admin.telegram_status()
     if op=='telegram-connect': return admin.telegram_connect(data)
     if op=='telegram-disconnect': return admin.telegram_disconnect(data)

@@ -30,9 +30,10 @@ VALID_AUDIT = {'login_success', 'login_failed', 'password_changed', 'client_adde
                'client_rekeyed', 'client_invite_created', 'client_invite_used', 'totp_recovery_used',
                'totp_recovery_new', 'clients_exported', 'panel_update_started', 'panel_updated',
                'panel_update_failed', 'panel_rolled_back', 'server_rotated', 'server_rotate_failed',
-               'mask_profile_applied', 'subscription_created', 'subscription_revoked', 'packet_probe',
+               'mask_profile_applied', 'subscription_created', 'subscription_revoked', 'once_link_created', 'once_link_revoked', 'once_link_used', 'packet_probe',
                'client_moved', 'server_silent', 'server_back',
-               'owner_created', 'owner_changed', 'owner_deleted', 'owner_blocked', 'owner_unblocked', 'clients_imported'}
+               'owner_created', 'owner_changed', 'owner_deleted', 'owner_blocked', 'owner_unblocked', 'clients_imported',
+               'snapshot_deleted'}
 
 
 def _host_uplink():
@@ -1665,6 +1666,17 @@ def _snapshot_list():
     try: items=json.loads(cp.stdout or '[]')
     except ValueError: return []
     return [x for x in items if isinstance(x,dict)][:20]
+
+
+def snapshot_delete(data):
+    """Delete one rollback snapshot. Not while an update or a rollback runs: it may be using it."""
+    name=str(data.get('name',''))
+    if not re.fullmatch(r'awg31-upgrade\.[A-Za-z0-9_.-]{4,64}',name): raise ValueError('Invalid snapshot')
+    if _update_running(): raise ValueError('An update or rollback is running; try again when it has finished')
+    if not any(x.get('name')==name for x in _snapshot_list()): raise ValueError('No such snapshot')
+    cp=subprocess.run(['python3',str(SNAPSHOT_TOOL),'delete',name],capture_output=True,text=True,timeout=120,check=False)
+    if cp.returncode: raise RuntimeError((cp.stderr or cp.stdout or 'delete failed').strip()[:200])
+    return {'ok':True,'name':name}
 
 
 def update_status(data=None):

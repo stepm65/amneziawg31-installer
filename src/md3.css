@@ -1484,3 +1484,27 @@ tr:hover .extra-dot {box-shadow:0 0 0 2px #1e2228}
 .import-list li {margin:4px 0}
 .import-list .mono {margin-left:8px}
 @media (max-width:760px) {.import-sources li {grid-template-columns:1fr;gap:2px}}
+
+/* 0.23: deleting rollback snapshots */
+.update-snapshot-row {display:grid;grid-template-columns:1fr auto;gap:8px;align-items:center}
+.update-snapshot-row.is-partial .update-snapshot {grid-template-columns:1fr auto;cursor:default;border-style:dashed}
+.snapshot-delete {color:#f09e9e}
+.snapshot-delete:hover:not(:disabled) {background:rgba(240,158,158,.1)}
+.snapshot-delete-form {display:none}
+
+/* 0.23: traffic chart of one client */
+.client-traffic .section-title {display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}
+.ct-tabs {display:inline-flex;gap:4px;padding:3px;border:1px solid #2c3139;border-radius:999px}
+.ct-tab {padding:5px 12px;border-radius:999px;color:#aeb6bf;text-decoration:none;font-size:13px}
+.ct-tab.is-active {background:rgba(243,165,30,.14);color:var(--amber)}
+.ct-totals {display:flex;flex-wrap:wrap;gap:8px 22px;align-items:center;color:#c0c6cf;font-size:13px;margin:6px 0 12px}
+.ct-totals span {display:inline-flex;align-items:center;gap:8px}
+.ct-totals i {width:13px;height:3px;display:inline-block;border-radius:3px}
+.ct-totals small {color:#8a939d}
+.client-traffic-chart {width:100%;height:auto;display:block}
+.client-traffic-chart .ct-grid {stroke:#272b30;stroke-width:1}
+.client-traffic-chart .ct-tick {fill:#8a939d;font-size:11px;font-family:var(--mono,ui-monospace,monospace)}
+.client-traffic-chart .ct-rx {fill:var(--amber,#f8b444)}
+.client-traffic-chart .ct-tx {fill:var(--blue,#8fb4ff)}
+.client-traffic-chart .ct-hit {fill:transparent}
+.client-traffic-chart g:hover .ct-hit {fill:rgba(255,255,255,.05)}

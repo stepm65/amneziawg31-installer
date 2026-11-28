@@ -4,7 +4,7 @@
 
 An installer and a web console for running **AmneziaWG 3.1** on your own server: a kernel module built with DKMS, an interactive setup wizard and a bilingual (EN/RU) panel for servers, clients, traffic and backups. No Docker, no control plane in the cloud, nothing loaded from a CDN.
 
-Version **0.22.1** · MIT licence · not affiliated with the AmneziaVPN developers.
+Version **0.23.0** · MIT licence · not affiliated with the AmneziaVPN developers.
 
 ![Infrastructure overview](docs/screenshots/en-dashboard.png)
 
@@ -204,6 +204,14 @@ The link returns the client's current `.conf` with its extra `[Interface]` lines
 
 Subscriptions work only through the panel's HTTPS address (`sudo awg31 nginx`): the link carries the client's private key. The `/sub/` path is open to every address even when the panel admits only chosen ones, but it is rate limited (by Nginx and by the panel; after 10 wrong links an address waits 15 minutes). A switched-off client gets 403. The time and address of the last request are on the client page.
 
+### One-time link for somebody without Telegram
+
+On the client page, under “One-time link”, choose how long it is valid (1 hour, 24 hours, 3 or 7 days) and how many times it opens (1 or 3), then press **Create link**. The panel shows a link like `https://your-address/sub/once/awg0/…` once: send it any way you like. The person opens it in a browser, presses “Show the configuration” and gets the QR code, the `.conf` file, the configuration text and the `vpn://` link with short instructions. The first screen uses nothing up, so a messenger's link preview does not burn it; only the button counts. After the last opening or when it expires the link stops working; you can issue a new one at any time (the old one stops at once) or revoke it. Like a subscription, the link works only through the panel's HTTPS address, only its fingerprint is stored and requests are rate limited. Creating, opening (with the address) and revoking go to the audit log.
+
+### Client traffic chart
+
+The client page has a chart of download and upload over 24 hours, 7 days or 30 days. The data is collected hourly along with the usual traffic accounting and kept for 62 days; it goes when the client is deleted.
+
 ### When the port gets blocked
 
 Under **Server settings → Masking and parameter change**:
@@ -267,7 +275,7 @@ The **Check incoming packets (15 s)** button on the server page (and “📡 Pac
 ```text
 sudo awg31 status           panel and VPN instances
 sudo awg31 update [VER]     update to the latest release, vX.Y.Z or dev-latest
-sudo awg31 rollback         return to the version before the last update (list: snapshots, --yes: no question)
+sudo awg31 rollback         return to the version before the last update (list: snapshots, delete NAME: remove one, --yes: no question)
 sudo awg31 version          installed version
 sudo awg31 servers          configured interfaces
 sudo awg31 doctor           kernel, DKMS and interface checks
@@ -347,7 +355,7 @@ sudo awg31 update dev-latest # rolling build from main
 
 Running the Quick Start command again on a server that already has the console does the same thing. `awg31 update` uses the installer that came with the installed release, and refuses to install an older version unless `--allow-downgrade` is given. The update replaces the panel, the controller, fonts and the `sudo` allowlist, and refreshes the Python packages within the supported version ranges. Interfaces, keys, clients and firewall rules are left as they are.
 
-Before every update a **snapshot** of the program is saved in `/var/backups/awg31-upgrade.*`: the panel (without its Python packages), the controller, the helper, the menu, the scripts, the `sudo` rules and the systemd units; next to it, as material for a manual recovery, the databases and server configurations. If an update fails, the program returns from the snapshot at once. `sudo awg31 rollback` returns to the version before the last update later: the snapshot is restored, the panel, the helper and the bot restart, the VPN keeps running. Clients, servers and settings made after the update stay: only the program goes back, not the data. The state before a rollback is saved as well, so a second `sudo awg31 rollback` goes forward again. `sudo awg31 rollback list` shows the snapshots; the five newest are kept. A rollback does not change the panel’s port.
+Before every update a **snapshot** of the program is saved in `/var/backups/awg31-upgrade.*`: the panel (without its Python packages), the controller, the helper, the menu, the scripts, the `sudo` rules and the systemd units; next to it, as material for a manual recovery, the databases and server configurations. If an update fails, the program returns from the snapshot at once. `sudo awg31 rollback` returns to the version before the last update later: the snapshot is restored, the panel, the helper and the bot restart, the VPN keeps running. Clients, servers and settings made after the update stay: only the program goes back, not the data. The state before a rollback is saved as well, so a second `sudo awg31 rollback` goes forward again. `sudo awg31 rollback list` shows the snapshots; the five newest are kept. Remove one you do not need with `sudo awg31 rollback delete NAME` or the bin button in **Maintenance → Update**. A rollback does not change the panel’s port.
 
 ### Updating from the panel
 

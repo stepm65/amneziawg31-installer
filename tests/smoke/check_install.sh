@@ -241,6 +241,13 @@ echo "{\"interface\":\"awg0\",\"token\":\"$SUB\",\"addr\":\"198.51.100.7\"}" | p
   | python3 -c 'import json,sys; r=json.load(sys.stdin); assert r["found"] and "PrivateKey = " in r["config"] and len(r["etag"]) == 32, r'
 echo '{"interface":"awg0","token":"0000000000000000000000000000000000000000000"}' | panel_mgr sub-fetch | grep -q '"found": false' \
   || fail 'an unknown subscription token was accepted'
+ONCE="$(echo '{"interface":"awg0","name":"team-03","hours":1,"uses":1}' | panel_mgr once-link | python3 -c 'import json,sys; print(json.load(sys.stdin)["token"])')"
+if grep -rqF "$ONCE" /var/lib/awg31-panel; then fail 'the one-time token is stored in clear'; fi
+echo "{\"interface\":\"awg0\",\"token\":\"$ONCE\",\"peek\":true}" | panel_mgr once-fetch | grep -q '"uses": 1' || fail 'a one-time link preview failed'
+echo "{\"interface\":\"awg0\",\"token\":\"$ONCE\"}" | panel_mgr once-fetch \
+  | python3 -c 'import json,sys; r=json.load(sys.stdin); assert r["found"] and "PrivateKey = " in r["config"] and r["uses_left"] == 0, r'
+echo "{\"interface\":\"awg0\",\"token\":\"$ONCE\"}" | panel_mgr once-fetch | grep -q '"found": false' || fail 'a used one-time link still works'
+echo '{"interface":"awg0","name":"team-03","window":"24h"}' | panel_mgr client-history | grep -q '"bucket": 3600' || fail 'client traffic history failed'
 echo '{"interface":"awg0","profile":"stun","i1":{"team-01":"<b 0x000100002112a442><r 12>"}}' | panel_mgr mask-apply >/dev/null
 echo '{"interface":"awg0","name":"team-01"}' | "$MGR" download | grep -q 'I1 = <b 0x000100002112a442><r 12>' || fail 'the masking profile did not set I1'
 old_port="$(awg show awg0 listen-port)"
@@ -709,6 +716,11 @@ panel 18081 || fail 'panel is down after the console rollback'
 runuser -u awgpanel -- sudo -n "$MGR" servers </dev/null >/dev/null || fail 'panel sudo permission broken after the rollback'
 systemctl is-active --quiet awg31-helper.service awg31-bot.service || fail 'helper or bot is down after the rollback'
 [[ "$(python3 "$SNAP" list --json | python3 -c 'import json,sys; print(len(json.load(sys.stdin)))')" -le 5 ]] || fail 'more than five snapshots are kept'
+oldest="$(python3 "$SNAP" list --json | python3 -c 'import json,sys; print(json.load(sys.stdin)[-1]["name"])')"
+count="$(python3 "$SNAP" list --json | python3 -c 'import json,sys; print(len(json.load(sys.stdin)))')"
+echo "{\"name\":\"$oldest\"}" | runuser -u awgpanel -- sudo -n "$MGR" snapshot-delete >/dev/null || fail 'the panel cannot delete a snapshot'
+[[ ! -e "/var/backups/$oldest" ]] || fail 'the snapshot is still there'
+[[ "$(python3 "$SNAP" list --json | python3 -c 'import json,sys; print(len(json.load(sys.stdin)))')" == "$((count - 1))" ]] || fail 'snapshot deletion removed more than one'
 
 step 'Uninstall with purge'
 bash /usr/local/libexec/awg31/scripts/uninstall.sh --purge --yes

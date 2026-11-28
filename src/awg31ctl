@@ -211,6 +211,10 @@ def get_conn(create=False):
                        'sub_last_fetch': "TEXT NOT NULL DEFAULT ''",
                        'sub_last_addr': "TEXT NOT NULL DEFAULT ''",
                        'sub_fetches': 'INTEGER NOT NULL DEFAULT 0',
+                       # A one-time link for a person without Telegram (0.23): only the SHA-256 of its token.
+                       'once_hash': "TEXT NOT NULL DEFAULT ''",
+                       'once_expires': "TEXT NOT NULL DEFAULT ''",
+                       'once_uses': 'INTEGER NOT NULL DEFAULT 0',
                        # A free-form group ("office", "family") to filter and act on clients together.
                        'group_name': "TEXT NOT NULL DEFAULT ''",
                        # speed_limit_mbit caps the download (to the client), this one the upload.
@@ -231,6 +235,10 @@ def get_conn(create=False):
            ended INTEGER NOT NULL DEFAULT 0, address TEXT NOT NULL DEFAULT '',
            rx INTEGER NOT NULL DEFAULT 0, tx INTEGER NOT NULL DEFAULT 0)''')
         con.execute('CREATE INDEX IF NOT EXISTS idx_sessions_client ON sessions(client, started)')
+        # Traffic of each client by the hour (0.23): small enough to keep two months for the client page.
+        con.execute('''CREATE TABLE IF NOT EXISTS client_traffic (
+           client TEXT NOT NULL, hour INTEGER NOT NULL, rx INTEGER NOT NULL DEFAULT 0, tx INTEGER NOT NULL DEFAULT 0,
+           PRIMARY KEY (client, hour))''')
         con.commit()
     return con
 
@@ -1184,6 +1192,14 @@ def sample_usage(con, now=None, owners_blocked=None):
                 (instant,rx_delta,tx_delta))
     con.execute('DELETE FROM traffic_samples WHERE measured_at<?',(instant-32*86400,))
     track_sessions(con, moved, instant)
+    hour = instant - instant % 3600
+    for name, (_, delta_r, delta_t) in moved.items():
+        if delta_r or delta_t:
+            con.execute('''INSERT INTO client_traffic(client, hour, rx, tx) VALUES(?,?,?,?)
+                           ON CONFLICT(client, hour) DO UPDATE SET rx=rx+excluded.rx, tx=tx+excluded.tx''',
+                        (name, hour, delta_r, delta_t))
+    if instant % 3600 < 120:                              # about once an hour is enough
+        con.execute('DELETE FROM client_traffic WHERE hour<?', (hour - CLIENT_TRAFFIC_DAYS * 86400,))
     con.commit()
     return {'ok':True,'rx_delta':rx_delta,'tx_delta':tx_delta,'disabled':changed,'enabled':revived,'rotated':rotated,'watch':watch,
             'owner_usage':owner_usage,'owner_disabled':owner_off,'owner_enabled':owner_on}
@@ -1318,6 +1334,8 @@ def clients_action(con, which):
                 'invite_expires':row['invite_expires'] if row['invite_hash'] and row['invite_expires']
                                  and datetime.fromisoformat(row['invite_expires']) > datetime.now(timezone.utc) else '',
                 'invite_export':bool(row['invite_export']),
+                'once':({'expires':row['once_expires'],'uses':row['once_uses']} if row['once_hash'] and row['once_expires']
+                        and datetime.fromisoformat(row['once_expires']) > datetime.now(timezone.utc) else {}),
                 'subscription':{'active':bool(row['sub_hash']),'created':row['sub_created'],'last_fetch':row['sub_last_fetch'],
                                 'last_addr':row['sub_last_addr'],'fetches':row['sub_fetches']},
                 'speed_limit_mbit':row['speed_limit_mbit'], 'speed_up_mbit':row['speed_up_mbit'], 'quota_period':row['quota_period'],
@@ -1337,6 +1355,7 @@ def clients_action(con, which):
     if which == 'delete':
         con.execute('DELETE FROM clients WHERE name=?',(name,))
         con.execute('DELETE FROM sessions WHERE client=?',(name,))     # a later client of the same name starts clean
+        con.execute('DELETE FROM client_traffic WHERE client=?',(name,))
     else: con.execute('UPDATE clients SET enabled=?, disabled_reason=? WHERE name=?',
                       (1 if which=='enable' else 0, '' if which=='enable' else 'manual', name))
     apply(cfg, con); con.commit()
@@ -1360,6 +1379,7 @@ def clients_delete_batch(con):
     cfg = get_settings(con)
     con.executemany('DELETE FROM clients WHERE name=?', ((name,) for name in names))
     con.executemany('DELETE FROM sessions WHERE client=?', ((name,) for name in names))
+    con.executemany('DELETE FROM client_traffic WHERE client=?', ((name,) for name in names))
     apply(cfg, con)
     con.commit()
     return {'ok': True, 'deleted': names}
@@ -1635,6 +1655,63 @@ def subscription_token(con):
     return {'ok': True, 'name': name, 'token': token}
 
 
+ONCE_HOURS = (1, 24, 72, 168)
+ONCE_USES = (1, 3)
+
+
+def once_digest(token):
+    return hashlib.sha256(('awg31-once:' + token).encode()).hexdigest()
+
+
+def once_link(con):
+    """Create (replacing the previous one) or revoke a client's one-time link; the token is shown once."""
+    data = read_json()
+    name = str(data.get('name', ''))
+    if not NAME_RE.fullmatch(name) or not con.execute('SELECT 1 FROM clients WHERE name=?', (name,)).fetchone():
+        raise ValueError('Клиент не найден')
+    if data.get('action') == 'revoke':
+        con.execute("UPDATE clients SET once_hash='', once_expires='', once_uses=0 WHERE name=?", (name,))
+        con.commit()
+        return {'ok': True, 'name': name}
+    try: hours, uses = int(data.get('hours', 24)), int(data.get('uses', 1))
+    except (TypeError, ValueError): raise ValueError('Срок и число открытий: целые числа') from None
+    if hours not in ONCE_HOURS or uses not in ONCE_USES: raise ValueError('Срок 1, 24, 72 или 168 часов; открытий 1 или 3')
+    token = secrets.token_urlsafe(32)
+    expires = (datetime.now(timezone.utc) + timedelta(hours=hours)).isoformat(timespec='seconds')
+    con.execute('UPDATE clients SET once_hash=?, once_expires=?, once_uses=? WHERE name=?', (once_digest(token), expires, uses, name))
+    con.commit()
+    return {'ok': True, 'name': name, 'token': token, 'expires': expires, 'uses': uses}
+
+
+def once_fetch(con):
+    """Somebody opened a one-time link and pressed the button: the configuration, and one use fewer."""
+    data = read_json()
+    token = str(data.get('token', ''))
+    if not SUB_RE.fullmatch(token): return {'found': False}
+    row = con.execute('SELECT * FROM clients WHERE once_hash=?', (once_digest(token),)).fetchone()
+    if not row: return {'found': False}
+    row = dict(row)
+    if not row['once_expires'] or datetime.fromisoformat(row['once_expires']) <= utc_now() or row['once_uses'] <= 0:
+        con.execute("UPDATE clients SET once_hash='', once_expires='', once_uses=0 WHERE name=?", (row['name'],))
+        con.commit()
+        return {'found': False, 'expired': True}
+    if not row['enabled']:
+        return {'found': True, 'enabled': False, 'name': row['name']}           # nothing is used up
+    if data.get('peek'):
+        return {'found': True, 'enabled': True, 'name': row['name'], 'uses': row['once_uses'], 'expires': row['once_expires']}
+    left = row['once_uses'] - 1
+    cfg = get_settings(con)
+    peers = peer_rows(con)
+    config = client_config(cfg, row, peers)
+    con.execute("UPDATE clients SET once_uses=?, once_hash=CASE WHEN ?>0 THEN once_hash ELSE '' END, "
+                "once_expires=CASE WHEN ?>0 THEN once_expires ELSE '' END, exported_hash=? WHERE name=?",
+                (left, left, left, config_fingerprint(config), row['name']))
+    con.commit()
+    return {'found': True, 'enabled': True, 'name': row['name'], 'uses_left': left, 'config': config,
+            'link_config': client_config(cfg, row, peers, extra=False), 'server_ip': cfg['server_ip'], 'subnet': cfg['subnet'],
+            'client_public_key': row['public_key']}
+
+
 def subscription_fetch(con):
     """A router asks for its configuration: the current .conf (with its extra lines) and its fingerprint."""
     data = read_json()
@@ -1869,7 +1946,7 @@ def probe_port(cfg, data):
 MOVE_KEEP = ('name', 'private_key', 'public_key', 'psk', 'enabled', 'created_at', 'routed_subnets', 'i_enabled',
              *I_KEYS, 'extra_lines', 'comment', 'expires_at', 'traffic_limit_bytes', 'used_bytes', 'disabled_reason',
              'telegram_id', 'owner_export', 'speed_limit_mbit', 'speed_up_mbit', 'quota_period', 'quota_month',
-             'invite_hash', 'invite_expires', 'invite_export', 'group_name', 'sub_hash', 'sub_created', 'sub_last_fetch', 'sub_last_addr', 'sub_fetches',
+             'invite_hash', 'invite_expires', 'invite_export', 'group_name', 'sub_hash', 'sub_created', 'sub_last_fetch', 'sub_last_addr', 'sub_fetches', 'once_hash', 'once_expires', 'once_uses',
              'owner_id')
 
 
@@ -2123,6 +2200,32 @@ def track_sessions(con, moved, instant):
     con.execute('DELETE FROM sessions WHERE ended>0 AND ended<?', (instant - settings['retention_days'] * 86400,))
 
 
+CLIENT_TRAFFIC_DAYS = 62
+CLIENT_WINDOWS = {'24h': (24 * 3600, 3600), '7d': (7 * 86400, 6 * 3600), '30d': (30 * 86400, 86400)}
+
+
+def client_history(con):
+    """Traffic of one client in buckets: 24 hours by the hour, 7 days by 6 hours, 30 days by the day."""
+    data = read_json()
+    name = str(data.get('name', ''))
+    if not NAME_RE.fullmatch(name) or not con.execute('SELECT 1 FROM clients WHERE name=?', (name,)).fetchone():
+        raise ValueError('Клиент не найден')
+    window = str(data.get('window', '24h'))
+    if window not in CLIENT_WINDOWS: raise ValueError('window: 24h, 7d или 30d')
+    span, size = CLIENT_WINDOWS[window]
+    now = int(data.get('now') or datetime.now(timezone.utc).timestamp())
+    end = now - now % size + size
+    start = end - span
+    buckets = {start + n * size: [0, 0] for n in range(span // size)}
+    for row in con.execute('SELECT hour, rx, tx FROM client_traffic WHERE client=? AND hour>=? AND hour<?', (name, start, end)):
+        key = start + (int(row['hour']) - start) // size * size
+        if key in buckets:
+            buckets[key][0] += int(row['rx']); buckets[key][1] += int(row['tx'])
+    points = [{'t': t, 'rx': v[0], 'tx': v[1]} for t, v in sorted(buckets.items())]
+    return {'name': name, 'window': window, 'bucket': size, 'points': points,
+            'total_rx': sum(p['rx'] for p in points), 'total_tx': sum(p['tx'] for p in points)}
+
+
 def client_sessions(con):
     data = read_json()
     name = str(data.get('name', ''))
@@ -2190,7 +2293,8 @@ def main():
     if len(sys.argv) != 2 or sys.argv[1] not in ('init','status','list','add','download','enable','disable','delete','delete-batch','client-network','client-extra','client-policy','settings','sample','history','add-batch','sessions',
                                                     'client-rekey','client-batch','client-invite','invite-redeem',
                                                     'sub-token','sub-fetch','rotate','rotate-schedule','mask-apply','probe',
-                                                    'client-export','client-import','watch-set','owner-sync','import-batch'):
+                                                    'client-export','client-import','watch-set','owner-sync','import-batch','client-history',
+                                                    'once-link','once-fetch'):
         raise ValueError('Неподдерживаемая команда')
     LOCK.parent.mkdir(parents=True, exist_ok=True)
     if sys.argv[1] == 'probe':
@@ -2237,6 +2341,9 @@ def main():
                 elif op == 'import-batch': result = import_batch(con)
                 elif op == 'history': result = traffic_history(con,read_json())
                 elif op == 'sessions': result = client_sessions(con)
+                elif op == 'client-history': result = client_history(con)
+                elif op == 'once-link': result = once_link(con)
+                elif op == 'once-fetch': result = once_fetch(con)
                 elif op == 'settings': result = settings_update(con)
                 elif op == 'delete-batch': result = clients_delete_batch(con)
                 else: result = clients_action(con, op)
